@@ -33,7 +33,7 @@ Optional:
 ## Non-negotiable constraints
 
 1. Keep target code at the vulnerable point in time.
-2. Port the full recon harness, not partial files.
+2. Port the full harness (e.g. from `test/recon/`), not partial files.
 3. Validate locally before opening PR.
 4. Keep global defaults in `scfuzzbench` generic; use per-target overrides only when needed.
 5. Do not leak secrets in issues/PRs.
@@ -43,7 +43,7 @@ Optional:
 7. Naming rule:
    - `invariant_*` functions must not have parameters
    - if a global check has parameters, it must be prefixed `global_*`
-   - apply this naming rule across the full recon inheritance tree, not only `Properties.sol` (for example files under `test/recon/properties/**` and inherited bases)
+   - apply this naming rule across the full inheritance tree, not only `Properties.sol` (for example files under `test/recon/properties/**` and inherited bases)
 
 ## Workflow
 
