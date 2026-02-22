@@ -33,7 +33,7 @@ Optional:
 ## Non-negotiable constraints
 
 1. Keep target code at the vulnerable point in time.
-2. Port the full recon harness, not partial files.
+2. Port the full harness (e.g. from `test/recon/`), not partial files.
 3. Validate locally before opening PR.
 4. Keep global defaults in `scfuzzbench` generic; use per-target overrides only when needed.
 5. Do not leak secrets in issues/PRs.
@@ -43,6 +43,7 @@ Optional:
 7. Naming rule:
    - `invariant_*` functions must not have parameters
    - if a global check has parameters, it must be prefixed `global_*`
+   - apply this naming rule across the full inheritance tree, not only `Properties.sol` (for example files under `test/recon/properties/**` and inherited bases)
 
 ## Workflow
 
@@ -141,6 +142,7 @@ Echidna:
 1. usually use `test/recon/CryticTester.sol`
 2. use `tests/...` only for target-specific exceptions
 3. enforce naming + config split:
+   - apply naming rules to `Properties.sol` and all inherited recon contracts
    - global checks in harness code must never use `property_` or `crytic_`
    - use `invariant_` only for no-arg globals
    - if a global check has parameters, prefix it `global_`
@@ -246,7 +248,7 @@ Typical fields:
    - remove any `test_*` functions in `CryticToFoundry`
 6. Echidna returns 0 issues unexpectedly
    - enforce `testMode: "assertion"` with `prefix: "echidna_"` in `echidna.yaml`
-   - enforce naming rule: `invariant_*` must be no-arg, parameterized globals must be `global_*`
+   - enforce naming rule across inherited recon properties too: `invariant_*` must be no-arg, parameterized globals must be `global_*`
    - keep global checks out of `property_` and `crytic_`
 
 ## Completion checklist
@@ -257,6 +259,7 @@ Done means all are true:
 3. recon PR is open with required validation details
 4. canary assertion + canary `invariant_` global failure are present and intentionally failing
 5. no parameterized function is prefixed `invariant_` (use `global_*` for parameterized globals)
-6. each fuzzer reports at least 2 canary bugs (assertion + global invariant) within 5 minutes
-7. exact `/start` JSON is provided
-8. PR URL is recorded in final report; include tracking issue URL only if one was explicitly requested
+6. naming rules are satisfied across inherited recon property contracts, not only `Properties.sol`
+7. each fuzzer reports at least 2 canary bugs (assertion + global invariant) within 5 minutes
+8. exact `/start` JSON is provided
+9. PR URL is recorded in final report; include tracking issue URL only if one was explicitly requested
