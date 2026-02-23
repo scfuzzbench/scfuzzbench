@@ -121,8 +121,10 @@ This expands to:
 3. Parse events + summaries (`scripts/run_analysis_filtered.py` -> `analysis/analyze.py`)
 4. Convert event stream to cumulative series (`analysis/events_to_cumulative.py`)
 5. Build report + charts (`analysis/benchmark_report.py`)
+6. Build broken-invariant overlap artifacts (`analysis/invariant_overlap_report.py`)
+7. Build runner CPU/memory artifacts (`analysis/runner_metrics_report.py`)
 
-Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_MIN`, `REPORT_CHECKPOINTS`, and `REPORT_KS`.
+Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_MIN`, `REPORT_CHECKPOINTS`, `REPORT_KS`, `INVARIANT_TOP_K`, and `RUNNER_METRICS_BIN_SECONDS`.
 
 ### Event extraction semantics (`analysis/analyze.py`)
 
@@ -158,6 +160,7 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - late discovery share
   - time-to-k median + reach rate
   - final distribution (median + IQR)
+- Note: these report scorecards are count-based. They do not score severity or root-cause uniqueness.
 - Emits:
   - `REPORT.md`
   - `bugs_over_time.png`
@@ -167,6 +170,26 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - `plateau_and_late_share.png`
 
 If input CSV is empty, the report explicitly records the no-data condition and emits placeholder plots.
+
+### Broken-invariant overlap (`analysis/invariant_overlap_report.py`)
+
+- Uses `events.csv` (optionally budget-filtered) to summarize which invariant/event names were observed.
+- Emits:
+  - `broken_invariants.md`
+  - `broken_invariants.csv`
+  - `invariant_overlap_upset.png`
+- These artifacts provide per-fuzzer totals, exclusives, shared subsets, and normalized invariant labels.
+
+### Runner resource reporting (`analysis/runner_metrics_report.py`)
+
+- Uses `runner_metrics*.csv` files collected on each runner to summarize host resource usage over time.
+- Emits:
+  - `runner_resource_usage.md`
+  - `runner_resource_summary.csv`
+  - `runner_resource_timeseries.csv`
+  - `cpu_usage_over_time.png`
+  - `memory_usage_over_time.png`
+- CPU is reported as active percentage (`user + system + iowait`) and memory is reported as used percentage/GiB.
 
 ## Publication and Release
 

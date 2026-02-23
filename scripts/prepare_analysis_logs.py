@@ -6,7 +6,9 @@ import sys
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Collect .log files for analysis.")
+    parser = argparse.ArgumentParser(
+        description="Collect .log files and runner metrics CSVs for analysis."
+    )
     parser.add_argument("--unzipped-dir", required=True, type=Path)
     parser.add_argument("--out-dir", required=True, type=Path)
     args = parser.parse_args()
@@ -16,17 +18,30 @@ def main() -> int:
         return 1
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    copied = 0
+    copied_logs = 0
+    copied_metrics = 0
     for instance_dir in sorted(p for p in args.unzipped_dir.iterdir() if p.is_dir()):
         log_files = list(instance_dir.rglob("*.log"))
-        if not log_files:
+        metric_files = [
+            path for path in instance_dir.rglob("*.csv") if path.name.startswith("runner_metrics")
+        ]
+        if not log_files and not metric_files:
             continue
         dest_instance = args.out_dir / instance_dir.name
         dest_instance.mkdir(parents=True, exist_ok=True)
         for log_file in log_files:
             shutil.copy2(log_file, dest_instance / log_file.name)
-            copied += 1
-    print(f"Copied {copied} log file(s) to {args.out_dir}")
+            copied_logs += 1
+        for metric_file in metric_files:
+            rel = metric_file.relative_to(instance_dir)
+            # Preserve uniqueness if multiple metrics files exist under different subpaths.
+            suffix = "__".join(rel.parts[:-1])
+            out_name = metric_file.name if not suffix else f"{suffix}__{metric_file.name}"
+            shutil.copy2(metric_file, dest_instance / out_name)
+            copied_metrics += 1
+    print(
+        f"Copied {copied_logs} log file(s) and {copied_metrics} runner metrics file(s) to {args.out_dir}"
+    )
     return 0
 
 

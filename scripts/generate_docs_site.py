@@ -109,7 +109,7 @@ def safe_float(value: object, default: float) -> float:
 def rewrite_headings(md: str, *, add: int) -> str:
     out: list[str] = []
     for line in md.splitlines():
-        m = re.match(r"^(#+)(\\s+.*)$", line)
+        m = re.match(r"^(#+)(\s+.*)$", line)
         if not m:
             out.append(line)
             continue
@@ -706,16 +706,38 @@ def main() -> int:
         logs_base = f"{base_url}/logs/{r.run_id}/{r.benchmark_uuid}"
         corpus_base = f"{base_url}/corpus/{r.run_id}/{r.benchmark_uuid}"
         invariant_chart_key = f"{r.analysis_prefix}/invariant_overlap_upset.png"
+        cpu_chart_key = f"{r.analysis_prefix}/cpu_usage_over_time.png"
+        memory_chart_key = f"{r.analysis_prefix}/memory_usage_over_time.png"
         broken_md_key = f"{r.analysis_prefix}/broken_invariants.md"
         broken_csv_key = f"{r.analysis_prefix}/broken_invariants.csv"
+        runner_md_key = f"{r.analysis_prefix}/runner_resource_usage.md"
+        runner_summary_csv_key = f"{r.analysis_prefix}/runner_resource_summary.csv"
+        runner_timeseries_csv_key = f"{r.analysis_prefix}/runner_resource_timeseries.csv"
         has_invariant_chart = (
             r.analysis_kind == "analysis" and head_exists(bucket, invariant_chart_key, profile=profile)
+        )
+        has_cpu_chart = (
+            r.analysis_kind == "analysis" and head_exists(bucket, cpu_chart_key, profile=profile)
+        )
+        has_memory_chart = (
+            r.analysis_kind == "analysis" and head_exists(bucket, memory_chart_key, profile=profile)
         )
         has_broken_md = (
             r.analysis_kind == "analysis" and head_exists(bucket, broken_md_key, profile=profile)
         )
         has_broken_csv = (
             r.analysis_kind == "analysis" and head_exists(bucket, broken_csv_key, profile=profile)
+        )
+        has_runner_md = (
+            r.analysis_kind == "analysis" and head_exists(bucket, runner_md_key, profile=profile)
+        )
+        has_runner_summary_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, runner_summary_csv_key, profile=profile)
+        )
+        has_runner_timeseries_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, runner_timeseries_csv_key, profile=profile)
         )
 
         if r.analyzed:
@@ -729,6 +751,10 @@ def main() -> int:
                 lines.append(f"![Plateau And Late Share]({analysis_base}/plateau_and_late_share.png)")
                 if has_invariant_chart:
                     lines.append(f"![Invariant Overlap (UpSet)]({analysis_base}/invariant_overlap_upset.png)")
+                if has_cpu_chart:
+                    lines.append(f"![CPU Usage Over Time]({analysis_base}/cpu_usage_over_time.png)")
+                if has_memory_chart:
+                    lines.append(f"![Memory Usage Over Time]({analysis_base}/memory_usage_over_time.png)")
             else:
                 # Legacy reports prefix may not contain all charts/bundles.
                 lines.append(f"![Bugs Over Time]({analysis_base}/bugs_over_time.png)")
@@ -751,8 +777,6 @@ def main() -> int:
                 lines.append("")
 
             if has_broken_md:
-                lines.append("## Broken invariants")
-                lines.append("")
                 try:
                     broken_raw = aws_text(
                         ["s3", "cp", f"s3://{bucket}/{broken_md_key}", "-"],
@@ -762,6 +786,17 @@ def main() -> int:
                     lines.append("")
                 except Exception:
                     lines.append("_Failed to fetch broken_invariants.md from S3._")
+                    lines.append("")
+            if has_runner_md:
+                try:
+                    runner_raw = aws_text(
+                        ["s3", "cp", f"s3://{bucket}/{runner_md_key}", "-"],
+                        profile=profile,
+                    )
+                    lines.append(rewrite_headings(runner_raw, add=2).rstrip())
+                    lines.append("")
+                except Exception:
+                    lines.append("_Failed to fetch runner_resource_usage.md from S3._")
                     lines.append("")
 
         # Manifest summary.
@@ -809,6 +844,17 @@ def main() -> int:
                 lines.append("- Broken invariants (Markdown): " + f"{analysis_base}/broken_invariants.md")
             if has_broken_csv:
                 lines.append("- Broken invariants (CSV): " + f"{analysis_base}/broken_invariants.csv")
+            if has_runner_md:
+                lines.append("- Runner resource usage (Markdown): " + f"{analysis_base}/runner_resource_usage.md")
+            if has_runner_summary_csv:
+                lines.append(
+                    "- Runner resource summary (CSV): " + f"{analysis_base}/runner_resource_summary.csv"
+                )
+            if has_runner_timeseries_csv:
+                lines.append(
+                    "- Runner resource timeseries (CSV): "
+                    + f"{analysis_base}/runner_resource_timeseries.csv"
+                )
         if r.analysis_kind == "analysis":
             bundles_base = f"{analysis_base}/bundles"
             lines.append("- Analysis bundle: " + f"{bundles_base}/analysis.zip")

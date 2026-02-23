@@ -19,6 +19,10 @@ on:
         description: "Comma-separated fuzzers to exclude (optional)."
         required: false
         default: ""
+      force_reanalyze:
+        description: "Re-run analysis and re-upload artifacts even if release tag exists."
+        required: false
+        default: "false"
   schedule:
     - cron: "0 * * * *"
 
@@ -214,17 +218,17 @@ jobs:
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 
       - name: Setup Python
-        if: ${{ steps.release_check.outputs.exists != 'true' }}
+        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install analysis dependencies
-        if: ${{ steps.release_check.outputs.exists != 'true' }}
+        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
         run: make analysis-venv
 
       - name: Fetch manifest
-        if: ${{ steps.release_check.outputs.exists != 'true' }}
+        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
         id: manifest
         env:
           REPORT_BUDGET_HOURS: ${{ matrix.report_budget_hours }}
@@ -233,8 +237,14 @@ jobs:
           dest_root="${GITHUB_WORKSPACE}/analysis-artifacts/${{ matrix.run_id }}"
           analysis_dir="${dest_root}/analysis"
           mkdir -p "${analysis_dir}"
-          manifest_key="logs/${{ matrix.run_id }}/${{ matrix.benchmark_uuid }}/manifest.json"
-          aws s3 cp "s3://${SCFUZZBENCH_BUCKET}/${manifest_key}" "${analysis_dir}/manifest.json"
+          logs_manifest_key="logs/${{ matrix.run_id }}/${{ matrix.benchmark_uuid }}/manifest.json"
+          runs_manifest_key="runs/${{ matrix.run_id }}/${{ matrix.benchmark_uuid }}/manifest.json"
+          if aws s3 cp "s3://${SCFUZZBENCH_BUCKET}/${logs_manifest_key}" "${analysis_dir}/manifest.json"; then
+            echo "Fetched manifest from ${logs_manifest_key}"
+          else
+            aws s3 cp "s3://${SCFUZZBENCH_BUCKET}/${runs_manifest_key}" "${analysis_dir}/manifest.json"
+            echo "Fetched manifest from ${runs_manifest_key}"
+          fi
 
           timeout_hours="${{ matrix.timeout_hours }}"
           if [[ -z "${timeout_hours}" || "${timeout_hours}" == "null" ]]; then
@@ -264,7 +274,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Run analysis
-        if: ${{ steps.release_check.outputs.exists != 'true' }}
+        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
         env:
           BUCKET: ${{ env.SCFUZZBENCH_BUCKET }}
           RUN_ID: ${{ matrix.run_id }}
@@ -279,7 +289,7 @@ jobs:
           make results-analyze-all
 
       - name: Collect analysis artifacts
-        if: ${{ steps.release_check.outputs.exists != 'true' }}
+        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
         run: |
           set -euo pipefail
           dest_root="${{ steps.manifest.outputs.dest_root }}"
@@ -293,15 +303,20 @@ jobs:
           cp "${dest_root}/images/final_distribution.png" "${analysis_dir}/final_distribution.png"
           cp "${dest_root}/images/plateau_and_late_share.png" "${analysis_dir}/plateau_and_late_share.png"
           cp "${dest_root}/images/invariant_overlap_upset.png" "${analysis_dir}/invariant_overlap_upset.png"
+          cp "${dest_root}/images/cpu_usage_over_time.png" "${analysis_dir}/cpu_usage_over_time.png"
+          cp "${dest_root}/images/memory_usage_over_time.png" "${analysis_dir}/memory_usage_over_time.png"
           cp "${dest_root}/data/broken_invariants.md" "${analysis_dir}/broken_invariants.md"
           cp "${dest_root}/data/broken_invariants.csv" "${analysis_dir}/broken_invariants.csv"
+          cp "${dest_root}/data/runner_resource_usage.md" "${analysis_dir}/runner_resource_usage.md"
+          cp "${dest_root}/data/runner_resource_summary.csv" "${analysis_dir}/runner_resource_summary.csv"
+          cp "${dest_root}/data/runner_resource_timeseries.csv" "${analysis_dir}/runner_resource_timeseries.csv"
 
           # Optional: include raw CSV outputs in the analysis bundle for debugging.
           mkdir -p "${analysis_dir}/data"
           cp "${dest_root}/data/"*.csv "${analysis_dir}/data/" || true
 
       - name: Build release bundles
-        if: ${{ steps.release_check.outputs.exists != 'true' }}
+        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
         id: bundles
         run: |
           set -euo pipefail
@@ -329,7 +344,7 @@ jobs:
           echo "release_dir=${release_dir}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload analysis artifacts to S3
-        if: ${{ steps.release_check.outputs.exists != 'true' }}
+        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
         run: |
           set -euo pipefail
           analysis_dir="${{ steps.manifest.outputs.analysis_dir }}"
@@ -343,8 +358,13 @@ jobs:
           aws s3 cp "${analysis_dir}/final_distribution.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/final_distribution.png" --content-type image/png
           aws s3 cp "${analysis_dir}/plateau_and_late_share.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/plateau_and_late_share.png" --content-type image/png
           aws s3 cp "${analysis_dir}/invariant_overlap_upset.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/invariant_overlap_upset.png" --content-type image/png
+          aws s3 cp "${analysis_dir}/cpu_usage_over_time.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/cpu_usage_over_time.png" --content-type image/png
+          aws s3 cp "${analysis_dir}/memory_usage_over_time.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/memory_usage_over_time.png" --content-type image/png
           aws s3 cp "${analysis_dir}/broken_invariants.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/broken_invariants.md" --content-type text/markdown
           aws s3 cp "${analysis_dir}/broken_invariants.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/broken_invariants.csv" --content-type text/csv
+          aws s3 cp "${analysis_dir}/runner_resource_usage.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_usage.md" --content-type text/markdown
+          aws s3 cp "${analysis_dir}/runner_resource_summary.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_summary.csv" --content-type text/csv
+          aws s3 cp "${analysis_dir}/runner_resource_timeseries.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_timeseries.csv" --content-type text/csv
           aws s3 cp "${analysis_dir}/manifest.json" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/manifest.json" --content-type application/json
 
           aws s3 cp "${release_dir}/analysis.zip" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/bundles/analysis.zip" --content-type application/zip
@@ -382,11 +402,16 @@ jobs:
             echo "![Final Distribution](${analysis_base}/final_distribution.png)"
             echo "![Plateau And Late Share](${analysis_base}/plateau_and_late_share.png)"
             echo "![Invariant Overlap (UpSet)](${analysis_base}/invariant_overlap_upset.png)"
+            echo "![CPU Usage Over Time](${analysis_base}/cpu_usage_over_time.png)"
+            echo "![Memory Usage Over Time](${analysis_base}/memory_usage_over_time.png)"
             echo ""
             echo "Downloads:"
             echo "- Analysis bundle: ${bundles_base}/analysis.zip"
             echo "- Broken invariants (Markdown): ${analysis_base}/broken_invariants.md"
             echo "- Broken invariants (CSV): ${analysis_base}/broken_invariants.csv"
+            echo "- Runner resource usage (Markdown): ${analysis_base}/runner_resource_usage.md"
+            echo "- Runner resource summary (CSV): ${analysis_base}/runner_resource_summary.csv"
+            echo "- Runner resource timeseries (CSV): ${analysis_base}/runner_resource_timeseries.csv"
             if [[ "${{ steps.bundles.outputs.has_logs_zip }}" == "true" ]]; then
               echo "- Logs bundle: ${bundles_base}/logs.zip"
             fi
