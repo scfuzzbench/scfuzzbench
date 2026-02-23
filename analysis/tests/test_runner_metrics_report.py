@@ -135,6 +135,55 @@ class RunnerMetricsReportTests(unittest.TestCase):
             self.assertTrue(cpu_png.exists())
             self.assertTrue(memory_png.exists())
 
+    def test_accepts_prefixed_runner_metrics_filename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            logs_dir = tmp_dir / "logs"
+            self.write_metrics_csv(
+                logs_dir / "i-aaa-foundry" / "logs__runner_metrics.csv",
+                [
+                    "2026-02-23T00:00:00+00:00,1000,0.1,0.1,0.1,10,5,80,5,1000000,700000,300000,0,0,0",
+                    "2026-02-23T00:00:20+00:00,1020,0.2,0.2,0.2,20,10,65,5,1000000,600000,400000,0,0,0",
+                ],
+            )
+
+            out_summary = tmp_dir / "runner_resource_summary.csv"
+            out_timeseries = tmp_dir / "runner_resource_timeseries.csv"
+            out_md = tmp_dir / "runner_resource_usage.md"
+            cpu_png = tmp_dir / "cpu_usage_over_time.png"
+            memory_png = tmp_dir / "memory_usage_over_time.png"
+
+            subprocess.check_call(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--logs-dir",
+                    str(logs_dir),
+                    "--out-summary-csv",
+                    str(out_summary),
+                    "--out-timeseries-csv",
+                    str(out_timeseries),
+                    "--out-md",
+                    str(out_md),
+                    "--out-cpu-png",
+                    str(cpu_png),
+                    "--out-memory-png",
+                    str(memory_png),
+                    "--run-id",
+                    "1772000001",
+                ]
+            )
+
+            with out_summary.open("r", newline="", encoding="utf-8") as handle:
+                summary_rows = list(csv.DictReader(handle))
+            with out_timeseries.open("r", newline="", encoding="utf-8") as handle:
+                timeseries_rows = list(csv.DictReader(handle))
+
+            self.assertEqual(1, len(summary_rows))
+            self.assertEqual("foundry", summary_rows[0]["fuzzer"])
+            self.assertTrue(timeseries_rows)
+            self.assertNotIn("No `runner_metrics*.csv` files were found", out_md.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

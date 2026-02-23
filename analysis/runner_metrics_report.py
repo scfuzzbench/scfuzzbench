@@ -47,6 +47,13 @@ TIMESERIES_COLS = [
 ]
 
 
+def is_runner_metrics_csv(path: Path) -> bool:
+    name = path.name.lower()
+    if not name.endswith(".csv"):
+        return False
+    return "runner_metrics" in name or "runner-metrics" in name
+
+
 def infer_elapsed_seconds(df: pd.DataFrame) -> pd.Series:
     ts = pd.to_datetime(df.get("timestamp"), utc=True, errors="coerce")
     if ts.notna().any():
@@ -143,9 +150,7 @@ def load_metrics_for_instance(
 def collect_metrics(logs_dir: Path, run_id: str, budget_hours: Optional[float]) -> pd.DataFrame:
     frames: List[pd.DataFrame] = []
     for instance_dir in sorted(path for path in logs_dir.iterdir() if path.is_dir()):
-        metrics_files = sorted(
-            path for path in instance_dir.rglob("*.csv") if path.name.startswith("runner_metrics")
-        )
+        metrics_files = sorted(path for path in instance_dir.rglob("*.csv") if is_runner_metrics_csv(path))
         for metrics_path in metrics_files:
             frame = load_metrics_for_instance(
                 metrics_path=metrics_path,
