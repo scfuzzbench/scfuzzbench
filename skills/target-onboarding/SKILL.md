@@ -44,6 +44,10 @@ Optional:
    - `invariant_*` functions must not have parameters
    - if a global check has parameters, it must be prefixed `global_*`
    - apply this naming rule across the full inheritance tree, not only `Properties.sol` (for example files under `test/recon/properties/**` and inherited bases)
+8. Assertion reason centralization rule:
+   - every assertion failure reason must be declared in `Properties.sol` as a `string constant`
+   - no inline assertion reason literals in harness files (for example `CryticToFoundry.sol`)
+   - every assertion failure reason value must start with `!!!`
 
 ## Workflow
 
@@ -82,16 +86,22 @@ continuous_run = true
 corpus_dir = "corpus/foundry"
 ```
 
-### 4) Foundry assertion visibility shim
+### 4) Foundry assertion compatibility shim (`foundry-rs/foundry#13322`)
 
 Because assertion failures can be hidden in invariant output, enforce:
-1. assertion reason strings prefixed with `!!!`
-2. per-assertion `invariant_assertion_failure_*` checks
-3. overridden assert helpers (`gt/gte/lt/lte/eq/t`) that record assertion failures
-4. `setUp()` with handler routing (`targetContract`, multiple `targetSender` values)
-5. include `assert_canary(uint256 entropy)` for the assertion canary trigger path
-6. include `invariant_assertion_failure_CANARY` as a wrapper that checks `assertionFailures` only
-7. do not pre-seed assertion failures in `setUp()` (no hardcoded `_recordAssertion(false, ...)`)
+1. keep all assertion reason strings in `Properties.sol` as `string constant ASSERTION_* = "!!! ...";`
+2. assertion reason strings must be prefixed with `!!!` (including canaries)
+3. maintain `mapping(string => bool) assertionFailures`
+4. override assert helpers (`gt/gte/lt/lte/eq/t`) to route assertion reasons through `_recordAssertion`
+5. include `_isAssertion(string memory reason)` and use it to distinguish assertion failures from global invariant checks
+6. add one `invariant_assertion_failure_*` wrapper per assertion constant
+7. wrappers must only check `assertionFailures[ASSERTION_*]` and must not trigger actions directly
+8. `setUp()` must include handler routing (`targetContract`, multiple `targetSender` values)
+9. include `assert_canary(uint256 entropy)` for the assertion canary trigger path
+10. include `invariant_assertion_failure_CANARY` as a wrapper that checks `assertionFailures` only
+11. do not pre-seed assertion failures in `setUp()` (no hardcoded `_recordAssertion(false, ...)`)
+
+Reference pattern: https://github.com/foundry-rs/foundry/issues/13322
 
 ### 5) Canary requirement for every target
 
@@ -124,6 +134,27 @@ function invariant_canary() public returns (bool) {
 
 ```solidity
 // CryticToFoundry.sol
+mapping(string => bool) internal assertionFailures;
+
+function _isAssertion(string memory reason) internal pure returns (bool) {
+    bytes memory b = bytes(reason);
+    return b.length >= 3 && b[0] == '!' && b[1] == '!' && b[2] == '!';
+}
+
+function t(bool ok, string memory reason) internal virtual override(FoundryAsserts, Asserts) {
+    if (_isAssertion(reason)) {
+        _recordAssertion(ok, reason);
+        return;
+    }
+    super.t(ok, reason);
+}
+
+function _recordAssertion(bool ok, string memory reason) internal {
+    if (!ok) {
+        assertionFailures[reason] = true;
+    }
+}
+
 function invariant_assertion_failure_CANARY() public view {
     assertTrue(
         !assertionFailures[ASSERTION_CANARY],
@@ -243,7 +274,7 @@ Typical fields:
 3. Medusa: `insufficient gas for floor data gas cost`
    - raise `transactionGasLimit` and `blockGasLimit`
 4. Foundry failures not surfaced
-   - verify `!!!` prefix + per-assertion invariants + overridden assert helpers
+   - verify assertion reasons are constants in `Properties.sol` + `!!!` prefix + per-assertion invariants + overridden assert helpers
 5. Foundry unrealistically fast/all bugs immediate
    - remove any `test_*` functions in `CryticToFoundry`
 6. Echidna returns 0 issues unexpectedly
@@ -263,3 +294,5 @@ Done means all are true:
 7. each fuzzer reports at least 2 canary bugs (assertion + global invariant) within 5 minutes
 8. exact `/start` JSON is provided
 9. PR URL is recorded in final report; include tracking issue URL only if one was explicitly requested
+10. all assertion failure reasons are constants in `Properties.sol` and all begin with `!!!`
+11. every assertion constant has a matching `invariant_assertion_failure_*` wrapper in `CryticToFoundry.sol`
