@@ -109,7 +109,7 @@ def safe_float(value: object, default: float) -> float:
 def rewrite_headings(md: str, *, add: int) -> str:
     out: list[str] = []
     for line in md.splitlines():
-        m = re.match(r"^(#+)(\\s+.*)$", line)
+        m = re.match(r"^(#+)(\s+.*)$", line)
         if not m:
             out.append(line)
             continue
@@ -751,8 +751,6 @@ def main() -> int:
                 lines.append("")
 
             if has_broken_md:
-                lines.append("## Broken invariants")
-                lines.append("")
                 try:
                     broken_raw = aws_text(
                         ["s3", "cp", f"s3://{bucket}/{broken_md_key}", "-"],

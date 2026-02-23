@@ -464,10 +464,10 @@ def write_report(
 
     lines.append("## Limitations")
     lines.append(
-        "- This dataset does **not** identify which specific bugs were found. It measures only counts."
+        "- Core metrics in this section are count-based; use `broken_invariants.md` / `broken_invariants.csv` for invariant identities."
     )
     lines.append(
-        "- Bug depth/complexity cannot be measured directly without per-bug metadata (e.g., call-sequence length, coverage, or state metrics)."
+        "- Severity, exploitability, and root-cause uniqueness cannot be measured directly without richer per-bug metadata."
     )
     lines.append(
         "- Harness design still affects results; mitigate by keeping harness identical across fuzzers and reporting many runs."
@@ -553,11 +553,15 @@ def main() -> int:
                 budget = max_time
     else:
         budget = float(args.budget)
-    checkpoints = [float(x) for x in args.checkpoints.split(",") if x.strip()]
-    if args.budget is None:
-        checkpoints = [t for t in checkpoints if t <= budget + 1e-9]
-        if not checkpoints:
-            checkpoints = [budget]
+    raw_checkpoints = [float(x) for x in args.checkpoints.split(",") if x.strip()]
+    checkpoints = []
+    for t in raw_checkpoints:
+        if t > budget + 1e-9:
+            continue
+        if t not in checkpoints:
+            checkpoints.append(t)
+    if not checkpoints:
+        checkpoints = [budget]
     ks = [int(x) for x in args.ks.split(",") if x.strip()]
 
     step_h = float(args.grid_step_min) / 60.0
