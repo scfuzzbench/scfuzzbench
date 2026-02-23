@@ -122,8 +122,9 @@ This expands to:
 4. Convert event stream to cumulative series (`analysis/events_to_cumulative.py`)
 5. Build report + charts (`analysis/benchmark_report.py`)
 6. Build broken-invariant overlap artifacts (`analysis/invariant_overlap_report.py`)
+7. Build runner CPU/memory artifacts (`analysis/runner_metrics_report.py`)
 
-Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_MIN`, `REPORT_CHECKPOINTS`, `REPORT_KS`, and `INVARIANT_TOP_K`.
+Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_MIN`, `REPORT_CHECKPOINTS`, `REPORT_KS`, `INVARIANT_TOP_K`, and `RUNNER_METRICS_BIN_SECONDS`.
 
 ### Event extraction semantics (`analysis/analyze.py`)
 
@@ -178,6 +179,17 @@ If input CSV is empty, the report explicitly records the no-data condition and e
   - `broken_invariants.csv`
   - `invariant_overlap_upset.png`
 - These artifacts provide per-fuzzer totals, exclusives, shared subsets, and normalized invariant labels.
+
+### Runner resource reporting (`analysis/runner_metrics_report.py`)
+
+- Uses `runner_metrics*.csv` files collected on each runner to summarize host resource usage over time.
+- Emits:
+  - `runner_resource_usage.md`
+  - `runner_resource_summary.csv`
+  - `runner_resource_timeseries.csv`
+  - `cpu_usage_over_time.png`
+  - `memory_usage_over_time.png`
+- CPU is reported as active percentage (`user + system + iowait`) and memory is reported as used percentage/GiB.
 
 ## Publication and Release
 

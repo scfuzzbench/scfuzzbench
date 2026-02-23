@@ -293,8 +293,13 @@ jobs:
           cp "${dest_root}/images/final_distribution.png" "${analysis_dir}/final_distribution.png"
           cp "${dest_root}/images/plateau_and_late_share.png" "${analysis_dir}/plateau_and_late_share.png"
           cp "${dest_root}/images/invariant_overlap_upset.png" "${analysis_dir}/invariant_overlap_upset.png"
+          cp "${dest_root}/images/cpu_usage_over_time.png" "${analysis_dir}/cpu_usage_over_time.png"
+          cp "${dest_root}/images/memory_usage_over_time.png" "${analysis_dir}/memory_usage_over_time.png"
           cp "${dest_root}/data/broken_invariants.md" "${analysis_dir}/broken_invariants.md"
           cp "${dest_root}/data/broken_invariants.csv" "${analysis_dir}/broken_invariants.csv"
+          cp "${dest_root}/data/runner_resource_usage.md" "${analysis_dir}/runner_resource_usage.md"
+          cp "${dest_root}/data/runner_resource_summary.csv" "${analysis_dir}/runner_resource_summary.csv"
+          cp "${dest_root}/data/runner_resource_timeseries.csv" "${analysis_dir}/runner_resource_timeseries.csv"
 
           # Optional: include raw CSV outputs in the analysis bundle for debugging.
           mkdir -p "${analysis_dir}/data"
@@ -343,8 +348,13 @@ jobs:
           aws s3 cp "${analysis_dir}/final_distribution.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/final_distribution.png" --content-type image/png
           aws s3 cp "${analysis_dir}/plateau_and_late_share.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/plateau_and_late_share.png" --content-type image/png
           aws s3 cp "${analysis_dir}/invariant_overlap_upset.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/invariant_overlap_upset.png" --content-type image/png
+          aws s3 cp "${analysis_dir}/cpu_usage_over_time.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/cpu_usage_over_time.png" --content-type image/png
+          aws s3 cp "${analysis_dir}/memory_usage_over_time.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/memory_usage_over_time.png" --content-type image/png
           aws s3 cp "${analysis_dir}/broken_invariants.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/broken_invariants.md" --content-type text/markdown
           aws s3 cp "${analysis_dir}/broken_invariants.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/broken_invariants.csv" --content-type text/csv
+          aws s3 cp "${analysis_dir}/runner_resource_usage.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_usage.md" --content-type text/markdown
+          aws s3 cp "${analysis_dir}/runner_resource_summary.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_summary.csv" --content-type text/csv
+          aws s3 cp "${analysis_dir}/runner_resource_timeseries.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_timeseries.csv" --content-type text/csv
           aws s3 cp "${analysis_dir}/manifest.json" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/manifest.json" --content-type application/json
 
           aws s3 cp "${release_dir}/analysis.zip" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/bundles/analysis.zip" --content-type application/zip
@@ -382,11 +392,16 @@ jobs:
             echo "![Final Distribution](${analysis_base}/final_distribution.png)"
             echo "![Plateau And Late Share](${analysis_base}/plateau_and_late_share.png)"
             echo "![Invariant Overlap (UpSet)](${analysis_base}/invariant_overlap_upset.png)"
+            echo "![CPU Usage Over Time](${analysis_base}/cpu_usage_over_time.png)"
+            echo "![Memory Usage Over Time](${analysis_base}/memory_usage_over_time.png)"
             echo ""
             echo "Downloads:"
             echo "- Analysis bundle: ${bundles_base}/analysis.zip"
             echo "- Broken invariants (Markdown): ${analysis_base}/broken_invariants.md"
             echo "- Broken invariants (CSV): ${analysis_base}/broken_invariants.csv"
+            echo "- Runner resource usage (Markdown): ${analysis_base}/runner_resource_usage.md"
+            echo "- Runner resource summary (CSV): ${analysis_base}/runner_resource_summary.csv"
+            echo "- Runner resource timeseries (CSV): ${analysis_base}/runner_resource_timeseries.csv"
             if [[ "${{ steps.bundles.outputs.has_logs_zip }}" == "true" ]]; then
               echo "- Logs bundle: ${bundles_base}/logs.zip"
             fi

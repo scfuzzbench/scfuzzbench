@@ -107,6 +107,8 @@ DEST="$(mktemp -d /tmp/scfuzzbench-analysis-1770053924-XXXXXX)"
 make results-analyze-all BUCKET=<bucket-name> RUN_ID=1770053924 BENCHMARK_UUID=<benchmark_uuid> DEST="$DEST" ARTIFACT_CATEGORY=both
 ```
 
+This pipeline now also generates runner resource artifacts (`cpu_usage_over_time.png`, `memory_usage_over_time.png`, `runner_resource_usage.md`, and runner resource CSVs).
+
 Quick readiness checks:
 
 ```bash

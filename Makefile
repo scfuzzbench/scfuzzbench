@@ -35,6 +35,12 @@ BROKEN_INVARIANTS_CSV ?= $(ANALYSIS_OUT_DIR)/broken_invariants.csv
 BROKEN_INVARIANTS_MD ?= $(ANALYSIS_OUT_DIR)/broken_invariants.md
 INVARIANT_OVERLAP_PNG ?= $(IMAGES_OUT_DIR)/invariant_overlap_upset.png
 INVARIANT_TOP_K ?= 20
+RUNNER_RESOURCE_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/runner_resource_summary.csv
+RUNNER_RESOURCE_TIMESERIES_CSV ?= $(ANALYSIS_OUT_DIR)/runner_resource_timeseries.csv
+RUNNER_RESOURCE_MD ?= $(ANALYSIS_OUT_DIR)/runner_resource_usage.md
+CPU_USAGE_PNG ?= $(IMAGES_OUT_DIR)/cpu_usage_over_time.png
+MEMORY_USAGE_PNG ?= $(IMAGES_OUT_DIR)/memory_usage_over_time.png
+RUNNER_METRICS_BIN_SECONDS ?= 60
 WIDE_CSV ?=
 LONG_CSV ?= results_long.csv
 RUN_ID_ARG :=
@@ -48,6 +54,10 @@ endif
 INVARIANT_BUDGET_ARG :=
 ifneq ($(strip $(REPORT_BUDGET)),)
 INVARIANT_BUDGET_ARG := --budget-hours $(REPORT_BUDGET)
+endif
+RUNNER_BUDGET_ARG :=
+ifneq ($(strip $(REPORT_BUDGET)),)
+RUNNER_BUDGET_ARG := --budget-hours $(REPORT_BUDGET)
 endif
 BENCHMARK_UUID_ARG :=
 ifneq ($(strip $(BENCHMARK_UUID)),)
@@ -77,7 +87,7 @@ EXCLUDE_ARG := --exclude-fuzzers $(EXCLUDE_FUZZERS)
 endif
 DURATION_ARG :=
 
-.PHONY: terraform-init terraform-init-backend terraform-fmt terraform-validate terraform-plan terraform-deploy terraform-destroy terraform-destroy-infra analysis-venv results-analyze results-download results-prepare results-analyze-filtered results-analyze-all results-inspect s3-purge-versions report-benchmark report-wide-to-long report-events-to-cumulative report-invariant-overlap
+.PHONY: terraform-init terraform-init-backend terraform-fmt terraform-validate terraform-plan terraform-deploy terraform-destroy terraform-destroy-infra analysis-venv results-analyze results-download results-prepare results-analyze-filtered results-analyze-all results-inspect s3-purge-versions report-benchmark report-wide-to-long report-events-to-cumulative report-invariant-overlap report-runner-metrics
 
 terraform-init:
 	terraform -chdir=$(TF_DIR) init
@@ -119,7 +129,7 @@ results-prepare:
 results-analyze-filtered: analysis-venv
 	$(ANALYSIS_PY) scripts/run_analysis_filtered.py --logs-dir $(ANALYSIS_LOGS_DIR) --out-dir $(ANALYSIS_OUT_DIR) $(RUN_ID_ARG) $(EXCLUDE_ARG)
 
-results-analyze-all: analysis-venv results-download results-prepare results-analyze-filtered report-events-to-cumulative report-benchmark report-invariant-overlap
+results-analyze-all: analysis-venv results-download results-prepare results-analyze-filtered report-events-to-cumulative report-benchmark report-invariant-overlap report-runner-metrics
 
 results-inspect:
 	python3 scripts/inspect_logs.py --logs-dir $(ANALYSIS_LOGS_DIR)
@@ -138,3 +148,6 @@ report-events-to-cumulative: analysis-venv
 
 report-invariant-overlap: analysis-venv
 	$(ANALYSIS_PY) analysis/invariant_overlap_report.py --events-csv $(EVENTS_CSV) --out-md $(BROKEN_INVARIANTS_MD) --out-csv $(BROKEN_INVARIANTS_CSV) --out-png $(INVARIANT_OVERLAP_PNG) $(INVARIANT_BUDGET_ARG) --top-k $(INVARIANT_TOP_K)
+
+report-runner-metrics: analysis-venv
+	$(ANALYSIS_PY) analysis/runner_metrics_report.py --logs-dir $(ANALYSIS_LOGS_DIR) --out-summary-csv $(RUNNER_RESOURCE_SUMMARY_CSV) --out-timeseries-csv $(RUNNER_RESOURCE_TIMESERIES_CSV) --out-md $(RUNNER_RESOURCE_MD) --out-cpu-png $(CPU_USAGE_PNG) --out-memory-png $(MEMORY_USAGE_PNG) --bin-seconds $(RUNNER_METRICS_BIN_SECONDS) $(RUN_ID_ARG) $(RUNNER_BUDGET_ARG)
