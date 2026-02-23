@@ -292,6 +292,40 @@
   font-weight: 600;
 }
 
+/* Sidebar shoutout */
+.sb-sidebar-shoutout {
+  margin: 24px 12px 12px;
+  padding: 12px;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--vp-c-bg-soft) 88%, transparent);
+}
+
+.sb-sidebar-shoutout a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: var(--vp-c-text-2);
+  transition: color 0.15s ease;
+}
+
+.sb-sidebar-shoutout a:hover {
+  color: var(--vp-c-brand-1);
+}
+
+.sb-sidebar-shoutout__logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.sb-sidebar-shoutout__text {
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
 /* Mobile */
 @media (max-width: 768px) {
   .VPHome .VPHero .text {
