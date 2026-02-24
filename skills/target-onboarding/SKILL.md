@@ -53,8 +53,10 @@ Optional:
    - `ASSERTION_CONSTANT_SUFFIX` must exactly match the referenced `ASSERTION_*` constant suffix
      - example: `ASSERTION_WITHDRAW_DOS` -> `iSpoke_withdraw_ASSERTION_WITHDRAW_DOS(...)`
    - Foundry wrappers must use `invariant_assertion_failure_targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>()`
+     - example: `iSpoke_withdraw_ASSERTION_WITHDRAW_DOS` -> `invariant_assertion_failure_iSpoke_withdraw_ASSERTION_WITHDRAW_DOS()`
    - wrapper suffix after `invariant_assertion_failure_` must exactly match the handler identifier (`targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>`)
    - canonical cross-fuzzer identifier for assertions is always `targetFunctionName` (strip `_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>` and strip Foundry wrapper prefix)
+     - example: `iSpoke_withdraw_ASSERTION_WITHDRAW_DOS` -> `iSpoke_withdraw`
 
 ## Workflow
 
@@ -243,7 +245,7 @@ timeout 300 medusa fuzz --config medusa.json --timeout 300
 timeout 300 forge test --match-contract CryticToFoundry --match-test 'invariant_' -vv
 ```
 
-Do not mark onboarding complete based only on a 10-minute run. Completion is tied to the 5-minute 2-canary acceptance gate above.
+Completion is tied to the 5-minute 2-canary acceptance gate above.
 
 Debug-only fallback for Foundry output inspection:
 
