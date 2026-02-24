@@ -24,6 +24,8 @@ QUALIFIED_EVENT_RE = re.compile(
     r"^(?:[A-Za-z_][A-Za-z0-9_$]*\.)+(?P<name>[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?)$"
 )
 TRAILING_PARAMS_RE = re.compile(r"\([^()]*\)$")
+ASSERTION_SUFFIX_RE = re.compile(r"_ASSERTION_[A-Za-z0-9_]+$")
+FOUNDRY_ASSERTION_WRAPPER_PREFIX = "invariant_assertion_failure_"
 
 
 def die(message: str) -> None:
@@ -40,7 +42,14 @@ def normalize_invariant_name(value: str) -> str:
     match = QUALIFIED_EVENT_RE.match(name)
     if match:
         name = match.group("name")
-    return TRAILING_PARAMS_RE.sub("", name)
+    name = TRAILING_PARAMS_RE.sub("", name)
+    # Assertion handlers are named "..._ASSERTION_<ID>" while Foundry wrappers
+    # use "invariant_assertion_failure_<handler>"; collapse both to the
+    # canonical cross-fuzzer assertion identifier (target function name).
+    if name.startswith(FOUNDRY_ASSERTION_WRAPPER_PREFIX):
+        name = name[len(FOUNDRY_ASSERTION_WRAPPER_PREFIX) :]
+    name = ASSERTION_SUFFIX_RE.sub("", name)
+    return name.strip()
 
 
 @dataclass(frozen=True)
