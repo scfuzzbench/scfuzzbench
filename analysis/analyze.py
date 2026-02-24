@@ -80,6 +80,54 @@ GAS_COUNT_KEYS = (
     "gas_spent",
     "gas_used",
 )
+SEQ_RATE_KEYS = (
+    "seq_per_second",
+    "seq_per_sec",
+    "seqps",
+    "sequences_per_second",
+    "sequences_per_sec",
+)
+COVERAGE_KEYS = (
+    "cumulative_edges_seen",
+    "edges_seen",
+    "branches_hit",
+    "cov",
+    "coverage",
+)
+CORPUS_KEYS = (
+    "corpus_count",
+    "corpus_size",
+    "corpus",
+)
+FAVORED_KEYS = (
+    "favored_items",
+)
+FAILED_CURRENT_KEYS = (
+    "failed_current",
+)
+FAILED_TOTAL_KEYS = (
+    "failed_total",
+    "failures_total",
+)
+
+SEQ_RATE_PATTERNS = [
+    re.compile(r"(?i)\bseq/s:\s*([0-9]+(?:\.[0-9]+)?)"),
+    re.compile(r"(?i)\bseq(?:uences?)?\s*(?:/|per)\s*s(?:ec(?:ond)?)?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)"),
+]
+COVERAGE_PATTERNS = [
+    re.compile(r"(?i)\bbranches hit:\s*([0-9]+(?:\.[0-9]+)?)"),
+    re.compile(r"(?i)\bcov:\s*([0-9]+(?:\.[0-9]+)?)"),
+    re.compile(r"(?i)\bUnique instructions:\s*([0-9]+(?:\.[0-9]+)?)"),
+]
+CORPUS_PATTERNS = [
+    re.compile(r"(?i)\bcorpus:\s*([0-9]+(?:\.[0-9]+)?)"),
+    re.compile(r"(?i)\bCorpus size:\s*([0-9]+(?:\.[0-9]+)?)"),
+]
+FAILURE_RATE_PATTERNS = [
+    re.compile(
+        r"(?i)\bfailures:\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*([0-9]+(?:\.[0-9]+)?)"
+    ),
+]
 
 
 @dataclass(frozen=True)
@@ -103,6 +151,22 @@ class ThroughputSample:
     elapsed_seconds: float
     tx_per_second: Optional[float]
     gas_per_second: Optional[float]
+    source: str
+    log_path: str
+
+
+@dataclass(frozen=True)
+class AdditionalMetricsSample:
+    run_id: str
+    instance_id: str
+    fuzzer: str
+    fuzzer_label: str
+    elapsed_seconds: float
+    seq_per_second: Optional[float]
+    coverage_proxy: Optional[float]
+    corpus_size: Optional[float]
+    favored_items: Optional[float]
+    failure_rate: Optional[float]
     source: str
     log_path: str
 
@@ -237,6 +301,19 @@ def parse_count_from_text(line: str, patterns: List[re.Pattern[str]]) -> Optiona
     return None
 
 
+def parse_failure_rate_from_text(line: str) -> Optional[float]:
+    for pattern in FAILURE_RATE_PATTERNS:
+        match = pattern.search(line)
+        if not match:
+            continue
+        failures = parse_optional_float(match.group(1))
+        total = parse_optional_float(match.group(2))
+        if failures is None or total is None or total <= 0.0:
+            return None
+        return failures / total
+    return None
+
+
 def parse_throughput_from_payload(
     payload: Dict[str, Any], elapsed_seconds: Optional[float]
 ) -> Tuple[Optional[float], Optional[float], Optional[str]]:
@@ -268,6 +345,51 @@ def parse_throughput_from_payload(
     if tx_rate is None and gas_rate is None:
         return None, None, None
     return tx_rate, gas_rate, source
+
+
+def parse_additional_metrics_from_payload(
+    payload: Dict[str, Any],
+) -> Tuple[
+    Optional[float],
+    Optional[float],
+    Optional[float],
+    Optional[float],
+    Optional[float],
+    Optional[str],
+]:
+    metric_values = flatten_numeric_values(payload)
+    seq_per_second = pick_metric_value(metric_values, SEQ_RATE_KEYS)
+    coverage_proxy = pick_metric_value(metric_values, COVERAGE_KEYS)
+    corpus_size = pick_metric_value(metric_values, CORPUS_KEYS)
+    favored_items = pick_metric_value(metric_values, FAVORED_KEYS)
+    failure_rate = pick_metric_value(metric_values, ("failure_rate", "fail_rate"))
+
+    if failure_rate is None:
+        failed_current = pick_metric_value(metric_values, FAILED_CURRENT_KEYS)
+        failed_total = pick_metric_value(metric_values, FAILED_TOTAL_KEYS)
+        if (
+            failed_current is not None
+            and failed_total is not None
+            and failed_total > 0.0
+        ):
+            failure_rate = failed_current / failed_total
+
+    if (
+        seq_per_second is None
+        and coverage_proxy is None
+        and corpus_size is None
+        and favored_items is None
+        and failure_rate is None
+    ):
+        return None, None, None, None, None, None
+    return (
+        seq_per_second,
+        coverage_proxy,
+        corpus_size,
+        favored_items,
+        failure_rate,
+        "json-metrics",
+    )
 
 
 def percentile(values: List[float], p: float) -> float:
@@ -670,6 +792,148 @@ def parse_throughput_logs(logs_dir: Path, run_id: Optional[str]) -> List[Through
     return samples
 
 
+def parse_additional_metrics_log(
+    path: Path, run_id: str, instance_id: str, fuzzer_label: str
+) -> List[AdditionalMetricsSample]:
+    samples: List[AdditionalMetricsSample] = []
+    first_ts: Optional[float] = None
+    first_abs_ts: Optional[float] = None
+    last_elapsed: Optional[float] = None
+    previous_key: Optional[
+        Tuple[
+            float,
+            Optional[float],
+            Optional[float],
+            Optional[float],
+            Optional[float],
+            Optional[float],
+        ]
+    ] = None
+
+    with path.open("r", errors="ignore") as handle:
+        for line in handle:
+            clean_line = ANSI_ESCAPE_RE.sub("", line)
+
+            absolute_ts = parse_timestamp(clean_line)
+            if absolute_ts is not None:
+                if first_abs_ts is None:
+                    first_abs_ts = absolute_ts
+                last_elapsed = max(0.0, absolute_ts - first_abs_ts)
+
+            elapsed_match = MEDUSA_ELAPSED_RE.search(clean_line)
+            if elapsed_match:
+                elapsed_value = parse_duration(elapsed_match.group(1))
+                if elapsed_value is not None:
+                    last_elapsed = float(elapsed_value)
+
+            payload: Optional[Dict[str, Any]] = None
+            if FOUNDATION_JSON_RE.match(clean_line):
+                try:
+                    parsed = json.loads(clean_line)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    payload = parsed
+
+            elapsed_seconds: Optional[float] = last_elapsed
+            source: Optional[str] = None
+            seq_per_second: Optional[float] = None
+            coverage_proxy: Optional[float] = None
+            corpus_size: Optional[float] = None
+            favored_items: Optional[float] = None
+            failure_rate: Optional[float] = None
+
+            if payload is not None:
+                ts_value = parse_optional_float(payload.get("timestamp"))
+                if ts_value is not None:
+                    if first_ts is None:
+                        first_ts = ts_value
+                    elapsed_seconds = max(0.0, ts_value - first_ts)
+                    last_elapsed = elapsed_seconds
+                (
+                    seq_per_second,
+                    coverage_proxy,
+                    corpus_size,
+                    favored_items,
+                    failure_rate,
+                    source,
+                ) = parse_additional_metrics_from_payload(payload)
+            else:
+                seq_per_second = parse_rate_from_text(clean_line, SEQ_RATE_PATTERNS)
+                coverage_proxy = parse_count_from_text(clean_line, COVERAGE_PATTERNS)
+                corpus_size = parse_count_from_text(clean_line, CORPUS_PATTERNS)
+                failure_rate = parse_failure_rate_from_text(clean_line)
+                if (
+                    seq_per_second is not None
+                    or coverage_proxy is not None
+                    or corpus_size is not None
+                    or failure_rate is not None
+                ):
+                    source = "text-metrics"
+
+            if (
+                seq_per_second is None
+                and coverage_proxy is None
+                and corpus_size is None
+                and favored_items is None
+                and failure_rate is None
+            ):
+                continue
+            if elapsed_seconds is None:
+                continue
+
+            key = (
+                round(float(elapsed_seconds), 3),
+                None if seq_per_second is None else round(seq_per_second, 12),
+                None if coverage_proxy is None else round(coverage_proxy, 12),
+                None if corpus_size is None else round(corpus_size, 12),
+                None if favored_items is None else round(favored_items, 12),
+                None if failure_rate is None else round(failure_rate, 12),
+            )
+            if key == previous_key:
+                continue
+            previous_key = key
+
+            samples.append(
+                AdditionalMetricsSample(
+                    run_id=run_id,
+                    instance_id=instance_id,
+                    fuzzer=normalize_fuzzer(fuzzer_label),
+                    fuzzer_label=fuzzer_label,
+                    elapsed_seconds=float(elapsed_seconds),
+                    seq_per_second=seq_per_second,
+                    coverage_proxy=coverage_proxy,
+                    corpus_size=corpus_size,
+                    favored_items=favored_items,
+                    failure_rate=failure_rate,
+                    source=source or "unknown",
+                    log_path=str(path),
+                )
+            )
+    return samples
+
+
+def parse_additional_metrics_logs(
+    logs_dir: Path, run_id: Optional[str]
+) -> List[AdditionalMetricsSample]:
+    samples: List[AdditionalMetricsSample] = []
+    run_id_value = run_id or infer_run_id(logs_dir) or "unknown"
+    for path in logs_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        if not LOG_FILE_RE.match(path.name):
+            continue
+        rel = path.relative_to(logs_dir)
+        if len(rel.parts) < 2:
+            continue
+        instance_label = rel.parts[0]
+        instance_id, fuzzer_label = split_instance_label(instance_label)
+        samples.extend(
+            parse_additional_metrics_log(path, run_id_value, instance_id, fuzzer_label)
+        )
+    return samples
+
+
 def write_events_csv(events: Iterable[Event], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="") as handle:
@@ -836,6 +1100,196 @@ def write_throughput_summary_csv(samples: Iterable[ThroughputSample], out_path: 
             )
 
 
+def write_additional_metrics_samples_csv(
+    samples: Iterable[AdditionalMetricsSample], out_path: Path
+) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "run_id",
+                "instance_id",
+                "fuzzer",
+                "fuzzer_label",
+                "elapsed_seconds",
+                "seq_per_second",
+                "coverage_proxy",
+                "corpus_size",
+                "favored_items",
+                "failure_rate",
+                "source",
+                "log_path",
+            ]
+        )
+        for sample in samples:
+            writer.writerow(
+                [
+                    sample.run_id,
+                    sample.instance_id,
+                    sample.fuzzer,
+                    sample.fuzzer_label,
+                    f"{sample.elapsed_seconds:.3f}",
+                    ""
+                    if sample.seq_per_second is None
+                    else f"{sample.seq_per_second:.6f}",
+                    ""
+                    if sample.coverage_proxy is None
+                    else f"{sample.coverage_proxy:.6f}",
+                    "" if sample.corpus_size is None else f"{sample.corpus_size:.6f}",
+                    "" if sample.favored_items is None else f"{sample.favored_items:.6f}",
+                    "" if sample.failure_rate is None else f"{sample.failure_rate:.6f}",
+                    sample.source,
+                    sample.log_path,
+                ]
+            )
+
+
+def write_additional_metrics_summary_csv(
+    samples: Iterable[AdditionalMetricsSample], out_path: Path
+) -> None:
+    per_fuzzer_runs: Dict[str, Dict[str, Dict[str, Optional[float]]]] = defaultdict(dict)
+
+    for sample in samples:
+        run_key = f"{sample.run_id}:{sample.instance_id}:{sample.fuzzer_label}"
+        run_state = per_fuzzer_runs[sample.fuzzer].setdefault(
+            run_key,
+            {
+                "seq_per_second": None,
+                "seq_elapsed": None,
+                "coverage_proxy": None,
+                "coverage_elapsed": None,
+                "corpus_size": None,
+                "corpus_elapsed": None,
+                "favored_items": None,
+                "favored_elapsed": None,
+                "failure_rate": None,
+                "failure_elapsed": None,
+            },
+        )
+
+        seq_elapsed = run_state["seq_elapsed"]
+        if sample.seq_per_second is not None and (
+            seq_elapsed is None or sample.elapsed_seconds >= seq_elapsed
+        ):
+            run_state["seq_per_second"] = sample.seq_per_second
+            run_state["seq_elapsed"] = sample.elapsed_seconds
+
+        coverage_elapsed = run_state["coverage_elapsed"]
+        if sample.coverage_proxy is not None and (
+            coverage_elapsed is None or sample.elapsed_seconds >= coverage_elapsed
+        ):
+            run_state["coverage_proxy"] = sample.coverage_proxy
+            run_state["coverage_elapsed"] = sample.elapsed_seconds
+
+        corpus_elapsed = run_state["corpus_elapsed"]
+        if sample.corpus_size is not None and (
+            corpus_elapsed is None or sample.elapsed_seconds >= corpus_elapsed
+        ):
+            run_state["corpus_size"] = sample.corpus_size
+            run_state["corpus_elapsed"] = sample.elapsed_seconds
+
+        favored_elapsed = run_state["favored_elapsed"]
+        if sample.favored_items is not None and (
+            favored_elapsed is None or sample.elapsed_seconds >= favored_elapsed
+        ):
+            run_state["favored_items"] = sample.favored_items
+            run_state["favored_elapsed"] = sample.elapsed_seconds
+
+        failure_elapsed = run_state["failure_elapsed"]
+        if sample.failure_rate is not None and (
+            failure_elapsed is None or sample.elapsed_seconds >= failure_elapsed
+        ):
+            run_state["failure_rate"] = sample.failure_rate
+            run_state["failure_elapsed"] = sample.elapsed_seconds
+
+    def fmt(value: float) -> str:
+        return f"{value:.6f}"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "fuzzer",
+                "runs",
+                "seqps_runs",
+                "coverage_runs",
+                "corpus_runs",
+                "favored_runs",
+                "failure_rate_runs",
+                "seqps_p50",
+                "seqps_p25",
+                "seqps_p75",
+                "coverage_p50",
+                "coverage_p25",
+                "coverage_p75",
+                "corpus_p50",
+                "corpus_p25",
+                "corpus_p75",
+                "favored_p50",
+                "favored_p25",
+                "favored_p75",
+                "failure_rate_p50",
+                "failure_rate_p25",
+                "failure_rate_p75",
+            ]
+        )
+        for fuzzer in sorted(per_fuzzer_runs):
+            run_values = per_fuzzer_runs[fuzzer]
+            seq_values = [
+                float(run_state["seq_per_second"])
+                for run_state in run_values.values()
+                if run_state["seq_per_second"] is not None
+            ]
+            coverage_values = [
+                float(run_state["coverage_proxy"])
+                for run_state in run_values.values()
+                if run_state["coverage_proxy"] is not None
+            ]
+            corpus_values = [
+                float(run_state["corpus_size"])
+                for run_state in run_values.values()
+                if run_state["corpus_size"] is not None
+            ]
+            favored_values = [
+                float(run_state["favored_items"])
+                for run_state in run_values.values()
+                if run_state["favored_items"] is not None
+            ]
+            failure_values = [
+                float(run_state["failure_rate"])
+                for run_state in run_values.values()
+                if run_state["failure_rate"] is not None
+            ]
+            writer.writerow(
+                [
+                    fuzzer,
+                    len(run_values),
+                    len(seq_values),
+                    len(coverage_values),
+                    len(corpus_values),
+                    len(favored_values),
+                    len(failure_values),
+                    "" if not seq_values else fmt(percentile(seq_values, 50)),
+                    "" if not seq_values else fmt(percentile(seq_values, 25)),
+                    "" if not seq_values else fmt(percentile(seq_values, 75)),
+                    "" if not coverage_values else fmt(percentile(coverage_values, 50)),
+                    "" if not coverage_values else fmt(percentile(coverage_values, 25)),
+                    "" if not coverage_values else fmt(percentile(coverage_values, 75)),
+                    "" if not corpus_values else fmt(percentile(corpus_values, 50)),
+                    "" if not corpus_values else fmt(percentile(corpus_values, 25)),
+                    "" if not corpus_values else fmt(percentile(corpus_values, 75)),
+                    "" if not favored_values else fmt(percentile(favored_values, 50)),
+                    "" if not favored_values else fmt(percentile(favored_values, 25)),
+                    "" if not favored_values else fmt(percentile(favored_values, 75)),
+                    "" if not failure_values else fmt(percentile(failure_values, 50)),
+                    "" if not failure_values else fmt(percentile(failure_values, 25)),
+                    "" if not failure_values else fmt(percentile(failure_values, 75)),
+                ]
+            )
+
+
 def build_runs(events: Iterable[Event]) -> Dict[str, Dict[str, List[float]]]:
     runs: Dict[str, Dict[str, List[float]]] = {}
     for event in events:
@@ -979,18 +1433,29 @@ def main() -> int:
         out_dir: Path = args.out_dir
         events = parse_logs(args.logs_dir, args.run_id)
         throughput_samples = parse_throughput_logs(args.logs_dir, args.run_id)
+        additional_metrics_samples = parse_additional_metrics_logs(
+            args.logs_dir, args.run_id
+        )
         events_csv = out_dir / "events.csv"
         summary_csv = out_dir / "summary.csv"
         overlap_csv = out_dir / "overlap.csv"
         exclusive_csv = out_dir / "exclusive.csv"
         throughput_samples_csv = out_dir / "throughput_samples.csv"
         throughput_summary_csv = out_dir / "throughput_summary.csv"
+        additional_metrics_samples_csv = out_dir / "additional_metrics_samples.csv"
+        additional_metrics_summary_csv = out_dir / "additional_metrics_summary.csv"
         write_events_csv(events, events_csv)
         write_summary_csv(events, summary_csv)
         write_overlap_csv(events, overlap_csv)
         write_exclusive_csv(events, exclusive_csv)
         write_throughput_samples_csv(throughput_samples, throughput_samples_csv)
         write_throughput_summary_csv(throughput_samples, throughput_summary_csv)
+        write_additional_metrics_samples_csv(
+            additional_metrics_samples, additional_metrics_samples_csv
+        )
+        write_additional_metrics_summary_csv(
+            additional_metrics_samples, additional_metrics_summary_csv
+        )
         return 0
     return 1
 

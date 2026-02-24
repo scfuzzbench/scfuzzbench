@@ -141,6 +141,8 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - `exclusive.csv` (events found by exactly one fuzzer)
   - `throughput_samples.csv` (raw tx/s and gas/s samples recovered from logs when available)
   - `throughput_summary.csv` (per-fuzzer tx/s and gas/s distribution summary)
+  - `additional_metrics_samples.csv` (raw fuzzer-native progress metrics such as seq/s, coverage proxy, corpus size, favored items, failure rate when available)
+  - `additional_metrics_summary.csv` (per-fuzzer distribution summary of those additional metrics)
 
 ### Cumulative conversion (`analysis/events_to_cumulative.py`)
 
@@ -164,6 +166,7 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - final distribution (median + IQR)
 - Note: these report scorecards are count-based. They do not score severity or root-cause uniqueness.
 - If `throughput_summary.csv` is present, the report also includes tx/s and gas/s summary tables.
+- If `additional_metrics_summary.csv` is present, the report also includes per-fuzzer progress proxy tables (seq/s, coverage, corpus, favored, failure rate).
 - Emits:
   - `REPORT.md`
   - `bugs_over_time.png`

@@ -130,6 +130,32 @@ class ThroughputSummary:
     gasps_p75: Optional[float]
 
 
+@dataclass
+class AdditionalMetricsSummary:
+    fuzzer: str
+    runs: int
+    seqps_runs: int
+    coverage_runs: int
+    corpus_runs: int
+    favored_runs: int
+    failure_rate_runs: int
+    seqps_p50: Optional[float]
+    seqps_p25: Optional[float]
+    seqps_p75: Optional[float]
+    coverage_p50: Optional[float]
+    coverage_p25: Optional[float]
+    coverage_p75: Optional[float]
+    corpus_p50: Optional[float]
+    corpus_p25: Optional[float]
+    corpus_p75: Optional[float]
+    favored_p50: Optional[float]
+    favored_p25: Optional[float]
+    favored_p75: Optional[float]
+    failure_rate_p50: Optional[float]
+    failure_rate_p25: Optional[float]
+    failure_rate_p75: Optional[float]
+
+
 def parse_optional_float(value: str | None) -> Optional[float]:
     if value is None:
         return None
@@ -174,10 +200,53 @@ def load_throughput_summary(path: Path) -> Dict[str, ThroughputSummary]:
     return rows
 
 
+def load_additional_metrics_summary(path: Path) -> Dict[str, AdditionalMetricsSummary]:
+    if not path.exists():
+        return {}
+    rows: Dict[str, AdditionalMetricsSummary] = {}
+    with path.open("r", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            fuzzer = str(row.get("fuzzer", "")).strip()
+            if not fuzzer:
+                continue
+            rows[fuzzer] = AdditionalMetricsSummary(
+                fuzzer=fuzzer,
+                runs=parse_int(row.get("runs"), 0),
+                seqps_runs=parse_int(row.get("seqps_runs"), 0),
+                coverage_runs=parse_int(row.get("coverage_runs"), 0),
+                corpus_runs=parse_int(row.get("corpus_runs"), 0),
+                favored_runs=parse_int(row.get("favored_runs"), 0),
+                failure_rate_runs=parse_int(row.get("failure_rate_runs"), 0),
+                seqps_p50=parse_optional_float(row.get("seqps_p50")),
+                seqps_p25=parse_optional_float(row.get("seqps_p25")),
+                seqps_p75=parse_optional_float(row.get("seqps_p75")),
+                coverage_p50=parse_optional_float(row.get("coverage_p50")),
+                coverage_p25=parse_optional_float(row.get("coverage_p25")),
+                coverage_p75=parse_optional_float(row.get("coverage_p75")),
+                corpus_p50=parse_optional_float(row.get("corpus_p50")),
+                corpus_p25=parse_optional_float(row.get("corpus_p25")),
+                corpus_p75=parse_optional_float(row.get("corpus_p75")),
+                favored_p50=parse_optional_float(row.get("favored_p50")),
+                favored_p25=parse_optional_float(row.get("favored_p25")),
+                favored_p75=parse_optional_float(row.get("favored_p75")),
+                failure_rate_p50=parse_optional_float(row.get("failure_rate_p50")),
+                failure_rate_p25=parse_optional_float(row.get("failure_rate_p25")),
+                failure_rate_p75=parse_optional_float(row.get("failure_rate_p75")),
+            )
+    return rows
+
+
 def fmt_triplet(p50: Optional[float], p25: Optional[float], p75: Optional[float]) -> str:
     if p50 is None or p25 is None or p75 is None:
         return "n/a"
     return f"{p50:.2f} [{p25:.2f},{p75:.2f}]"
+
+
+def fmt_pct_triplet(p50: Optional[float], p25: Optional[float], p75: Optional[float]) -> str:
+    if p50 is None or p25 is None or p75 is None:
+        return "n/a"
+    return f"{100.0 * p50:.1f}% [{100.0 * p25:.1f}%,{100.0 * p75:.1f}%]"
 
 
 def append_throughput_section(
@@ -224,6 +293,75 @@ def append_throughput_section(
                     fmt_triplet(row.txps_p50, row.txps_p25, row.txps_p75),
                     str(row.gasps_runs),
                     fmt_triplet(row.gasps_p50, row.gasps_p25, row.gasps_p75),
+                ]
+            )
+            + " |"
+        )
+    lines.append("")
+
+
+def append_additional_metrics_section(
+    lines: List[str],
+    additional_metrics_by_fuzzer: Dict[str, AdditionalMetricsSummary],
+    fuzzer_order: List[str],
+) -> None:
+    if not additional_metrics_by_fuzzer:
+        return
+
+    lines.append("## Additional metrics from logs (fuzzer-specific proxies)")
+    lines.append(
+        "Coverage/corpus/favored/failure-rate values are parsed from each fuzzer's native progress output and are useful for trend context, not strict cross-fuzzer equivalence."
+    )
+    header = [
+        "Fuzzer",
+        "Runs",
+        "Seq/s runs",
+        "Seq/s p50 [p25,p75]",
+        "Coverage runs",
+        "Coverage p50 [p25,p75]",
+        "Corpus runs",
+        "Corpus p50 [p25,p75]",
+        "Favored runs",
+        "Favored p50 [p25,p75]",
+        "Failure-rate runs",
+        "Failure-rate p50 [p25,p75]",
+    ]
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("|" + "|".join(["---"] * len(header)) + "|")
+
+    ordered_fuzzers: List[str] = []
+    seen = set()
+    for fuzzer in fuzzer_order:
+        if fuzzer in additional_metrics_by_fuzzer and fuzzer not in seen:
+            ordered_fuzzers.append(fuzzer)
+            seen.add(fuzzer)
+    for fuzzer in sorted(additional_metrics_by_fuzzer):
+        if fuzzer in seen:
+            continue
+        ordered_fuzzers.append(fuzzer)
+
+    for fuzzer in ordered_fuzzers:
+        row = additional_metrics_by_fuzzer[fuzzer]
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    row.fuzzer,
+                    str(row.runs),
+                    str(row.seqps_runs),
+                    fmt_triplet(row.seqps_p50, row.seqps_p25, row.seqps_p75),
+                    str(row.coverage_runs),
+                    fmt_triplet(row.coverage_p50, row.coverage_p25, row.coverage_p75),
+                    str(row.corpus_runs),
+                    fmt_triplet(row.corpus_p50, row.corpus_p25, row.corpus_p75),
+                    str(row.favored_runs),
+                    fmt_triplet(row.favored_p50, row.favored_p25, row.favored_p75),
+                    str(row.failure_rate_runs),
+                    fmt_pct_triplet(
+                        row.failure_rate_p50,
+                        row.failure_rate_p25,
+                        row.failure_rate_p75,
+                    ),
                 ]
             )
             + " |"
@@ -500,6 +638,7 @@ def write_report(
     ks: List[int],
     outpath: Path,
     throughput_by_fuzzer: Dict[str, ThroughputSummary] | None = None,
+    additional_metrics_by_fuzzer: Dict[str, AdditionalMetricsSummary] | None = None,
 ) -> None:
     lines: List[str] = []
     lines.append("# Fuzzer Benchmark Report (from bug-count CSV)")
@@ -572,6 +711,11 @@ def write_report(
         throughput_by_fuzzer or {},
         fuzzer_order=[metric.fuzzer for metric in metrics],
     )
+    append_additional_metrics_section(
+        lines,
+        additional_metrics_by_fuzzer or {},
+        fuzzer_order=[metric.fuzzer for metric in metrics],
+    )
 
     lines.append("## Shape-based interpretation (rules of thumb)")
     lines.append(
@@ -608,6 +752,7 @@ def write_no_data_report(
     outpath: Path,
     csv_path: Path,
     throughput_by_fuzzer: Dict[str, ThroughputSummary] | None = None,
+    additional_metrics_by_fuzzer: Dict[str, AdditionalMetricsSummary] | None = None,
 ) -> None:
     lines: List[str] = []
     lines.append("# Fuzzer Benchmark Report (from bug-count CSV)")
@@ -634,6 +779,11 @@ def write_no_data_report(
         lines,
         throughput_by_fuzzer or {},
         fuzzer_order=sorted((throughput_by_fuzzer or {}).keys()),
+    )
+    append_additional_metrics_section(
+        lines,
+        additional_metrics_by_fuzzer or {},
+        fuzzer_order=sorted((additional_metrics_by_fuzzer or {}).keys()),
     )
 
     outpath.write_text("\n".join(lines), encoding="utf-8")
@@ -668,6 +818,12 @@ def main() -> int:
         default=None,
         help="Optional per-fuzzer throughput summary CSV generated by analysis/analyze.py.",
     )
+    parser.add_argument(
+        "--additional-metrics-summary-csv",
+        type=Path,
+        default=None,
+        help="Optional per-fuzzer additional metrics summary CSV generated by analysis/analyze.py.",
+    )
     parser.add_argument("--anonymize", action="store_true", help="Use generic fuzzer labels in plots.")
     args = parser.parse_args()
 
@@ -682,6 +838,11 @@ def main() -> int:
     throughput_by_fuzzer = (
         load_throughput_summary(args.throughput_summary_csv)
         if args.throughput_summary_csv is not None
+        else {}
+    )
+    additional_metrics_by_fuzzer = (
+        load_additional_metrics_summary(args.additional_metrics_summary_csv)
+        if args.additional_metrics_summary_csv is not None
         else {}
     )
 
@@ -720,6 +881,7 @@ def main() -> int:
             outpath=report_outdir / "REPORT.md",
             csv_path=args.csv,
             throughput_by_fuzzer=throughput_by_fuzzer,
+            additional_metrics_by_fuzzer=additional_metrics_by_fuzzer,
         )
         msg = "No rows in input CSV. This usually means no bugs were found (or parsing produced no events)."
         write_placeholder_plot(
@@ -763,6 +925,7 @@ def main() -> int:
         ks=ks,
         outpath=report_outdir / "REPORT.md",
         throughput_by_fuzzer=throughput_by_fuzzer,
+        additional_metrics_by_fuzzer=additional_metrics_by_fuzzer,
     )
 
     print(f"wrote: {report_outdir / 'REPORT.md'}")
