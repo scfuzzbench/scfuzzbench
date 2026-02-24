@@ -58,9 +58,9 @@ Optional:
    - canonical cross-fuzzer identifier for assertions is always `targetFunctionName` (strip `_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>` and strip Foundry wrapper prefix)
      - example: `iSpoke_withdraw_ASSERTION_WITHDRAW_DOS` -> `iSpoke_withdraw`
 10. Scope control rule:
-   - prefer minimal, rename-only edits when applying naming normalization
+   - prefer minimal, rename-first edits when applying naming normalization
    - preserve existing harness behavior and side effects
-   - do not split handlers, introduce helper wrappers, or refactor action/assertion flow unless explicitly requested or required to restore broken validation
+   - if helper methods, handler splits, or action/assertion refactors are potentially ambiguous/confusing, ask the user first and apply their case-by-case preference
 
 ## Workflow
 
@@ -110,11 +110,11 @@ Because assertion failures can be hidden in invariant output, enforce:
 6. name assertion handlers as `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>(...)`
    - `ASSERTION_CONSTANT_SUFFIX` must exactly match the referenced `ASSERTION_*` constant suffix
    - examples: `iHub_mintFeeShares_ASSERTION_MINT_FEE_SHARES_PPS_CHANGE`, `iSpoke_withdraw_ASSERTION_WITHDRAW_DOS`, `assert_canary_ASSERTION_CANARY`
-   - for legacy handlers that assert multiple `ASSERTION_*` constants, keep the existing logic and rename only; do not force handler splitting by default
+   - for legacy handlers that assert multiple `ASSERTION_*` constants, keep existing logic by default; if splitting or helper extraction is unclear, ask the user first
 7. add one wrapper `invariant_assertion_failure_targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>()` per assertion handler identifier
 8. wrappers must only check `assertionFailures[ASSERTION_*]` and must not trigger actions directly
 9. when a wrapper is tied to a handler identifier, wrapper suffix after `invariant_assertion_failure_` must exactly match that assertion handler identifier
-   - for legacy multi-assert handlers, additional per-assertion wrappers are allowed without forcing a 1:1 split of handler bodies
+   - for legacy multi-assert handlers, additional per-assertion wrappers are allowed; if 1:1 splitting is unclear or requested, confirm with the user
 10. `setUp()` must include handler routing (`targetContract`, multiple `targetSender` values)
 11. do not pre-seed assertion failures in `setUp()` (no hardcoded `_recordAssertion(false, ...)`)
 12. local review must confirm canonical identifier compatibility:
@@ -309,7 +309,7 @@ Typical fields:
    - ensure `ASSERTION_CONSTANT_SUFFIX` exactly matches the referenced `ASSERTION_*` constant suffix
    - ensure Foundry wrapper is named `invariant_assertion_failure_targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>`
    - ensure wrapper suffix exactly matches handler identifier so canonical id remains `targetFunctionName`
-   - for legacy multi-assert handlers, prefer rename-only fixes and preserve behavior; do not force splitting unless explicitly requested
+   - for legacy multi-assert handlers, prefer behavior-preserving fixes; if split/helper choices are ambiguous, ask the user which style they want
 
 ## Completion checklist
 
@@ -325,4 +325,5 @@ Done means all are true:
 9. PR URL is recorded in final report; include tracking issue URL only if one was explicitly requested
 10. all assertion failure reasons are constants in `Properties.sol` and all begin with `!!!`
 11. every assertion handler `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>` has at least one matching wrapper in `CryticToFoundry.sol`; legacy multi-assert handlers may also keep additional per-assertion wrappers without splitting handler logic
-12. assertion failures normalize to `targetFunctionName` across Echidna, Medusa, and Foundry
+12. when helper-method extraction or handler splitting is ambiguous, user preference was confirmed before applying structural refactors
+13. assertion failures normalize to `targetFunctionName` across Echidna, Medusa, and Foundry
