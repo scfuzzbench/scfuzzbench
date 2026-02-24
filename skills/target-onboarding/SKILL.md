@@ -49,10 +49,14 @@ Optional:
    - no inline assertion reason literals in harness files (for example `CryticToFoundry.sol`)
    - every assertion failure reason value must start with `!!!` (required by `_isAssertion` routing in `CryticToFoundry`)
 9. Assertion naming normalization rule:
-   - assertion handler functions must use `targetFunctionName_ASSERTION_<ID>(...)`
-   - Foundry wrappers must use `invariant_assertion_failure_targetFunctionName_ASSERTION_<ID>()`
-   - wrapper suffix after `invariant_assertion_failure_` must exactly match the handler identifier (`targetFunctionName_ASSERTION_<ID>`)
-   - canonical cross-fuzzer identifier for assertions is always `targetFunctionName` (strip `_ASSERTION_<ID>` and strip Foundry wrapper prefix)
+   - assertion handler functions must use `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>(...)`
+   - `ASSERTION_CONSTANT_SUFFIX` must exactly match the referenced `ASSERTION_*` constant suffix
+     - example: `ASSERTION_WITHDRAW_DOS` -> `iSpoke_withdraw_ASSERTION_WITHDRAW_DOS(...)`
+   - Foundry wrappers must use `invariant_assertion_failure_targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>()`
+     - example: `iSpoke_withdraw_ASSERTION_WITHDRAW_DOS` -> `invariant_assertion_failure_iSpoke_withdraw_ASSERTION_WITHDRAW_DOS()`
+   - wrapper suffix after `invariant_assertion_failure_` must exactly match the handler identifier (`targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>`)
+   - canonical cross-fuzzer identifier for assertions is always `targetFunctionName` (strip `_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>` and strip Foundry wrapper prefix)
+     - example: `iSpoke_withdraw_ASSERTION_WITHDRAW_DOS` -> `iSpoke_withdraw`
 
 ## Workflow
 
@@ -99,15 +103,17 @@ Because assertion failures can be hidden in invariant output, enforce:
 3. maintain `mapping(string => bool) assertionFailures`
 4. override assert helpers (`gt/gte/lt/lte/eq/t`) to route assertion reasons through `_recordAssertion`
 5. include `_isAssertion(string memory reason)` and use it to distinguish assertion failures from global invariant checks
-6. name assertion handlers as `targetFunctionName_ASSERTION_<ID>(...)` (examples: `iHub_mintFeeShares_ASSERTION_PPS_CHANGE`, `assert_canary_ASSERTION_CANARY`)
-7. add one wrapper `invariant_assertion_failure_targetFunctionName_ASSERTION_<ID>()` per assertion handler identifier
+6. name assertion handlers as `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>(...)`
+   - `ASSERTION_CONSTANT_SUFFIX` must exactly match the referenced `ASSERTION_*` constant suffix
+   - examples: `iHub_mintFeeShares_ASSERTION_MINT_FEE_SHARES_PPS_CHANGE`, `iSpoke_withdraw_ASSERTION_WITHDRAW_DOS`, `assert_canary_ASSERTION_CANARY`
+7. add one wrapper `invariant_assertion_failure_targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>()` per assertion handler identifier
 8. wrappers must only check `assertionFailures[ASSERTION_*]` and must not trigger actions directly
 9. wrapper suffix after `invariant_assertion_failure_` must exactly match the assertion handler identifier
 10. `setUp()` must include handler routing (`targetContract`, multiple `targetSender` values)
 11. do not pre-seed assertion failures in `setUp()` (no hardcoded `_recordAssertion(false, ...)`)
 12. local review must confirm canonical identifier compatibility:
     - Echidna/Medusa report handler name (`targetFunctionName(...)`)
-    - Foundry reports wrapper name (`invariant_assertion_failure_targetFunctionName_ASSERTION_<ID>`)
+    - Foundry reports wrapper name (`invariant_assertion_failure_targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>`)
     - canonical dedup key is `targetFunctionName`
 
 Reference pattern: https://github.com/foundry-rs/foundry/issues/13322
@@ -239,7 +245,7 @@ timeout 300 medusa fuzz --config medusa.json --timeout 300
 timeout 300 forge test --match-contract CryticToFoundry --match-test 'invariant_' -vv
 ```
 
-Do not mark onboarding complete based only on a 10-minute run. Completion is tied to the 5-minute 2-canary acceptance gate above.
+Completion is tied to the 5-minute 2-canary acceptance gate above.
 
 Debug-only fallback for Foundry output inspection:
 
@@ -293,8 +299,9 @@ Typical fields:
    - enforce naming rule across inherited recon properties too: `invariant_*` must be no-arg, parameterized globals must be `global_*`
    - keep global checks out of `property_` and `crytic_`
 7. Broken-invariant overlap shows assertion bugs as Foundry-only (`invariant_assertion_failure_*`)
-   - ensure assertion handler is named `targetFunctionName_ASSERTION_<ID>`
-   - ensure Foundry wrapper is named `invariant_assertion_failure_targetFunctionName_ASSERTION_<ID>`
+   - ensure assertion handler is named `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>`
+   - ensure `ASSERTION_CONSTANT_SUFFIX` exactly matches the referenced `ASSERTION_*` constant suffix
+   - ensure Foundry wrapper is named `invariant_assertion_failure_targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>`
    - ensure wrapper suffix exactly matches handler identifier so canonical id remains `targetFunctionName`
 
 ## Completion checklist
@@ -310,5 +317,5 @@ Done means all are true:
 8. exact `/start` JSON is provided
 9. PR URL is recorded in final report; include tracking issue URL only if one was explicitly requested
 10. all assertion failure reasons are constants in `Properties.sol` and all begin with `!!!`
-11. every assertion handler `targetFunctionName_ASSERTION_<ID>` has a matching wrapper `invariant_assertion_failure_targetFunctionName_ASSERTION_<ID>` in `CryticToFoundry.sol`
+11. every assertion handler `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>` has a matching wrapper `invariant_assertion_failure_targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>` in `CryticToFoundry.sol`
 12. assertion failures normalize to `targetFunctionName` across Echidna, Medusa, and Foundry
