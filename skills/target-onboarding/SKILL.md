@@ -47,7 +47,12 @@ Optional:
 8. Assertion reason centralization rule:
    - every assertion failure reason must be declared in `Properties.sol` as a `string constant`
    - no inline assertion reason literals in harness files (for example `CryticToFoundry.sol`)
-   - every assertion failure reason value must start with `!!!`
+   - every assertion failure reason value must start with `!!!` (required by `_isAssertion` routing in `CryticToFoundry`)
+9. Assertion naming normalization rule:
+   - assertion handler functions must use `targetFunctionName_ASSERTION_<ID>(...)`
+   - Foundry wrappers must use `invariant_assertion_failure_targetFunctionName_ASSERTION_<ID>()`
+   - wrapper suffix after `invariant_assertion_failure_` must exactly match the handler identifier (`targetFunctionName_ASSERTION_<ID>`)
+   - canonical cross-fuzzer identifier for assertions is always `targetFunctionName` (strip `_ASSERTION_<ID>` and strip Foundry wrapper prefix)
 
 ## Workflow
 
@@ -90,16 +95,20 @@ corpus_dir = "corpus/foundry"
 
 Because assertion failures can be hidden in invariant output, enforce:
 1. keep all assertion reason strings in `Properties.sol` as `string constant ASSERTION_* = "!!! ...";`
-2. assertion reason strings must be prefixed with `!!!` (including canaries)
+2. assertion reason strings must be prefixed with `!!!` (including canaries), because `_isAssertion` uses this marker to classify failures
 3. maintain `mapping(string => bool) assertionFailures`
 4. override assert helpers (`gt/gte/lt/lte/eq/t`) to route assertion reasons through `_recordAssertion`
 5. include `_isAssertion(string memory reason)` and use it to distinguish assertion failures from global invariant checks
-6. add one `invariant_assertion_failure_*` wrapper per assertion constant
-7. wrappers must only check `assertionFailures[ASSERTION_*]` and must not trigger actions directly
-8. `setUp()` must include handler routing (`targetContract`, multiple `targetSender` values)
-9. include `assert_canary(uint256 entropy)` for the assertion canary trigger path
-10. include `invariant_assertion_failure_CANARY` as a wrapper that checks `assertionFailures` only
+6. name assertion handlers as `targetFunctionName_ASSERTION_<ID>(...)` (examples: `iHub_mintFeeShares_ASSERTION_PPS_CHANGE`, `assert_canary_ASSERTION_CANARY`)
+7. add one wrapper `invariant_assertion_failure_targetFunctionName_ASSERTION_<ID>()` per assertion handler identifier
+8. wrappers must only check `assertionFailures[ASSERTION_*]` and must not trigger actions directly
+9. wrapper suffix after `invariant_assertion_failure_` must exactly match the assertion handler identifier
+10. `setUp()` must include handler routing (`targetContract`, multiple `targetSender` values)
 11. do not pre-seed assertion failures in `setUp()` (no hardcoded `_recordAssertion(false, ...)`)
+12. local review must confirm canonical identifier compatibility:
+    - Echidna/Medusa report handler name (`targetFunctionName(...)`)
+    - Foundry reports wrapper name (`invariant_assertion_failure_targetFunctionName_ASSERTION_<ID>`)
+    - canonical dedup key is `targetFunctionName`
 
 Reference pattern: https://github.com/foundry-rs/foundry/issues/13322
 
@@ -107,9 +116,10 @@ Reference pattern: https://github.com/foundry-rs/foundry/issues/13322
 
 Add these canaries to each target harness:
 1. Assertion canary:
-   - helper/action function: `assert_canary(uint256 entropy)`
+   - helper/action function: `assert_canary_ASSERTION_CANARY(uint256 entropy)`
    - assertion reason string: `!!! canary assertion`
-   - Foundry wrapper invariant: `invariant_assertion_failure_CANARY` (do not call `assert_canary` from inside this wrapper)
+   - Foundry wrapper invariant: `invariant_assertion_failure_assert_canary_ASSERTION_CANARY` (do not call `assert_canary_ASSERTION_CANARY` from inside this wrapper)
+   - canonical assertion identifier: `assert_canary`
 2. Global invariant canary:
    - invariant function name must start with `invariant_`
    - canary invariant must take no parameters
@@ -122,7 +132,7 @@ Reference implementation:
 string constant ASSERTION_CANARY = "!!! canary assertion";
 string constant INVARIANT_CANARY_GLOBAL_INVARIANT_FAILURE = "Canary invariant";
 
-function assert_canary(uint256 entropy) public {
+function assert_canary_ASSERTION_CANARY(uint256 entropy) public {
     t(entropy > 0, ASSERTION_CANARY);
 }
 
@@ -155,7 +165,7 @@ function _recordAssertion(bool ok, string memory reason) internal {
     }
 }
 
-function invariant_assertion_failure_CANARY() public view {
+function invariant_assertion_failure_assert_canary_ASSERTION_CANARY() public view {
     assertTrue(
         !assertionFailures[ASSERTION_CANARY],
         ASSERTION_CANARY
@@ -166,6 +176,7 @@ function invariant_assertion_failure_CANARY() public view {
 Both canaries are intentional failures used to verify:
 1. all fuzzers emit failures on the target
 2. the analysis/parser pipeline is capturing failures correctly
+3. normalized assertion id consistency across fuzzers (`assert_canary`)
 
 ### 6) Fuzzer-specific path rules
 
@@ -210,10 +221,10 @@ Run all:
 6. Ensure `CryticToFoundry.sol` has no `test_*` repro/unit tests
 7. Canary smoke checks must fail within the smoke trial window:
    - `FOUNDRY_INVARIANT_CONTINUOUS_RUN=false forge test --match-contract CryticToFoundry --match-test invariant_canary -vv`
-   - `FOUNDRY_INVARIANT_CONTINUOUS_RUN=false forge test --match-contract CryticToFoundry --match-test 'invariant_assertion_failure_CANARY' -vv`
+   - `FOUNDRY_INVARIANT_CONTINUOUS_RUN=false forge test --match-contract CryticToFoundry --match-test 'invariant_assertion_failure_assert_canary_ASSERTION_CANARY' -vv`
 8. Acceptance gate: each fuzzer must report at least 2 bugs within 5 minutes:
    - one bug for `invariant_canary` (`Canary invariant`)
-   - one bug for the assertion canary (`!!! canary assertion` via `assert_canary` / `invariant_assertion_failure_CANARY`)
+   - one bug for the assertion canary (`!!! canary assertion` via `assert_canary_ASSERTION_CANARY` / `invariant_assertion_failure_assert_canary_ASSERTION_CANARY`), with canonical id `assert_canary`
 
 Suggested 5-minute commands:
 
@@ -281,6 +292,10 @@ Typical fields:
    - enforce `testMode: "assertion"` with `prefix: "echidna_"` in `echidna.yaml`
    - enforce naming rule across inherited recon properties too: `invariant_*` must be no-arg, parameterized globals must be `global_*`
    - keep global checks out of `property_` and `crytic_`
+7. Broken-invariant overlap shows assertion bugs as Foundry-only (`invariant_assertion_failure_*`)
+   - ensure assertion handler is named `targetFunctionName_ASSERTION_<ID>`
+   - ensure Foundry wrapper is named `invariant_assertion_failure_targetFunctionName_ASSERTION_<ID>`
+   - ensure wrapper suffix exactly matches handler identifier so canonical id remains `targetFunctionName`
 
 ## Completion checklist
 
@@ -295,4 +310,5 @@ Done means all are true:
 8. exact `/start` JSON is provided
 9. PR URL is recorded in final report; include tracking issue URL only if one was explicitly requested
 10. all assertion failure reasons are constants in `Properties.sol` and all begin with `!!!`
-11. every assertion constant has a matching `invariant_assertion_failure_*` wrapper in `CryticToFoundry.sol`
+11. every assertion handler `targetFunctionName_ASSERTION_<ID>` has a matching wrapper `invariant_assertion_failure_targetFunctionName_ASSERTION_<ID>` in `CryticToFoundry.sol`
+12. assertion failures normalize to `targetFunctionName` across Echidna, Medusa, and Foundry
