@@ -23,11 +23,17 @@ def main() -> int:
 
     exclude = {item.strip().lower() for item in args.exclude_fuzzers.split(",") if item.strip()}
     events = analyze.parse_logs(args.logs_dir, args.run_id)
+    throughput_samples = analyze.parse_throughput_logs(args.logs_dir, args.run_id)
     if exclude:
         events = [
             event
             for event in events
             if event.fuzzer.lower() not in exclude and event.fuzzer_label.lower() not in exclude
+        ]
+        throughput_samples = [
+            sample
+            for sample in throughput_samples
+            if sample.fuzzer.lower() not in exclude and sample.fuzzer_label.lower() not in exclude
         ]
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -35,6 +41,8 @@ def main() -> int:
     analyze.write_summary_csv(events, args.out_dir / "summary.csv")
     analyze.write_overlap_csv(events, args.out_dir / "overlap.csv")
     analyze.write_exclusive_csv(events, args.out_dir / "exclusive.csv")
+    analyze.write_throughput_samples_csv(throughput_samples, args.out_dir / "throughput_samples.csv")
+    analyze.write_throughput_summary_csv(throughput_samples, args.out_dir / "throughput_summary.csv")
     return 0
 
 

@@ -710,6 +710,7 @@ def main() -> int:
         memory_chart_key = f"{r.analysis_prefix}/memory_usage_over_time.png"
         broken_md_key = f"{r.analysis_prefix}/broken_invariants.md"
         broken_csv_key = f"{r.analysis_prefix}/broken_invariants.csv"
+        throughput_summary_csv_key = f"{r.analysis_prefix}/throughput_summary.csv"
         runner_md_key = f"{r.analysis_prefix}/runner_resource_usage.md"
         runner_summary_csv_key = f"{r.analysis_prefix}/runner_resource_summary.csv"
         runner_timeseries_csv_key = f"{r.analysis_prefix}/runner_resource_timeseries.csv"
@@ -727,6 +728,10 @@ def main() -> int:
         )
         has_broken_csv = (
             r.analysis_kind == "analysis" and head_exists(bucket, broken_csv_key, profile=profile)
+        )
+        has_throughput_summary_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, throughput_summary_csv_key, profile=profile)
         )
         has_runner_md = (
             r.analysis_kind == "analysis" and head_exists(bucket, runner_md_key, profile=profile)
@@ -844,6 +849,8 @@ def main() -> int:
                 lines.append("- Broken invariants (Markdown): " + f"{analysis_base}/broken_invariants.md")
             if has_broken_csv:
                 lines.append("- Broken invariants (CSV): " + f"{analysis_base}/broken_invariants.csv")
+            if has_throughput_summary_csv:
+                lines.append("- Throughput summary (CSV): " + f"{analysis_base}/throughput_summary.csv")
             if has_runner_md:
                 lines.append("- Runner resource usage (Markdown): " + f"{analysis_base}/runner_resource_usage.md")
             if has_runner_summary_csv:

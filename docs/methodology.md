@@ -139,6 +139,8 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - `summary.csv` (run-level aggregates)
   - `overlap.csv` (cross-fuzzer Jaccard overlap)
   - `exclusive.csv` (events found by exactly one fuzzer)
+  - `throughput_samples.csv` (raw tx/s and gas/s samples recovered from logs when available)
+  - `throughput_summary.csv` (per-fuzzer tx/s and gas/s distribution summary)
 
 ### Cumulative conversion (`analysis/events_to_cumulative.py`)
 
@@ -161,6 +163,7 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - time-to-k median + reach rate
   - final distribution (median + IQR)
 - Note: these report scorecards are count-based. They do not score severity or root-cause uniqueness.
+- If `throughput_summary.csv` is present, the report also includes tx/s and gas/s summary tables.
 - Emits:
   - `REPORT.md`
   - `bugs_over_time.png`

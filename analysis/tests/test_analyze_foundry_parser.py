@@ -48,6 +48,34 @@ class FoundryParserTests(unittest.TestCase):
         events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
         self.assertEqual(events, [])
 
+    def test_parses_throughput_from_json_cumulative_metrics(self):
+        log_path = self.write_log(
+            [
+                '{"type":"invariant_metrics","timestamp":100,"invariant":"invariant_a","metrics":{"cumulative_tx_count":20,"cumulative_gas_used":2000}}',
+                '{"type":"invariant_metrics","timestamp":110,"invariant":"invariant_a","metrics":{"cumulative_tx_count":140,"cumulative_gas_used":15400}}',
+            ]
+        )
+
+        samples = analyze.parse_throughput_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0].source, "json-cumulative")
+        self.assertAlmostEqual(samples[0].elapsed_seconds, 10.0)
+        self.assertAlmostEqual(samples[0].tx_per_second, 14.0)
+        self.assertAlmostEqual(samples[0].gas_per_second, 1540.0)
+
+    def test_parses_throughput_from_json_rate_metrics(self):
+        log_path = self.write_log(
+            [
+                '{"type":"invariant_metrics","timestamp":200,"invariant":"invariant_a","metrics":{"tx_per_second":11.5,"gas_per_second":900}}',
+            ]
+        )
+
+        samples = analyze.parse_throughput_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0].source, "json-rate")
+        self.assertAlmostEqual(samples[0].tx_per_second, 11.5)
+        self.assertAlmostEqual(samples[0].gas_per_second, 900.0)
+
 
 if __name__ == "__main__":
     unittest.main()

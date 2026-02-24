@@ -2,6 +2,7 @@
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import statistics
@@ -10,7 +11,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 LOG_FILE_RE = re.compile(r".+\.log$")
 INSTANCE_PREFIX_RE = re.compile(r"^(i-[0-9a-f]+)-(.*)$")
@@ -20,6 +21,58 @@ FOUNDATION_JSON_RE = re.compile(r"^\s*\{.*\}\s*$")
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 FALSIFIED_RE = re.compile(r"Test\s+([^\s]+)\s+falsified!")
 ECHIDNA_FAILED_RE = re.compile(r"^([A-Za-z0-9_]+)\([^)]*\):\s+failed!")
+TX_RATE_PATTERNS = [
+    re.compile(r"(?i)(?:tx|txn|transactions?|calls?)\s*(?:/|per)\s*s(?:ec(?:ond)?)?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)"),
+    re.compile(r"(?i)([0-9]+(?:\.[0-9]+)?)\s*(?:tx|txn|transactions?|calls?)\s*/\s*s(?:ec(?:ond)?)?\b"),
+]
+GAS_RATE_PATTERNS = [
+    re.compile(r"(?i)gas\s*(?:/|per)\s*s(?:ec(?:ond)?)?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)"),
+    re.compile(r"(?i)([0-9]+(?:\.[0-9]+)?)\s*gas\s*/\s*s(?:ec(?:ond)?)?\b"),
+]
+
+TX_RATE_KEYS = (
+    "tx_per_second",
+    "tx_per_sec",
+    "txps",
+    "tps",
+    "transactions_per_second",
+    "transactions_per_sec",
+    "calls_per_second",
+    "calls_per_sec",
+)
+GAS_RATE_KEYS = (
+    "gas_per_second",
+    "gas_per_sec",
+    "gasps",
+    "gps",
+    "gas_used_per_second",
+    "gas_spent_per_second",
+)
+TX_COUNT_KEYS = (
+    "cumulative_tx_count",
+    "cumulative_txs",
+    "cumulative_transactions",
+    "total_tx_count",
+    "total_transactions",
+    "total_txs",
+    "tx_count",
+    "transaction_count",
+    "transactions",
+    "txs",
+    "total_calls",
+    "cumulative_calls",
+    "calls",
+)
+GAS_COUNT_KEYS = (
+    "cumulative_gas_spent",
+    "cumulative_gas_used",
+    "cumulative_gas",
+    "total_gas_spent",
+    "total_gas_used",
+    "total_gas",
+    "gas_spent",
+    "gas_used",
+)
 
 
 @dataclass(frozen=True)
@@ -30,6 +83,19 @@ class Event:
     fuzzer_label: str
     event: str
     elapsed_seconds: float
+    source: str
+    log_path: str
+
+
+@dataclass(frozen=True)
+class ThroughputSample:
+    run_id: str
+    instance_id: str
+    fuzzer: str
+    fuzzer_label: str
+    elapsed_seconds: float
+    tx_per_second: Optional[float]
+    gas_per_second: Optional[float]
     source: str
     log_path: str
 
@@ -89,6 +155,116 @@ def normalize_fuzzer(fuzzer_label: str) -> str:
     if "foundry" in lower:
         return "foundry"
     return fuzzer_label
+
+
+def parse_optional_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    return None
+
+
+def normalize_metric_key(key: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+
+
+def flatten_numeric_values(payload: Any, prefix: str = "") -> Dict[str, float]:
+    values: Dict[str, float] = {}
+    if isinstance(payload, dict):
+        for raw_key, raw_value in payload.items():
+            key = normalize_metric_key(str(raw_key))
+            if not key:
+                continue
+            nested = f"{prefix}_{key}" if prefix else key
+            values.update(flatten_numeric_values(raw_value, nested))
+        return values
+    value = parse_optional_float(payload)
+    if value is not None and prefix:
+        values[prefix] = value
+    return values
+
+
+def pick_metric_value(metric_values: Dict[str, float], keys: Tuple[str, ...]) -> Optional[float]:
+    # Prefer exact/suffix key matches (e.g. "metrics_tx_per_second"), then substring matches.
+    for key in keys:
+        for metric_key, value in metric_values.items():
+            if metric_key == key or metric_key.endswith(f"_{key}"):
+                return value
+    for key in keys:
+        for metric_key, value in metric_values.items():
+            if key in metric_key:
+                return value
+    return None
+
+
+def parse_rate_from_text(line: str, patterns: List[re.Pattern[str]]) -> Optional[float]:
+    for pattern in patterns:
+        match = pattern.search(line)
+        if not match:
+            continue
+        value = parse_optional_float(match.group(1))
+        if value is not None:
+            return value
+    return None
+
+
+def parse_throughput_from_payload(
+    payload: Dict[str, Any], elapsed_seconds: Optional[float]
+) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+    metric_values = flatten_numeric_values(payload)
+    tx_rate = pick_metric_value(metric_values, TX_RATE_KEYS)
+    gas_rate = pick_metric_value(metric_values, GAS_RATE_KEYS)
+
+    source = None
+    if tx_rate is not None or gas_rate is not None:
+        source = "json-rate"
+
+    tx_count = pick_metric_value(metric_values, TX_COUNT_KEYS)
+    gas_count = pick_metric_value(metric_values, GAS_COUNT_KEYS)
+    needs_count_derivation = (tx_rate is None and tx_count is not None) or (
+        gas_rate is None and gas_count is not None
+    )
+    if (
+        elapsed_seconds is not None
+        and elapsed_seconds > 0.0
+        and needs_count_derivation
+    ):
+        if tx_rate is None and tx_count is not None:
+            tx_rate = tx_count / elapsed_seconds
+        if gas_rate is None and gas_count is not None:
+            gas_rate = gas_count / elapsed_seconds
+        if tx_rate is not None or gas_rate is not None:
+            source = "json-cumulative" if source is None else source
+
+    if tx_rate is None and gas_rate is None:
+        return None, None, None
+    return tx_rate, gas_rate, source
+
+
+def percentile(values: List[float], p: float) -> float:
+    if not values:
+        return float("nan")
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * (p / 100.0)
+    low = int(math.floor(rank))
+    high = int(math.ceil(rank))
+    if low == high:
+        return ordered[low]
+    fraction = rank - low
+    return ordered[low] + (ordered[high] - ordered[low]) * fraction
 
 
 def extract_bang_event(line: str) -> Optional[str]:
@@ -332,6 +508,82 @@ def parse_generic_log(
     return events
 
 
+def parse_throughput_log(
+    path: Path, run_id: str, instance_id: str, fuzzer_label: str
+) -> List[ThroughputSample]:
+    samples: List[ThroughputSample] = []
+    first_ts: Optional[float] = None
+    last_elapsed: Optional[float] = None
+    previous_key: Optional[Tuple[float, Optional[float], Optional[float]]] = None
+
+    with path.open("r", errors="ignore") as handle:
+        for line in handle:
+            clean_line = ANSI_ESCAPE_RE.sub("", line)
+
+            elapsed_match = MEDUSA_ELAPSED_RE.search(clean_line)
+            if elapsed_match:
+                elapsed_value = parse_duration(elapsed_match.group(1))
+                if elapsed_value is not None:
+                    last_elapsed = float(elapsed_value)
+
+            payload: Optional[Dict[str, Any]] = None
+            if FOUNDATION_JSON_RE.match(clean_line):
+                try:
+                    parsed = json.loads(clean_line)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    payload = parsed
+
+            source: Optional[str] = None
+            tx_rate: Optional[float] = None
+            gas_rate: Optional[float] = None
+            elapsed_seconds: Optional[float] = last_elapsed
+
+            if payload is not None:
+                ts_value = parse_optional_float(payload.get("timestamp"))
+                if ts_value is not None:
+                    if first_ts is None:
+                        first_ts = ts_value
+                    elapsed_seconds = max(0.0, ts_value - first_ts)
+                    last_elapsed = elapsed_seconds
+                tx_rate, gas_rate, source = parse_throughput_from_payload(payload, elapsed_seconds)
+            else:
+                tx_rate = parse_rate_from_text(clean_line, TX_RATE_PATTERNS)
+                gas_rate = parse_rate_from_text(clean_line, GAS_RATE_PATTERNS)
+                if tx_rate is not None or gas_rate is not None:
+                    source = "text-rate"
+
+            if tx_rate is None and gas_rate is None:
+                continue
+            if elapsed_seconds is None:
+                continue
+
+            key = (
+                round(float(elapsed_seconds), 3),
+                None if tx_rate is None else round(tx_rate, 12),
+                None if gas_rate is None else round(gas_rate, 12),
+            )
+            if key == previous_key:
+                continue
+            previous_key = key
+
+            samples.append(
+                ThroughputSample(
+                    run_id=run_id,
+                    instance_id=instance_id,
+                    fuzzer=normalize_fuzzer(fuzzer_label),
+                    fuzzer_label=fuzzer_label,
+                    elapsed_seconds=float(elapsed_seconds),
+                    tx_per_second=None if tx_rate is None else float(tx_rate),
+                    gas_per_second=None if gas_rate is None else float(gas_rate),
+                    source=source or "unknown",
+                    log_path=str(path),
+                )
+            )
+    return samples
+
+
 def parse_logs(logs_dir: Path, run_id: Optional[str]) -> List[Event]:
     events: List[Event] = []
     run_id_value = run_id or infer_run_id(logs_dir) or "unknown"
@@ -365,6 +617,23 @@ def parse_logs(logs_dir: Path, run_id: Optional[str]) -> List[Event]:
         else:
             events.extend(parse_generic_log(path, run_id_value, instance_id, fuzzer_label))
     return events
+
+
+def parse_throughput_logs(logs_dir: Path, run_id: Optional[str]) -> List[ThroughputSample]:
+    samples: List[ThroughputSample] = []
+    run_id_value = run_id or infer_run_id(logs_dir) or "unknown"
+    for path in logs_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        if not LOG_FILE_RE.match(path.name):
+            continue
+        rel = path.relative_to(logs_dir)
+        if len(rel.parts) < 2:
+            continue
+        instance_label = rel.parts[0]
+        instance_id, fuzzer_label = split_instance_label(instance_label)
+        samples.extend(parse_throughput_log(path, run_id_value, instance_id, fuzzer_label))
+    return samples
 
 
 def write_events_csv(events: Iterable[Event], out_path: Path) -> None:
@@ -420,6 +689,117 @@ def load_events_csv(path: Path) -> List[Event]:
                 )
             )
     return events
+
+
+def write_throughput_samples_csv(samples: Iterable[ThroughputSample], out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "run_id",
+                "instance_id",
+                "fuzzer",
+                "fuzzer_label",
+                "elapsed_seconds",
+                "tx_per_second",
+                "gas_per_second",
+                "source",
+                "log_path",
+            ]
+        )
+        for sample in samples:
+            writer.writerow(
+                [
+                    sample.run_id,
+                    sample.instance_id,
+                    sample.fuzzer,
+                    sample.fuzzer_label,
+                    f"{sample.elapsed_seconds:.3f}",
+                    "" if sample.tx_per_second is None else f"{sample.tx_per_second:.6f}",
+                    "" if sample.gas_per_second is None else f"{sample.gas_per_second:.6f}",
+                    sample.source,
+                    sample.log_path,
+                ]
+            )
+
+
+def write_throughput_summary_csv(samples: Iterable[ThroughputSample], out_path: Path) -> None:
+    per_fuzzer_runs: Dict[str, Dict[str, Dict[str, Optional[float]]]] = defaultdict(dict)
+
+    for sample in samples:
+        run_key = f"{sample.run_id}:{sample.instance_id}:{sample.fuzzer_label}"
+        run_state = per_fuzzer_runs[sample.fuzzer].setdefault(
+            run_key,
+            {
+                "tx_per_second": None,
+                "tx_elapsed": None,
+                "gas_per_second": None,
+                "gas_elapsed": None,
+            },
+        )
+
+        tx_elapsed = run_state["tx_elapsed"]
+        if sample.tx_per_second is not None and (
+            tx_elapsed is None or sample.elapsed_seconds >= tx_elapsed
+        ):
+            run_state["tx_per_second"] = sample.tx_per_second
+            run_state["tx_elapsed"] = sample.elapsed_seconds
+
+        gas_elapsed = run_state["gas_elapsed"]
+        if sample.gas_per_second is not None and (
+            gas_elapsed is None or sample.elapsed_seconds >= gas_elapsed
+        ):
+            run_state["gas_per_second"] = sample.gas_per_second
+            run_state["gas_elapsed"] = sample.elapsed_seconds
+
+    def fmt(value: float) -> str:
+        return f"{value:.6f}"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "fuzzer",
+                "runs",
+                "txps_runs",
+                "gasps_runs",
+                "txps_p50",
+                "txps_p25",
+                "txps_p75",
+                "gasps_p50",
+                "gasps_p25",
+                "gasps_p75",
+            ]
+        )
+        for fuzzer in sorted(per_fuzzer_runs):
+            run_values = per_fuzzer_runs[fuzzer]
+            tx_values = [
+                float(run_state["tx_per_second"])
+                for run_state in run_values.values()
+                if run_state["tx_per_second"] is not None
+            ]
+            gas_values = [
+                float(run_state["gas_per_second"])
+                for run_state in run_values.values()
+                if run_state["gas_per_second"] is not None
+            ]
+
+            writer.writerow(
+                [
+                    fuzzer,
+                    len(run_values),
+                    len(tx_values),
+                    len(gas_values),
+                    "" if not tx_values else fmt(percentile(tx_values, 50)),
+                    "" if not tx_values else fmt(percentile(tx_values, 25)),
+                    "" if not tx_values else fmt(percentile(tx_values, 75)),
+                    "" if not gas_values else fmt(percentile(gas_values, 50)),
+                    "" if not gas_values else fmt(percentile(gas_values, 25)),
+                    "" if not gas_values else fmt(percentile(gas_values, 75)),
+                ]
+            )
 
 
 def build_runs(events: Iterable[Event]) -> Dict[str, Dict[str, List[float]]]:
@@ -564,14 +944,19 @@ def main() -> int:
     if args.command == "run":
         out_dir: Path = args.out_dir
         events = parse_logs(args.logs_dir, args.run_id)
+        throughput_samples = parse_throughput_logs(args.logs_dir, args.run_id)
         events_csv = out_dir / "events.csv"
         summary_csv = out_dir / "summary.csv"
         overlap_csv = out_dir / "overlap.csv"
         exclusive_csv = out_dir / "exclusive.csv"
+        throughput_samples_csv = out_dir / "throughput_samples.csv"
+        throughput_summary_csv = out_dir / "throughput_summary.csv"
         write_events_csv(events, events_csv)
         write_summary_csv(events, summary_csv)
         write_overlap_csv(events, overlap_csv)
         write_exclusive_csv(events, exclusive_csv)
+        write_throughput_samples_csv(throughput_samples, throughput_samples_csv)
+        write_throughput_summary_csv(throughput_samples, throughput_summary_csv)
         return 0
     return 1
 
