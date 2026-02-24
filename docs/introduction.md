@@ -33,7 +33,7 @@ A fuzzer is considered in-scope when it is:
 - [Aave v4](https://github.com/Recon-Fuzz/aave-v4-scfuzzbench)
 - [Superform v2-periphery](https://github.com/Recon-Fuzz/superform-v2-periphery-scfuzzbench)
 - [Liquity v2 Governance](https://github.com/Recon-Fuzz/liquity-V2-gov-scfuzzbench)
-- [Nerite](https://github.com/Recon-Fuzz/nerite-scfuzzbench) (`dev-recon`)
+- [Nerite](https://github.com/Recon-Fuzz/nerite-scfuzzbench)
 
 ## Notable fuzzers currently excluded
 
