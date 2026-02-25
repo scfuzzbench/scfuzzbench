@@ -35,6 +35,10 @@ BROKEN_INVARIANTS_CSV ?= $(ANALYSIS_OUT_DIR)/broken_invariants.csv
 BROKEN_INVARIANTS_MD ?= $(ANALYSIS_OUT_DIR)/broken_invariants.md
 INVARIANT_OVERLAP_PNG ?= $(IMAGES_OUT_DIR)/invariant_overlap_upset.png
 INVARIANT_TOP_K ?= 20
+THROUGHPUT_SAMPLES_CSV ?= $(ANALYSIS_OUT_DIR)/throughput_samples.csv
+THROUGHPUT_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/throughput_summary.csv
+PROGRESS_METRICS_SAMPLES_CSV ?= $(ANALYSIS_OUT_DIR)/progress_metrics_samples.csv
+PROGRESS_METRICS_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/progress_metrics_summary.csv
 RUNNER_RESOURCE_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/runner_resource_summary.csv
 RUNNER_RESOURCE_TIMESERIES_CSV ?= $(ANALYSIS_OUT_DIR)/runner_resource_timeseries.csv
 RUNNER_RESOURCE_MD ?= $(ANALYSIS_OUT_DIR)/runner_resource_usage.md
@@ -138,7 +142,7 @@ s3-purge-versions:
 	python3 scripts/purge_s3_versions.py --bucket $(BUCKET) $(PROFILE_ARG)
 
 report-benchmark: analysis-venv
-	$(ANALYSIS_PY) analysis/benchmark_report.py --csv $(REPORT_CSV) --report-outdir $(REPORT_OUT_DIR) --images-outdir $(IMAGES_OUT_DIR) $(REPORT_BUDGET_ARG) --grid_step_min $(REPORT_GRID_STEP_MIN) --checkpoints $(REPORT_CHECKPOINTS) --ks $(REPORT_KS) $(if $(REPORT_ANONYMIZE),--anonymize,)
+	$(ANALYSIS_PY) analysis/benchmark_report.py --csv $(REPORT_CSV) --report-outdir $(REPORT_OUT_DIR) --images-outdir $(IMAGES_OUT_DIR) $(REPORT_BUDGET_ARG) --grid_step_min $(REPORT_GRID_STEP_MIN) --checkpoints $(REPORT_CHECKPOINTS) --ks $(REPORT_KS) --throughput-summary-csv $(THROUGHPUT_SUMMARY_CSV) --progress-metrics-summary-csv $(PROGRESS_METRICS_SUMMARY_CSV) $(if $(REPORT_ANONYMIZE),--anonymize,)
 
 report-wide-to-long: analysis-venv
 	$(ANALYSIS_PY) analysis/wide_to_long.py --wide_csv $(WIDE_CSV) --out_csv $(LONG_CSV)

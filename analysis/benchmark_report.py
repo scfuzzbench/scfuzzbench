@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 import argparse
+import csv
 import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import matplotlib
 
@@ -113,6 +114,366 @@ class FuzzerMetrics:
     success_rate_k: Dict[int, float]
     final_p50: int
     final_iqr: float
+
+
+@dataclass
+class ThroughputSummary:
+    fuzzer: str
+    runs: int
+    txps_runs: int
+    gasps_runs: int
+    txps_p50: Optional[float]
+    txps_p25: Optional[float]
+    txps_p75: Optional[float]
+    gasps_p50: Optional[float]
+    gasps_p25: Optional[float]
+    gasps_p75: Optional[float]
+
+
+@dataclass
+class ProgressMetricsSummary:
+    fuzzer: str
+    runs: int
+    seqps_runs: int
+    coverage_runs: int
+    corpus_runs: int
+    favored_runs: int
+    failure_rate_runs: int
+    seqps_p50: Optional[float]
+    seqps_p25: Optional[float]
+    seqps_p75: Optional[float]
+    coverage_p50: Optional[float]
+    coverage_p25: Optional[float]
+    coverage_p75: Optional[float]
+    corpus_p50: Optional[float]
+    corpus_p25: Optional[float]
+    corpus_p75: Optional[float]
+    favored_p50: Optional[float]
+    favored_p25: Optional[float]
+    favored_p75: Optional[float]
+    failure_rate_p50: Optional[float]
+    failure_rate_p25: Optional[float]
+    failure_rate_p75: Optional[float]
+
+
+def parse_optional_float(value: str | None) -> Optional[float]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def parse_int(value: str | None, default: int = 0) -> int:
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return default
+
+
+def load_throughput_summary(path: Path) -> Dict[str, ThroughputSummary]:
+    if not path.exists():
+        return {}
+    rows: Dict[str, ThroughputSummary] = {}
+    with path.open("r", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            fuzzer = str(row.get("fuzzer", "")).strip()
+            if not fuzzer:
+                continue
+            rows[fuzzer] = ThroughputSummary(
+                fuzzer=fuzzer,
+                runs=parse_int(row.get("runs"), 0),
+                txps_runs=parse_int(row.get("txps_runs"), 0),
+                gasps_runs=parse_int(row.get("gasps_runs"), 0),
+                txps_p50=parse_optional_float(row.get("txps_p50")),
+                txps_p25=parse_optional_float(row.get("txps_p25")),
+                txps_p75=parse_optional_float(row.get("txps_p75")),
+                gasps_p50=parse_optional_float(row.get("gasps_p50")),
+                gasps_p25=parse_optional_float(row.get("gasps_p25")),
+                gasps_p75=parse_optional_float(row.get("gasps_p75")),
+            )
+    return rows
+
+
+def load_progress_metrics_summary(path: Path) -> Dict[str, ProgressMetricsSummary]:
+    if not path.exists():
+        return {}
+    rows: Dict[str, ProgressMetricsSummary] = {}
+    with path.open("r", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            fuzzer = str(row.get("fuzzer", "")).strip()
+            if not fuzzer:
+                continue
+            rows[fuzzer] = ProgressMetricsSummary(
+                fuzzer=fuzzer,
+                runs=parse_int(row.get("runs"), 0),
+                seqps_runs=parse_int(row.get("seqps_runs"), 0),
+                coverage_runs=parse_int(row.get("coverage_runs"), 0),
+                corpus_runs=parse_int(row.get("corpus_runs"), 0),
+                favored_runs=parse_int(row.get("favored_runs"), 0),
+                failure_rate_runs=parse_int(row.get("failure_rate_runs"), 0),
+                seqps_p50=parse_optional_float(row.get("seqps_p50")),
+                seqps_p25=parse_optional_float(row.get("seqps_p25")),
+                seqps_p75=parse_optional_float(row.get("seqps_p75")),
+                coverage_p50=parse_optional_float(row.get("coverage_p50")),
+                coverage_p25=parse_optional_float(row.get("coverage_p25")),
+                coverage_p75=parse_optional_float(row.get("coverage_p75")),
+                corpus_p50=parse_optional_float(row.get("corpus_p50")),
+                corpus_p25=parse_optional_float(row.get("corpus_p25")),
+                corpus_p75=parse_optional_float(row.get("corpus_p75")),
+                favored_p50=parse_optional_float(row.get("favored_p50")),
+                favored_p25=parse_optional_float(row.get("favored_p25")),
+                favored_p75=parse_optional_float(row.get("favored_p75")),
+                failure_rate_p50=parse_optional_float(row.get("failure_rate_p50")),
+                failure_rate_p25=parse_optional_float(row.get("failure_rate_p25")),
+                failure_rate_p75=parse_optional_float(row.get("failure_rate_p75")),
+            )
+    return rows
+
+
+def fmt_triplet(p50: Optional[float], p25: Optional[float], p75: Optional[float]) -> str:
+    if p50 is None or p25 is None or p75 is None:
+        return "n/a"
+    return f"{p50:.2f} [{p25:.2f},{p75:.2f}]"
+
+
+def fmt_pct_triplet(p50: Optional[float], p25: Optional[float], p75: Optional[float]) -> str:
+    if p50 is None or p25 is None or p75 is None:
+        return "n/a"
+    return f"{100.0 * p50:.1f}% [{100.0 * p25:.1f}%,{100.0 * p75:.1f}%]"
+
+
+def append_throughput_section(
+    lines: List[str], throughput_by_fuzzer: Dict[str, ThroughputSummary], fuzzer_order: List[str]
+) -> None:
+    if not throughput_by_fuzzer:
+        return
+
+    lines.append("## Throughput metrics (if supported by log format)")
+    lines.append(
+        "Values are run-level rates aggregated per fuzzer; `n/a` indicates the parser could not recover that metric from logs."
+    )
+    header = [
+        "Fuzzer",
+        "Runs",
+        "Tx/s runs",
+        "Tx/s p50 [p25,p75]",
+        "Gas/s runs",
+        "Gas/s p50 [p25,p75]",
+    ]
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("|" + "|".join(["---"] * len(header)) + "|")
+
+    ordered_fuzzers: List[str] = []
+    seen = set()
+    for fuzzer in fuzzer_order:
+        if fuzzer in throughput_by_fuzzer and fuzzer not in seen:
+            ordered_fuzzers.append(fuzzer)
+            seen.add(fuzzer)
+    for fuzzer in sorted(throughput_by_fuzzer):
+        if fuzzer in seen:
+            continue
+        ordered_fuzzers.append(fuzzer)
+
+    for fuzzer in ordered_fuzzers:
+        row = throughput_by_fuzzer[fuzzer]
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    row.fuzzer,
+                    str(row.runs),
+                    str(row.txps_runs),
+                    fmt_triplet(row.txps_p50, row.txps_p25, row.txps_p75),
+                    str(row.gasps_runs),
+                    fmt_triplet(row.gasps_p50, row.gasps_p25, row.gasps_p75),
+                ]
+            )
+            + " |"
+        )
+    lines.append("")
+
+
+def append_progress_metrics_section(
+    lines: List[str],
+    progress_metrics_by_fuzzer: Dict[str, ProgressMetricsSummary],
+    fuzzer_order: List[str],
+) -> None:
+    if not progress_metrics_by_fuzzer:
+        return
+
+    lines.append("## Progress metrics from logs (fuzzer-specific proxies)")
+    lines.append(
+        "Coverage/corpus/favored/failure-rate values are parsed from each fuzzer's native progress output and are useful for trend context, not strict cross-fuzzer equivalence."
+    )
+    header = [
+        "Fuzzer",
+        "Runs",
+        "Seq/s runs",
+        "Seq/s p50 [p25,p75]",
+        "Coverage runs",
+        "Coverage p50 [p25,p75]",
+        "Corpus runs",
+        "Corpus p50 [p25,p75]",
+        "Favored runs",
+        "Favored p50 [p25,p75]",
+        "Failure-rate runs",
+        "Failure-rate p50 [p25,p75]",
+    ]
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("|" + "|".join(["---"] * len(header)) + "|")
+
+    ordered_fuzzers: List[str] = []
+    seen = set()
+    for fuzzer in fuzzer_order:
+        if fuzzer in progress_metrics_by_fuzzer and fuzzer not in seen:
+            ordered_fuzzers.append(fuzzer)
+            seen.add(fuzzer)
+    for fuzzer in sorted(progress_metrics_by_fuzzer):
+        if fuzzer in seen:
+            continue
+        ordered_fuzzers.append(fuzzer)
+
+    for fuzzer in ordered_fuzzers:
+        row = progress_metrics_by_fuzzer[fuzzer]
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    row.fuzzer,
+                    str(row.runs),
+                    str(row.seqps_runs),
+                    fmt_triplet(row.seqps_p50, row.seqps_p25, row.seqps_p75),
+                    str(row.coverage_runs),
+                    fmt_triplet(row.coverage_p50, row.coverage_p25, row.coverage_p75),
+                    str(row.corpus_runs),
+                    fmt_triplet(row.corpus_p50, row.corpus_p25, row.corpus_p75),
+                    str(row.favored_runs),
+                    fmt_triplet(row.favored_p50, row.favored_p25, row.favored_p75),
+                    str(row.failure_rate_runs),
+                    fmt_pct_triplet(
+                        row.failure_rate_p50,
+                        row.failure_rate_p25,
+                        row.failure_rate_p75,
+                    ),
+                ]
+            )
+            + " |"
+        )
+    lines.append("")
+
+
+def plot_progress_metrics_levels(
+    progress_metrics_by_fuzzer: Dict[str, ProgressMetricsSummary],
+    outpath: Path,
+    label_map: dict[str, str] | None,
+) -> None:
+    if not progress_metrics_by_fuzzer:
+        return
+
+    ordered = sorted(progress_metrics_by_fuzzer.keys())
+    fig, axes = plt.subplots(3, 2, figsize=(12, 10))
+    axes_flat = list(axes.flatten())
+
+    metric_specs = [
+        ("Seq/s (p50, IQR)", "seqps_p50", "seqps_p25", "seqps_p75", 1.0),
+        ("Coverage proxy (p50, IQR)", "coverage_p50", "coverage_p25", "coverage_p75", 1.0),
+        ("Corpus size (p50, IQR)", "corpus_p50", "corpus_p25", "corpus_p75", 1.0),
+        ("Favored items (p50, IQR)", "favored_p50", "favored_p25", "favored_p75", 1.0),
+        ("Failure rate % (p50, IQR)", "failure_rate_p50", "failure_rate_p25", "failure_rate_p75", 100.0),
+    ]
+
+    for idx, (title, p50_key, p25_key, p75_key, factor) in enumerate(metric_specs):
+        ax = axes_flat[idx]
+        labels: List[str] = []
+        values: List[float] = []
+        lower: List[float] = []
+        upper: List[float] = []
+        for fuzzer in ordered:
+            row = progress_metrics_by_fuzzer[fuzzer]
+            p50 = getattr(row, p50_key)
+            if p50 is None:
+                continue
+            p25 = getattr(row, p25_key)
+            p75 = getattr(row, p75_key)
+            if p25 is None:
+                p25 = p50
+            if p75 is None:
+                p75 = p50
+            labels.append(label_map.get(fuzzer, fuzzer) if label_map else fuzzer)
+            values.append(p50 * factor)
+            lower.append(max(0.0, (p50 - p25) * factor))
+            upper.append(max(0.0, (p75 - p50) * factor))
+
+        if not values:
+            ax.axis("off")
+            ax.text(0.5, 0.5, "n/a", ha="center", va="center")
+            ax.set_title(title)
+            continue
+
+        x = np.arange(len(values))
+        ax.bar(x, values, color="#5A7D9A", alpha=0.9)
+        ax.errorbar(
+            x,
+            values,
+            yerr=[lower, upper],
+            fmt="none",
+            ecolor="black",
+            capsize=3,
+            elinewidth=1.0,
+        )
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=20, ha="right")
+        ax.set_title(title)
+
+    for idx in range(len(metric_specs), len(axes_flat)):
+        axes_flat[idx].axis("off")
+
+    fig.suptitle("Progress metrics by fuzzer")
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.savefig(outpath, dpi=200)
+    plt.close(fig)
+
+
+def plot_progress_metrics_availability(
+    progress_metrics_by_fuzzer: Dict[str, ProgressMetricsSummary],
+    outpath: Path,
+    label_map: dict[str, str] | None,
+) -> None:
+    if not progress_metrics_by_fuzzer:
+        return
+
+    ordered = sorted(progress_metrics_by_fuzzer.keys())
+    labels = [label_map.get(fuzzer, fuzzer) if label_map else fuzzer for fuzzer in ordered]
+    x = np.arange(len(ordered))
+    metric_specs = [
+        ("Seq/s", "seqps_runs"),
+        ("Coverage", "coverage_runs"),
+        ("Corpus", "corpus_runs"),
+        ("Favored", "favored_runs"),
+        ("Failure rate", "failure_rate_runs"),
+    ]
+    width = 0.8 / len(metric_specs)
+
+    plt.figure(figsize=(10, 5))
+    for idx, (name, attr) in enumerate(metric_specs):
+        vals = [float(getattr(progress_metrics_by_fuzzer[fuzzer], attr)) for fuzzer in ordered]
+        offset = (idx - (len(metric_specs) - 1) / 2.0) * width
+        plt.bar(x + offset, vals, width=width, label=name)
+
+    plt.xticks(x, labels)
+    plt.ylabel("Runs with metric samples")
+    plt.title("Progress metric availability by fuzzer")
+    plt.legend(ncol=3)
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=200)
+    plt.close()
 
 
 def compute_metrics(
@@ -383,6 +744,8 @@ def write_report(
     checkpoints: List[float],
     ks: List[int],
     outpath: Path,
+    throughput_by_fuzzer: Dict[str, ThroughputSummary] | None = None,
+    progress_metrics_by_fuzzer: Dict[str, ProgressMetricsSummary] | None = None,
 ) -> None:
     lines: List[str] = []
     lines.append("# Fuzzer Benchmark Report (from bug-count CSV)")
@@ -450,6 +813,17 @@ def write_report(
         lines.append("| " + " | ".join(row) + " |")
     lines.append("")
 
+    append_throughput_section(
+        lines,
+        throughput_by_fuzzer or {},
+        fuzzer_order=[metric.fuzzer for metric in metrics],
+    )
+    append_progress_metrics_section(
+        lines,
+        progress_metrics_by_fuzzer or {},
+        fuzzer_order=[metric.fuzzer for metric in metrics],
+    )
+
     lines.append("## Shape-based interpretation (rules of thumb)")
     lines.append(
         "- **Fast-start / early-plateau**: high early checkpoint median + early plateau time + low late discovery share."
@@ -484,6 +858,8 @@ def write_no_data_report(
     ks: List[int],
     outpath: Path,
     csv_path: Path,
+    throughput_by_fuzzer: Dict[str, ThroughputSummary] | None = None,
+    progress_metrics_by_fuzzer: Dict[str, ProgressMetricsSummary] | None = None,
 ) -> None:
     lines: List[str] = []
     lines.append("# Fuzzer Benchmark Report (from bug-count CSV)")
@@ -505,6 +881,18 @@ def write_no_data_report(
     lines.append(f"- Checkpoints: {', '.join([f'{t:g}h' for t in checkpoints])}")
     lines.append(f"- ks: {', '.join([str(k) for k in ks])}")
     lines.append("")
+
+    append_throughput_section(
+        lines,
+        throughput_by_fuzzer or {},
+        fuzzer_order=sorted((throughput_by_fuzzer or {}).keys()),
+    )
+    append_progress_metrics_section(
+        lines,
+        progress_metrics_by_fuzzer or {},
+        fuzzer_order=sorted((progress_metrics_by_fuzzer or {}).keys()),
+    )
+
     outpath.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -531,6 +919,25 @@ def main() -> int:
     parser.add_argument("--grid_step_min", type=float, default=6.0)
     parser.add_argument("--checkpoints", type=str, default="1,4,8,24")
     parser.add_argument("--ks", type=str, default="1,3,5")
+    parser.add_argument(
+        "--throughput-summary-csv",
+        type=Path,
+        default=None,
+        help="Optional per-fuzzer throughput summary CSV generated by analysis/analyze.py.",
+    )
+    parser.add_argument(
+        "--progress-metrics-summary-csv",
+        type=Path,
+        default=None,
+        help="Optional per-fuzzer progress metrics summary CSV generated by analysis/analyze.py.",
+    )
+    parser.add_argument(
+        "--additional-metrics-summary-csv",
+        dest="progress_metrics_summary_csv",
+        type=Path,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--anonymize", action="store_true", help="Use generic fuzzer labels in plots.")
     args = parser.parse_args()
 
@@ -542,6 +949,16 @@ def main() -> int:
 
     df = load_csv(args.csv)
     validate_monotonic(df)
+    throughput_by_fuzzer = (
+        load_throughput_summary(args.throughput_summary_csv)
+        if args.throughput_summary_csv is not None
+        else {}
+    )
+    progress_metrics_by_fuzzer = (
+        load_progress_metrics_summary(args.progress_metrics_summary_csv)
+        if args.progress_metrics_summary_csv is not None
+        else {}
+    )
 
     if args.budget is None:
         if df.empty:
@@ -577,6 +994,8 @@ def main() -> int:
             ks=ks,
             outpath=report_outdir / "REPORT.md",
             csv_path=args.csv,
+            throughput_by_fuzzer=throughput_by_fuzzer,
+            progress_metrics_by_fuzzer=progress_metrics_by_fuzzer,
         )
         msg = "No rows in input CSV. This usually means no bugs were found (or parsing produced no events)."
         write_placeholder_plot(
@@ -596,6 +1015,17 @@ def main() -> int:
             images_outdir / "plateau_and_late_share.png",
             msg,
         )
+        if progress_metrics_by_fuzzer:
+            plot_progress_metrics_levels(
+                progress_metrics_by_fuzzer,
+                images_outdir / "progress_metrics_levels.png",
+                label_map=None,
+            )
+            plot_progress_metrics_availability(
+                progress_metrics_by_fuzzer,
+                images_outdir / "progress_metrics_availability.png",
+                label_map=None,
+            )
         print(f"wrote: {report_outdir / 'REPORT.md'} (no data)")
         return 0
 
@@ -613,13 +1043,43 @@ def main() -> int:
     plot_time_to_k(metrics, ks=ks, outpath=images_outdir / "time_to_k.png", label_map=label_map)
     plot_final_distribution(df_grid, images_outdir / "final_distribution.png", label_map)
     plot_plateau_and_late_share(metrics, images_outdir / "plateau_and_late_share.png", label_map)
-    write_report(metrics, budget=budget, checkpoints=checkpoints, ks=ks, outpath=report_outdir / "REPORT.md")
+    if progress_metrics_by_fuzzer:
+        plot_progress_metrics_levels(
+            progress_metrics_by_fuzzer,
+            images_outdir / "progress_metrics_levels.png",
+            label_map=label_map,
+        )
+        plot_progress_metrics_availability(
+            progress_metrics_by_fuzzer,
+            images_outdir / "progress_metrics_availability.png",
+            label_map=label_map,
+        )
+    write_report(
+        metrics,
+        budget=budget,
+        checkpoints=checkpoints,
+        ks=ks,
+        outpath=report_outdir / "REPORT.md",
+        throughput_by_fuzzer=throughput_by_fuzzer,
+        progress_metrics_by_fuzzer=progress_metrics_by_fuzzer,
+    )
 
     print(f"wrote: {report_outdir / 'REPORT.md'}")
-    print(
-        "plots: bugs_over_time.png, bugs_over_time_runs.png, time_to_k.png, "
-        "final_distribution.png, plateau_and_late_share.png"
-    )
+    plot_files = [
+        "bugs_over_time.png",
+        "bugs_over_time_runs.png",
+        "time_to_k.png",
+        "final_distribution.png",
+        "plateau_and_late_share.png",
+    ]
+    if progress_metrics_by_fuzzer:
+        plot_files.extend(
+            [
+                "progress_metrics_levels.png",
+                "progress_metrics_availability.png",
+            ]
+        )
+    print("plots: " + ", ".join(plot_files))
     return 0
 
 
