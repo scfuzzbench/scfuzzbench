@@ -15,6 +15,15 @@ import numpy as np
 import pandas as pd
 
 REQUIRED_COLS = ["fuzzer", "run_id", "time_hours", "bugs_found"]
+REQUIRED_SAMPLE_BASE_COLS = ["fuzzer", "run_id", "instance_id", "elapsed_seconds"]
+THROUGHPUT_SAMPLE_VALUE_COLS = ["tx_per_second", "gas_per_second"]
+PROGRESS_SAMPLE_VALUE_COLS = [
+    "seq_per_second",
+    "coverage_proxy",
+    "corpus_size",
+    "favored_items",
+    "failure_rate",
+]
 
 
 def die(msg: str) -> None:
@@ -235,6 +244,61 @@ def load_progress_metrics_summary(path: Path) -> Dict[str, ProgressMetricsSummar
                 failure_rate_p75=parse_optional_float(row.get("failure_rate_p75")),
             )
     return rows
+
+
+def load_metric_samples_csv(path: Path, value_columns: List[str]) -> pd.DataFrame:
+    if not path.exists():
+        cols = ["fuzzer", "series_id", "time_hours", *value_columns]
+        return pd.DataFrame(columns=cols)
+
+    df = pd.read_csv(path)
+    missing = [c for c in [*REQUIRED_SAMPLE_BASE_COLS, *value_columns] if c not in df.columns]
+    if missing:
+        die(f"missing columns {missing} in sample CSV {path}")
+
+    df["fuzzer"] = df["fuzzer"].astype(str)
+    df["run_id"] = df["run_id"].astype(str)
+    df["instance_id"] = df["instance_id"].astype(str)
+    df["series_id"] = df["run_id"] + ":" + df["instance_id"]
+
+    elapsed_seconds = pd.to_numeric(df["elapsed_seconds"], errors="coerce")
+    df["time_hours"] = elapsed_seconds / 3600.0
+
+    for col in value_columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=["time_hours"])
+    return df[["fuzzer", "series_id", "time_hours", *value_columns]]
+
+
+def resample_metric_samples_to_grid(
+    samples_df: pd.DataFrame, value_column: str, grid: np.ndarray
+) -> pd.DataFrame:
+    if samples_df.empty:
+        return pd.DataFrame(columns=["fuzzer", "series_id", "time_hours", value_column])
+
+    out: List[pd.DataFrame] = []
+    for (fuzzer, series_id), group in samples_df.groupby(["fuzzer", "series_id"], sort=False):
+        g = group[["time_hours", value_column]].dropna()
+        if g.empty:
+            continue
+        g = g.sort_values("time_hours")
+        g = g.groupby("time_hours", as_index=False)[value_column].mean()
+        series = pd.Series(g[value_column].to_numpy(dtype=float), index=g["time_hours"].to_numpy(dtype=float))
+        reindexed = series.reindex(grid, method="ffill")
+        out.append(
+            pd.DataFrame(
+                {
+                    "fuzzer": fuzzer,
+                    "series_id": series_id,
+                    "time_hours": grid,
+                    value_column: reindexed.to_numpy(dtype=float),
+                }
+            )
+        )
+    if not out:
+        return pd.DataFrame(columns=["fuzzer", "series_id", "time_hours", value_column])
+    return pd.concat(out, ignore_index=True)
 
 
 def fmt_triplet(p50: Optional[float], p25: Optional[float], p75: Optional[float]) -> str:
@@ -474,6 +538,163 @@ def plot_progress_metrics_availability(
     plt.tight_layout()
     plt.savefig(outpath, dpi=200)
     plt.close()
+
+
+def nan_percentile_rows(arr: np.ndarray, percentile_value: float) -> np.ndarray:
+    out = np.full(arr.shape[0], np.nan, dtype=float)
+    for idx, row in enumerate(arr):
+        finite = row[np.isfinite(row)]
+        if finite.size == 0:
+            continue
+        out[idx] = float(np.percentile(finite, percentile_value))
+    return out
+
+
+def plot_metric_over_time(
+    *,
+    metric_df: pd.DataFrame,
+    value_column: str,
+    outpath: Path,
+    title: str,
+    ylabel: str,
+    label_map: dict[str, str] | None,
+    scale: float = 1.0,
+) -> bool:
+    if metric_df.empty:
+        return False
+
+    plt.figure(figsize=(9, 5))
+    plotted = False
+
+    for fuzzer, group in metric_df.groupby("fuzzer", sort=False):
+        label = label_map.get(str(fuzzer), str(fuzzer)) if label_map else str(fuzzer)
+        pivot = (
+            group.pivot_table(
+                index="time_hours", columns="series_id", values=value_column, aggfunc="mean"
+            )
+            .sort_index()
+            .astype(float)
+        )
+        if pivot.empty:
+            continue
+        time = pivot.index.to_numpy(dtype=float)
+        arr = pivot.to_numpy(dtype=float)
+        p25 = nan_percentile_rows(arr, 25) * scale
+        p50 = nan_percentile_rows(arr, 50) * scale
+        p75 = nan_percentile_rows(arr, 75) * scale
+        if not np.isfinite(p50).any():
+            continue
+
+        plt.fill_between(time, p25, p75, step="post", alpha=0.15)
+        plt.step(time, p50, where="post", linewidth=2.5, label=f"{label} (median)")
+        plotted = True
+
+    if not plotted:
+        plt.close()
+        return False
+
+    plt.title(title)
+    plt.xlabel("Elapsed time (hours)")
+    plt.ylabel(ylabel)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=200)
+    plt.close()
+    return True
+
+
+def plot_sample_metric_charts(
+    *,
+    throughput_samples_df: pd.DataFrame,
+    progress_metrics_samples_df: pd.DataFrame,
+    grid: np.ndarray,
+    images_outdir: Path,
+    label_map: dict[str, str] | None,
+) -> List[str]:
+    generated: List[str] = []
+
+    throughput_specs = [
+        (
+            "tx_per_second",
+            "tx_per_second_over_time.png",
+            "Throughput over time (tx/s)",
+            "Tx/s",
+            1.0,
+        ),
+        (
+            "gas_per_second",
+            "gas_per_second_over_time.png",
+            "Throughput over time (gas/s)",
+            "Gas/s",
+            1.0,
+        ),
+    ]
+    for value_column, filename, title, ylabel, scale in throughput_specs:
+        metric_df = resample_metric_samples_to_grid(throughput_samples_df, value_column, grid)
+        if plot_metric_over_time(
+            metric_df=metric_df,
+            value_column=value_column,
+            outpath=images_outdir / filename,
+            title=title,
+            ylabel=ylabel,
+            label_map=label_map,
+            scale=scale,
+        ):
+            generated.append(filename)
+
+    progress_specs = [
+        (
+            "seq_per_second",
+            "seq_per_second_over_time.png",
+            "Sequence rate over time (seq/s)",
+            "Seq/s",
+            1.0,
+        ),
+        (
+            "coverage_proxy",
+            "coverage_proxy_over_time.png",
+            "Coverage proxy over time",
+            "Coverage proxy",
+            1.0,
+        ),
+        (
+            "corpus_size",
+            "corpus_size_over_time.png",
+            "Corpus size over time",
+            "Corpus size",
+            1.0,
+        ),
+        (
+            "favored_items",
+            "favored_items_over_time.png",
+            "Favored items over time",
+            "Favored items",
+            1.0,
+        ),
+        (
+            "failure_rate",
+            "failure_rate_over_time.png",
+            "Failure rate over time",
+            "Failure rate (%)",
+            100.0,
+        ),
+    ]
+    for value_column, filename, title, ylabel, scale in progress_specs:
+        metric_df = resample_metric_samples_to_grid(
+            progress_metrics_samples_df, value_column, grid
+        )
+        if plot_metric_over_time(
+            metric_df=metric_df,
+            value_column=value_column,
+            outpath=images_outdir / filename,
+            title=title,
+            ylabel=ylabel,
+            label_map=label_map,
+            scale=scale,
+        ):
+            generated.append(filename)
+
+    return generated
 
 
 def compute_metrics(
@@ -926,10 +1147,22 @@ def main() -> int:
         help="Optional per-fuzzer throughput summary CSV generated by analysis/analyze.py.",
     )
     parser.add_argument(
+        "--throughput-samples-csv",
+        type=Path,
+        default=None,
+        help="Optional throughput samples CSV for time-series charts (tx/s and gas/s).",
+    )
+    parser.add_argument(
         "--progress-metrics-summary-csv",
         type=Path,
         default=None,
         help="Optional per-fuzzer progress metrics summary CSV generated by analysis/analyze.py.",
+    )
+    parser.add_argument(
+        "--progress-metrics-samples-csv",
+        type=Path,
+        default=None,
+        help="Optional progress metrics samples CSV for time-series charts.",
     )
     parser.add_argument(
         "--additional-metrics-summary-csv",
@@ -958,6 +1191,18 @@ def main() -> int:
         load_progress_metrics_summary(args.progress_metrics_summary_csv)
         if args.progress_metrics_summary_csv is not None
         else {}
+    )
+    throughput_samples_df = (
+        load_metric_samples_csv(args.throughput_samples_csv, THROUGHPUT_SAMPLE_VALUE_COLS)
+        if args.throughput_samples_csv is not None
+        else pd.DataFrame(columns=["fuzzer", "series_id", "time_hours", *THROUGHPUT_SAMPLE_VALUE_COLS])
+    )
+    progress_metrics_samples_df = (
+        load_metric_samples_csv(
+            args.progress_metrics_samples_csv, PROGRESS_SAMPLE_VALUE_COLS
+        )
+        if args.progress_metrics_samples_csv is not None
+        else pd.DataFrame(columns=["fuzzer", "series_id", "time_hours", *PROGRESS_SAMPLE_VALUE_COLS])
     )
 
     if args.budget is None:
@@ -1026,7 +1271,16 @@ def main() -> int:
                 images_outdir / "progress_metrics_availability.png",
                 label_map=None,
             )
+        sample_metric_plot_files = plot_sample_metric_charts(
+            throughput_samples_df=throughput_samples_df,
+            progress_metrics_samples_df=progress_metrics_samples_df,
+            grid=grid,
+            images_outdir=images_outdir,
+            label_map=None,
+        )
         print(f"wrote: {report_outdir / 'REPORT.md'} (no data)")
+        if sample_metric_plot_files:
+            print("sample metric plots: " + ", ".join(sample_metric_plot_files))
         return 0
 
     df_grid = resample_to_grid(df, grid)
@@ -1054,6 +1308,13 @@ def main() -> int:
             images_outdir / "progress_metrics_availability.png",
             label_map=label_map,
         )
+    sample_metric_plot_files = plot_sample_metric_charts(
+        throughput_samples_df=throughput_samples_df,
+        progress_metrics_samples_df=progress_metrics_samples_df,
+        grid=grid,
+        images_outdir=images_outdir,
+        label_map=label_map,
+    )
     write_report(
         metrics,
         budget=budget,
@@ -1079,6 +1340,7 @@ def main() -> int:
                 "progress_metrics_availability.png",
             ]
         )
+    plot_files.extend(sample_metric_plot_files)
     print("plots: " + ", ".join(plot_files))
     return 0
 

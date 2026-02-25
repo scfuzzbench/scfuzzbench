@@ -231,6 +231,85 @@ class BenchmarkReportTests(unittest.TestCase):
             self.assertTrue((out_dir / "progress_metrics_levels.png").exists())
             self.assertTrue((out_dir / "progress_metrics_availability.png").exists())
 
+    def test_cli_generates_metric_timeseries_charts_from_samples(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            csv_path = tmp_dir / "cumulative.csv"
+            csv_path.write_text(
+                "\n".join(
+                    [
+                        "fuzzer,run_id,time_hours,bugs_found",
+                        "foundry,run-1,0,0",
+                        "foundry,run-1,1,1",
+                        "foundry,run-2,0,0",
+                        "foundry,run-2,1,1",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            throughput_samples_csv = tmp_dir / "throughput_samples.csv"
+            throughput_samples_csv.write_text(
+                "\n".join(
+                    [
+                        "run_id,instance_id,fuzzer,fuzzer_label,elapsed_seconds,tx_per_second,gas_per_second,source,log_path",
+                        "run-1,i-1,foundry,foundry,0,100,1000,text-rate,a.log",
+                        "run-1,i-1,foundry,foundry,3600,120,1400,text-rate,a.log",
+                        "run-1,i-2,foundry,foundry,0,90,900,text-rate,b.log",
+                        "run-1,i-2,foundry,foundry,3600,110,1300,text-rate,b.log",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            progress_samples_csv = tmp_dir / "progress_metrics_samples.csv"
+            progress_samples_csv.write_text(
+                "\n".join(
+                    [
+                        "run_id,instance_id,fuzzer,fuzzer_label,elapsed_seconds,seq_per_second,coverage_proxy,corpus_size,favored_items,failure_rate,source,log_path",
+                        "run-1,i-1,foundry,foundry,0,5,100,50,20,0.10,text-metrics,a.log",
+                        "run-1,i-1,foundry,foundry,3600,6,130,70,24,0.05,text-metrics,a.log",
+                        "run-1,i-2,foundry,foundry,0,4,90,45,18,0.12,text-metrics,b.log",
+                        "run-1,i-2,foundry,foundry,3600,5,120,66,22,0.06,text-metrics,b.log",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            out_dir = tmp_dir / "out"
+            script = Path(__file__).resolve().parents[1] / "benchmark_report.py"
+            subprocess.check_call(
+                [
+                    sys.executable,
+                    str(script),
+                    "--csv",
+                    str(csv_path),
+                    "--outdir",
+                    str(out_dir),
+                    "--budget",
+                    "1",
+                    "--checkpoints",
+                    "1",
+                    "--ks",
+                    "1",
+                    "--throughput-samples-csv",
+                    str(throughput_samples_csv),
+                    "--progress-metrics-samples-csv",
+                    str(progress_samples_csv),
+                ]
+            )
+
+            self.assertTrue((out_dir / "tx_per_second_over_time.png").exists())
+            self.assertTrue((out_dir / "gas_per_second_over_time.png").exists())
+            self.assertTrue((out_dir / "seq_per_second_over_time.png").exists())
+            self.assertTrue((out_dir / "coverage_proxy_over_time.png").exists())
+            self.assertTrue((out_dir / "corpus_size_over_time.png").exists())
+            self.assertTrue((out_dir / "favored_items_over_time.png").exists())
+            self.assertTrue((out_dir / "failure_rate_over_time.png").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

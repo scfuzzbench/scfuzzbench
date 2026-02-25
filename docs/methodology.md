@@ -166,7 +166,9 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - final distribution (median + IQR)
 - Note: these report scorecards are count-based. They do not score severity or root-cause uniqueness.
 - If `throughput_summary.csv` is present, the report also includes tx/s and gas/s summary tables.
-- If `progress_metrics_summary.csv` is present, the report also includes per-fuzzer progress proxy tables (seq/s, coverage, corpus, favored, failure rate) and progress-metrics charts.
+- If `throughput_samples.csv` is present, the report also emits throughput trend charts (`tx_per_second_over_time.png`, `gas_per_second_over_time.png`).
+- If `progress_metrics_summary.csv` is present, the report also includes per-fuzzer progress proxy tables (seq/s, coverage, corpus, favored, failure rate) and progress-metrics summary charts.
+- If `progress_metrics_samples.csv` is present, the report also emits progress trend charts (`seq_per_second_over_time.png`, `coverage_proxy_over_time.png`, `corpus_size_over_time.png`, `favored_items_over_time.png`, `failure_rate_over_time.png`).
 - Emits:
   - `REPORT.md`
   - `bugs_over_time.png`

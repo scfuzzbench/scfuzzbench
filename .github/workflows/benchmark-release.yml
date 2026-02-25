@@ -305,11 +305,32 @@ jobs:
           cp "${dest_root}/images/invariant_overlap_upset.png" "${analysis_dir}/invariant_overlap_upset.png"
           cp "${dest_root}/images/cpu_usage_over_time.png" "${analysis_dir}/cpu_usage_over_time.png"
           cp "${dest_root}/images/memory_usage_over_time.png" "${analysis_dir}/memory_usage_over_time.png"
+          for optional_chart in \
+            tx_per_second_over_time.png \
+            gas_per_second_over_time.png \
+            seq_per_second_over_time.png \
+            coverage_proxy_over_time.png \
+            corpus_size_over_time.png \
+            favored_items_over_time.png \
+            failure_rate_over_time.png \
+            progress_metrics_levels.png \
+            progress_metrics_availability.png
+          do
+            if [[ -f "${dest_root}/images/${optional_chart}" ]]; then
+              cp "${dest_root}/images/${optional_chart}" "${analysis_dir}/${optional_chart}"
+            fi
+          done
           cp "${dest_root}/data/broken_invariants.md" "${analysis_dir}/broken_invariants.md"
           cp "${dest_root}/data/broken_invariants.csv" "${analysis_dir}/broken_invariants.csv"
           cp "${dest_root}/data/runner_resource_usage.md" "${analysis_dir}/runner_resource_usage.md"
           cp "${dest_root}/data/runner_resource_summary.csv" "${analysis_dir}/runner_resource_summary.csv"
           cp "${dest_root}/data/runner_resource_timeseries.csv" "${analysis_dir}/runner_resource_timeseries.csv"
+          if [[ -f "${dest_root}/data/throughput_summary.csv" ]]; then
+            cp "${dest_root}/data/throughput_summary.csv" "${analysis_dir}/throughput_summary.csv"
+          fi
+          if [[ -f "${dest_root}/data/progress_metrics_summary.csv" ]]; then
+            cp "${dest_root}/data/progress_metrics_summary.csv" "${analysis_dir}/progress_metrics_summary.csv"
+          fi
 
           # Optional: include raw CSV outputs in the analysis bundle for debugging.
           mkdir -p "${analysis_dir}/data"
@@ -360,11 +381,32 @@ jobs:
           aws s3 cp "${analysis_dir}/invariant_overlap_upset.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/invariant_overlap_upset.png" --content-type image/png
           aws s3 cp "${analysis_dir}/cpu_usage_over_time.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/cpu_usage_over_time.png" --content-type image/png
           aws s3 cp "${analysis_dir}/memory_usage_over_time.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/memory_usage_over_time.png" --content-type image/png
+          for optional_chart in \
+            tx_per_second_over_time.png \
+            gas_per_second_over_time.png \
+            seq_per_second_over_time.png \
+            coverage_proxy_over_time.png \
+            corpus_size_over_time.png \
+            favored_items_over_time.png \
+            failure_rate_over_time.png \
+            progress_metrics_levels.png \
+            progress_metrics_availability.png
+          do
+            if [[ -f "${analysis_dir}/${optional_chart}" ]]; then
+              aws s3 cp "${analysis_dir}/${optional_chart}" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/${optional_chart}" --content-type image/png
+            fi
+          done
           aws s3 cp "${analysis_dir}/broken_invariants.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/broken_invariants.md" --content-type text/markdown
           aws s3 cp "${analysis_dir}/broken_invariants.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/broken_invariants.csv" --content-type text/csv
           aws s3 cp "${analysis_dir}/runner_resource_usage.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_usage.md" --content-type text/markdown
           aws s3 cp "${analysis_dir}/runner_resource_summary.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_summary.csv" --content-type text/csv
           aws s3 cp "${analysis_dir}/runner_resource_timeseries.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_timeseries.csv" --content-type text/csv
+          if [[ -f "${analysis_dir}/throughput_summary.csv" ]]; then
+            aws s3 cp "${analysis_dir}/throughput_summary.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/throughput_summary.csv" --content-type text/csv
+          fi
+          if [[ -f "${analysis_dir}/progress_metrics_summary.csv" ]]; then
+            aws s3 cp "${analysis_dir}/progress_metrics_summary.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/progress_metrics_summary.csv" --content-type text/csv
+          fi
           aws s3 cp "${analysis_dir}/manifest.json" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/manifest.json" --content-type application/json
 
           aws s3 cp "${release_dir}/analysis.zip" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/bundles/analysis.zip" --content-type application/zip
@@ -401,6 +443,23 @@ jobs:
             echo "![Time To K](${analysis_base}/time_to_k.png)"
             echo "![Final Distribution](${analysis_base}/final_distribution.png)"
             echo "![Plateau And Late Share](${analysis_base}/plateau_and_late_share.png)"
+            for optional_chart in \
+              tx_per_second_over_time.png \
+              gas_per_second_over_time.png \
+              seq_per_second_over_time.png \
+              coverage_proxy_over_time.png \
+              corpus_size_over_time.png \
+              favored_items_over_time.png \
+              failure_rate_over_time.png \
+              progress_metrics_levels.png \
+              progress_metrics_availability.png
+            do
+              if [[ -f "${analysis_dir}/${optional_chart}" ]]; then
+                chart_label="${optional_chart%.png}"
+                chart_label="${chart_label//_/ }"
+                echo "![${chart_label^}](${analysis_base}/${optional_chart})"
+              fi
+            done
             echo "![Invariant Overlap (UpSet)](${analysis_base}/invariant_overlap_upset.png)"
             echo "![CPU Usage Over Time](${analysis_base}/cpu_usage_over_time.png)"
             echo "![Memory Usage Over Time](${analysis_base}/memory_usage_over_time.png)"
@@ -409,6 +468,12 @@ jobs:
             echo "- Analysis bundle: ${bundles_base}/analysis.zip"
             echo "- Broken invariants (Markdown): ${analysis_base}/broken_invariants.md"
             echo "- Broken invariants (CSV): ${analysis_base}/broken_invariants.csv"
+            if [[ -f "${analysis_dir}/throughput_summary.csv" ]]; then
+              echo "- Throughput summary (CSV): ${analysis_base}/throughput_summary.csv"
+            fi
+            if [[ -f "${analysis_dir}/progress_metrics_summary.csv" ]]; then
+              echo "- Progress metrics summary (CSV): ${analysis_base}/progress_metrics_summary.csv"
+            fi
             echo "- Runner resource usage (Markdown): ${analysis_base}/runner_resource_usage.md"
             echo "- Runner resource summary (CSV): ${analysis_base}/runner_resource_summary.csv"
             echo "- Runner resource timeseries (CSV): ${analysis_base}/runner_resource_timeseries.csv"

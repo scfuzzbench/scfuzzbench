@@ -720,6 +720,13 @@ def main() -> int:
         progress_metrics_availability_chart_key = (
             f"{r.analysis_prefix}/progress_metrics_availability.png"
         )
+        txps_over_time_chart_key = f"{r.analysis_prefix}/tx_per_second_over_time.png"
+        gasps_over_time_chart_key = f"{r.analysis_prefix}/gas_per_second_over_time.png"
+        seqps_over_time_chart_key = f"{r.analysis_prefix}/seq_per_second_over_time.png"
+        coverage_over_time_chart_key = f"{r.analysis_prefix}/coverage_proxy_over_time.png"
+        corpus_over_time_chart_key = f"{r.analysis_prefix}/corpus_size_over_time.png"
+        favored_over_time_chart_key = f"{r.analysis_prefix}/favored_items_over_time.png"
+        failure_over_time_chart_key = f"{r.analysis_prefix}/failure_rate_over_time.png"
         runner_md_key = f"{r.analysis_prefix}/runner_resource_usage.md"
         runner_summary_csv_key = f"{r.analysis_prefix}/runner_resource_summary.csv"
         runner_timeseries_csv_key = f"{r.analysis_prefix}/runner_resource_timeseries.csv"
@@ -754,6 +761,34 @@ def main() -> int:
             r.analysis_kind == "analysis"
             and head_exists(bucket, progress_metrics_availability_chart_key, profile=profile)
         )
+        has_txps_over_time_chart = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, txps_over_time_chart_key, profile=profile)
+        )
+        has_gasps_over_time_chart = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, gasps_over_time_chart_key, profile=profile)
+        )
+        has_seqps_over_time_chart = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, seqps_over_time_chart_key, profile=profile)
+        )
+        has_coverage_over_time_chart = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, coverage_over_time_chart_key, profile=profile)
+        )
+        has_corpus_over_time_chart = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, corpus_over_time_chart_key, profile=profile)
+        )
+        has_favored_over_time_chart = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, favored_over_time_chart_key, profile=profile)
+        )
+        has_failure_over_time_chart = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, failure_over_time_chart_key, profile=profile)
+        )
         has_runner_md = (
             r.analysis_kind == "analysis" and head_exists(bucket, runner_md_key, profile=profile)
         )
@@ -781,6 +816,20 @@ def main() -> int:
                     lines.append(
                         f"![Progress Metrics Availability]({analysis_base}/progress_metrics_availability.png)"
                     )
+                if has_txps_over_time_chart:
+                    lines.append(f"![Tx/s Over Time]({analysis_base}/tx_per_second_over_time.png)")
+                if has_gasps_over_time_chart:
+                    lines.append(f"![Gas/s Over Time]({analysis_base}/gas_per_second_over_time.png)")
+                if has_seqps_over_time_chart:
+                    lines.append(f"![Seq/s Over Time]({analysis_base}/seq_per_second_over_time.png)")
+                if has_coverage_over_time_chart:
+                    lines.append(f"![Coverage Over Time]({analysis_base}/coverage_proxy_over_time.png)")
+                if has_corpus_over_time_chart:
+                    lines.append(f"![Corpus Size Over Time]({analysis_base}/corpus_size_over_time.png)")
+                if has_favored_over_time_chart:
+                    lines.append(f"![Favored Items Over Time]({analysis_base}/favored_items_over_time.png)")
+                if has_failure_over_time_chart:
+                    lines.append(f"![Failure Rate Over Time]({analysis_base}/failure_rate_over_time.png)")
                 if has_invariant_chart:
                     lines.append(f"![Invariant Overlap (UpSet)]({analysis_base}/invariant_overlap_upset.png)")
                 if has_cpu_chart:

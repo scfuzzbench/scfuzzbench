@@ -142,7 +142,7 @@ s3-purge-versions:
 	python3 scripts/purge_s3_versions.py --bucket $(BUCKET) $(PROFILE_ARG)
 
 report-benchmark: analysis-venv
-	$(ANALYSIS_PY) analysis/benchmark_report.py --csv $(REPORT_CSV) --report-outdir $(REPORT_OUT_DIR) --images-outdir $(IMAGES_OUT_DIR) $(REPORT_BUDGET_ARG) --grid_step_min $(REPORT_GRID_STEP_MIN) --checkpoints $(REPORT_CHECKPOINTS) --ks $(REPORT_KS) --throughput-summary-csv $(THROUGHPUT_SUMMARY_CSV) --progress-metrics-summary-csv $(PROGRESS_METRICS_SUMMARY_CSV) $(if $(REPORT_ANONYMIZE),--anonymize,)
+	$(ANALYSIS_PY) analysis/benchmark_report.py --csv $(REPORT_CSV) --report-outdir $(REPORT_OUT_DIR) --images-outdir $(IMAGES_OUT_DIR) $(REPORT_BUDGET_ARG) --grid_step_min $(REPORT_GRID_STEP_MIN) --checkpoints $(REPORT_CHECKPOINTS) --ks $(REPORT_KS) --throughput-summary-csv $(THROUGHPUT_SUMMARY_CSV) --throughput-samples-csv $(THROUGHPUT_SAMPLES_CSV) --progress-metrics-summary-csv $(PROGRESS_METRICS_SUMMARY_CSV) --progress-metrics-samples-csv $(PROGRESS_METRICS_SAMPLES_CSV) $(if $(REPORT_ANONYMIZE),--anonymize,)
 
 report-wide-to-long: analysis-venv
 	$(ANALYSIS_PY) analysis/wide_to_long.py --wide_csv $(WIDE_CSV) --out_csv $(LONG_CSV)
