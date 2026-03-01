@@ -195,7 +195,8 @@ Both canaries are intentional failures used to verify:
 Echidna:
 1. usually use `test/recon/CryticTester.sol`
 2. use `tests/...` only for target-specific exceptions
-3. enforce naming + config split:
+3. use the `echidna` binary in commands and docs (do not use `echidna-test`)
+4. enforce naming + config split:
    - apply naming rules to `Properties.sol` and all inherited recon contracts
    - global checks in harness code must never use `property_` or `crytic_`
    - use `invariant_` only for no-arg globals
