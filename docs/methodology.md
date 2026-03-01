@@ -186,6 +186,7 @@ If input CSV is empty, the report explicitly records the no-data condition and e
   - `broken_invariants.csv`
   - `invariant_overlap_upset.png`
 - These artifacts provide per-fuzzer totals, exclusives, shared subsets, and normalized invariant labels.
+- UpSet chart layout follows: Lex A, Gehlenborg N, Strobelt H, Vuillemot R, Pfister H. *UpSet: Visualization of Intersecting Sets*. IEEE TVCG 20(12), 2014 ([doi:10.1109/TVCG.2014.2346248](https://doi.org/10.1109/TVCG.2014.2346248)).
 
 ### Runner resource reporting (`analysis/runner_metrics_report.py`)
 

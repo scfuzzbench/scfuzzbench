@@ -328,6 +328,10 @@ def combo_label(combo: Tuple[str, ...]) -> str:
     return " + ".join(combo)
 
 
+def combo_id(combo: Tuple[str, ...]) -> str:
+    return "+".join(combo)
+
+
 def _wrapped_lines(text: str, *, width: int) -> List[str]:
     wrapped = textwrap.wrap(
         text,
@@ -437,10 +441,14 @@ def plot_upset(result: OverlapResult, out_png: Path, *, top_k: int) -> None:
     heights = np.array([len(invariants) for _, invariants in intersections], dtype=float)
     max_height = max(float(np.max(heights)), 1.0)
     top_pad = max(0.5, max_height * 0.08)
+    combo_ids = [combo_id(combo) for combo, _ in intersections]
 
     detail_entries = [
-        (f"[{idx}] {combo_label(combo)} ({len(invariants)})", invariants)
-        for idx, (combo, invariants) in enumerate(intersections, start=1)
+        (
+            f"[{combo_id(combo)}] {combo_label(combo)} ({len(invariants)})",
+            invariants,
+        )
+        for combo, invariants in intersections
     ]
     detail_width = 62
     detail_line_count = 2 + len(
@@ -526,7 +534,9 @@ def plot_upset(result: OverlapResult, out_png: Path, *, top_k: int) -> None:
     ax_matrix.set_yticks(y_ticks)
     ax_matrix.set_yticklabels([])
     ax_matrix.set_xticks(x)
-    ax_matrix.tick_params(axis="x", labelbottom=False)
+    ax_matrix.set_xticklabels(combo_ids, rotation=90, fontsize=8)
+    ax_matrix.tick_params(axis="x", labelbottom=True, pad=2)
+    ax_matrix.set_xlabel("Intersection IDs")
     ax_matrix.grid(axis="y", alpha=0.15)
     ax_matrix.set_xlim(-0.6, len(intersections) - 0.4)
     ax_matrix.invert_yaxis()
@@ -603,7 +613,7 @@ def plot_venn_like(result: OverlapResult, out_png: Path) -> None:
             title="Region invariant strings",
             entries=[
                 (
-                    f"[1] {fuzzer} only ({intersection_size(result, (fuzzer,))})",
+                    f"[{combo_id((fuzzer,))}] {fuzzer} only ({intersection_size(result, (fuzzer,))})",
                     result.intersections.get((fuzzer,), []),
                 )
             ],
@@ -639,9 +649,12 @@ def plot_venn_like(result: OverlapResult, out_png: Path) -> None:
             ax_details,
             title="Region invariant strings",
             entries=[
-                (f"[1] {a} only ({a_only})", result.intersections.get((a,), [])),
-                (f"[2] {a} + {b} ({ab})", result.intersections.get(tuple(sorted((a, b))), [])),
-                (f"[3] {b} only ({b_only})", result.intersections.get((b,), [])),
+                (f"[{combo_id((a,))}] {a} only ({a_only})", result.intersections.get((a,), [])),
+                (
+                    f"[{combo_id(tuple(sorted((a, b))))}] {a} + {b} ({ab})",
+                    result.intersections.get(tuple(sorted((a, b))), []),
+                ),
+                (f"[{combo_id((b,))}] {b} only ({b_only})", result.intersections.get((b,), [])),
             ],
             width=42,
             max_invariants_per_entry=12,
@@ -685,14 +698,23 @@ def plot_venn_like(result: OverlapResult, out_png: Path) -> None:
             ax_details,
             title="Region invariant strings",
             entries=[
-                (f"[1] {a} only ({a_only})", result.intersections.get((a,), [])),
-                (f"[2] {b} only ({b_only})", result.intersections.get((b,), [])),
-                (f"[3] {c} only ({c_only})", result.intersections.get((c,), [])),
-                (f"[4] {a} + {b} ({ab})", result.intersections.get(tuple(sorted((a, b))), [])),
-                (f"[5] {a} + {c} ({ac})", result.intersections.get(tuple(sorted((a, c))), [])),
-                (f"[6] {b} + {c} ({bc})", result.intersections.get(tuple(sorted((b, c))), [])),
+                (f"[{combo_id((a,))}] {a} only ({a_only})", result.intersections.get((a,), [])),
+                (f"[{combo_id((b,))}] {b} only ({b_only})", result.intersections.get((b,), [])),
+                (f"[{combo_id((c,))}] {c} only ({c_only})", result.intersections.get((c,), [])),
                 (
-                    f"[7] {a} + {b} + {c} ({abc})",
+                    f"[{combo_id(tuple(sorted((a, b))))}] {a} + {b} ({ab})",
+                    result.intersections.get(tuple(sorted((a, b))), []),
+                ),
+                (
+                    f"[{combo_id(tuple(sorted((a, c))))}] {a} + {c} ({ac})",
+                    result.intersections.get(tuple(sorted((a, c))), []),
+                ),
+                (
+                    f"[{combo_id(tuple(sorted((b, c))))}] {b} + {c} ({bc})",
+                    result.intersections.get(tuple(sorted((b, c))), []),
+                ),
+                (
+                    f"[{combo_id(tuple(sorted((a, b, c))))}] {a} + {b} + {c} ({abc})",
                     result.intersections.get(tuple(sorted((a, b, c))), []),
                 ),
             ],
