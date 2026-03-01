@@ -806,7 +806,6 @@ def main() -> int:
             lines.append("")
             if r.analysis_kind == "analysis":
                 lines.append(f"![Bugs Over Time]({analysis_base}/bugs_over_time.png)")
-                lines.append(f"![Bugs Over Time (All Runs)]({analysis_base}/bugs_over_time_runs.png)")
                 lines.append(f"![Time To K]({analysis_base}/time_to_k.png)")
                 lines.append(f"![Final Distribution]({analysis_base}/final_distribution.png)")
                 lines.append(f"![Plateau And Late Share]({analysis_base}/plateau_and_late_share.png)")

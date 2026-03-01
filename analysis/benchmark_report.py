@@ -785,8 +785,9 @@ def plot_bugs_over_time(
     df_grid: pd.DataFrame, outpath: Path, label_map: dict[str, str] | None
 ) -> None:
     plt.figure(figsize=(9, 5))
+    ax = plt.gca()
     for fuzzer, group in df_grid.groupby("fuzzer", sort=False):
-        label = label_map.get(str(fuzzer), str(fuzzer)) if label_map else str(fuzzer)
+        fuzzer_label = label_map.get(str(fuzzer), str(fuzzer)) if label_map else str(fuzzer)
         pivot = (
             group.pivot_table(
                 index="time_hours", columns="run_id", values="bugs_found", aggfunc="max"
@@ -800,38 +801,9 @@ def plot_bugs_over_time(
         p50 = np.percentile(arr, 50, axis=1)
         p75 = np.percentile(arr, 75, axis=1)
 
-        plt.fill_between(time, p25, p75, step="post", alpha=0.15)
-        plt.step(time, np.rint(p50), where="post", linewidth=2.5, label=f"{label} (median)")
-
-    plt.title("Bugs found over time (median + IQR)")
-    plt.xlabel("Elapsed time (hours)")
-    plt.ylabel("Bugs found (cumulative count)")
-    plt.yticks(range(0, int(df_grid["bugs_found"].max()) + 2))
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=200)
-    plt.close()
-
-
-def plot_bugs_over_time_runs(
-    df_grid: pd.DataFrame, outpath: Path, label_map: dict[str, str] | None
-) -> None:
-    plt.figure(figsize=(9, 5))
-    ax = plt.gca()
-    for fuzzer, group in df_grid.groupby("fuzzer", sort=False):
-        fuzzer_label = label_map.get(str(fuzzer), str(fuzzer)) if label_map else str(fuzzer)
-        pivot = (
-            group.pivot_table(
-                index="time_hours", columns="run_id", values="bugs_found", aggfunc="max"
-            )
-            .sort_index()
-            .astype(float)
-        )
-        time = pivot.index.to_numpy(dtype=float)
-        arr = pivot.to_numpy(dtype=float)
-        p50 = np.percentile(arr, 50, axis=1)
-
         color = ax._get_lines.get_next_color()
+
+        # Individual runs (faint dotted lines)
         run_labels = [str(run_id).split(":", 1)[-1] for run_id in pivot.columns]
         for col, run_label in enumerate(run_labels):
             plt.step(
@@ -844,6 +816,11 @@ def plot_bugs_over_time_runs(
                 linestyle=":",
                 label=f"{fuzzer_label} {run_label}",
             )
+
+        # IQR shading
+        plt.fill_between(time, p25, p75, step="post", alpha=0.15, color=color)
+
+        # Median line
         plt.step(
             time,
             np.rint(p50),
@@ -851,10 +828,10 @@ def plot_bugs_over_time_runs(
             linewidth=3.5,
             alpha=1.0,
             color=color,
-            label=f"{fuzzer_label} (median)",
+            label=f"{fuzzer_label} median",
         )
 
-    plt.title("Bugs found over time (all runs + median)")
+    plt.title("Bugs found over time")
     plt.xlabel("Elapsed time (hours)")
     plt.ylabel("Bugs found (cumulative count)")
     plt.yticks(range(0, int(df_grid["bugs_found"].max()) + 2))
@@ -1244,10 +1221,7 @@ def main() -> int:
         )
         msg = "No rows in input CSV. This usually means no bugs were found (or parsing produced no events)."
         write_placeholder_plot(
-            "Bugs found over time (median + IQR)", images_outdir / "bugs_over_time.png", msg
-        )
-        write_placeholder_plot(
-            "Bugs found over time (all runs + median)", images_outdir / "bugs_over_time_runs.png", msg
+            "Bugs found over time", images_outdir / "bugs_over_time.png", msg
         )
         write_placeholder_plot("Median time-to-k", images_outdir / "time_to_k.png", msg)
         write_placeholder_plot(
@@ -1293,7 +1267,6 @@ def main() -> int:
         label_map = {fz: f"Fuzzer {chr(65 + idx)}" for idx, fz in enumerate(fuzzers)}
 
     plot_bugs_over_time(df_grid, images_outdir / "bugs_over_time.png", label_map)
-    plot_bugs_over_time_runs(df_grid, images_outdir / "bugs_over_time_runs.png", label_map)
     plot_time_to_k(metrics, ks=ks, outpath=images_outdir / "time_to_k.png", label_map=label_map)
     plot_final_distribution(df_grid, images_outdir / "final_distribution.png", label_map)
     plot_plateau_and_late_share(metrics, images_outdir / "plateau_and_late_share.png", label_map)
@@ -1328,7 +1301,6 @@ def main() -> int:
     print(f"wrote: {report_outdir / 'REPORT.md'}")
     plot_files = [
         "bugs_over_time.png",
-        "bugs_over_time_runs.png",
         "time_to_k.png",
         "final_distribution.png",
         "plateau_and_late_share.png",

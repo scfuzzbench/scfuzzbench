@@ -298,7 +298,6 @@ jobs:
           # Website + release notes expect these at the top-level.
           cp "${dest_root}/data/REPORT.md" "${analysis_dir}/REPORT.md"
           cp "${dest_root}/images/bugs_over_time.png" "${analysis_dir}/bugs_over_time.png"
-          cp "${dest_root}/images/bugs_over_time_runs.png" "${analysis_dir}/bugs_over_time_runs.png"
           cp "${dest_root}/images/time_to_k.png" "${analysis_dir}/time_to_k.png"
           cp "${dest_root}/images/final_distribution.png" "${analysis_dir}/final_distribution.png"
           cp "${dest_root}/images/plateau_and_late_share.png" "${analysis_dir}/plateau_and_late_share.png"
@@ -374,7 +373,6 @@ jobs:
 
           aws s3 cp "${analysis_dir}/REPORT.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/REPORT.md" --content-type text/markdown
           aws s3 cp "${analysis_dir}/bugs_over_time.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/bugs_over_time.png" --content-type image/png
-          aws s3 cp "${analysis_dir}/bugs_over_time_runs.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/bugs_over_time_runs.png" --content-type image/png
           aws s3 cp "${analysis_dir}/time_to_k.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/time_to_k.png" --content-type image/png
           aws s3 cp "${analysis_dir}/final_distribution.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/final_distribution.png" --content-type image/png
           aws s3 cp "${analysis_dir}/plateau_and_late_share.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/plateau_and_late_share.png" --content-type image/png
@@ -439,7 +437,6 @@ jobs:
             echo ""
             echo "Charts:"
             echo "![Bugs Over Time](${analysis_base}/bugs_over_time.png)"
-            echo "![Bugs Over Time (All Runs)](${analysis_base}/bugs_over_time_runs.png)"
             echo "![Time To K](${analysis_base}/time_to_k.png)"
             echo "![Final Distribution](${analysis_base}/final_distribution.png)"
             echo "![Plateau And Late Share](${analysis_base}/plateau_and_late_share.png)"

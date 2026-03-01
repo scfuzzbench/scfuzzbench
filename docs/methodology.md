@@ -172,7 +172,6 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
 - Emits:
   - `REPORT.md`
   - `bugs_over_time.png`
-  - `bugs_over_time_runs.png`
   - `time_to_k.png`
   - `final_distribution.png`
   - `plateau_and_late_share.png`
