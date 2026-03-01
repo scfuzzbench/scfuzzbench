@@ -438,33 +438,43 @@ def plot_upset(result: OverlapResult, out_png: Path, *, top_k: int) -> None:
     max_height = max(float(np.max(heights)), 1.0)
     top_pad = max(0.5, max_height * 0.08)
 
-    detail_entries_all = [
+    detail_entries = [
         (f"[{idx}] {combo_label(combo)} ({len(invariants)})", invariants)
         for idx, (combo, invariants) in enumerate(intersections, start=1)
     ]
-    # Keep details readable in the top-left panel above "Set size" without
-    # squeezing the main charts on the right.
-    detail_entries = detail_entries_all
     detail_width = 62
     detail_line_count = 2 + len(
         _detail_lines(detail_entries, width=detail_width, max_invariants_per_entry=None)
     )
-    fig_width = max(13.5, 8.5 + len(intersections) * 0.5)
+
+    # --- Canonical inverted-L layout (2×3) ---
+    fig_width = max(16.0, 10.0 + len(intersections) * 0.5)
     fig_height = max(6.5, 4.0 + len(fuzzers) * 0.5 + detail_line_count * 0.08)
-    fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True)
+    fig = plt.figure(figsize=(fig_width, fig_height))
     gs = fig.add_gridspec(
         2,
-        2,
-        width_ratios=[2.6, 4.5],
-        height_ratios=[3.2, 2.0],
+        3,
+        width_ratios=[1.0, 3.5, 2.5],
+        height_ratios=[2.5, 1.8],
         wspace=0.18,
         hspace=0.05,
     )
 
-    ax_details = fig.add_subplot(gs[0, 0])
+    # Top-left: empty (canonical inverted-L blank corner)
+    ax_empty = fig.add_subplot(gs[0, 0])
+    ax_empty.set_visible(False)
+
+    # Top-center: intersection size bars
     ax_bars = fig.add_subplot(gs[0, 1])
-    ax_matrix = fig.add_subplot(gs[1, 1], sharex=ax_bars)
-    ax_sets = fig.add_subplot(gs[1, 0], sharey=ax_matrix)
+
+    # Bottom-left: set size bars (pointing left)
+    ax_sets = fig.add_subplot(gs[1, 0])
+
+    # Bottom-center: dot matrix (shared axes)
+    ax_matrix = fig.add_subplot(gs[1, 1], sharex=ax_bars, sharey=ax_sets)
+
+    # Right column spanning both rows: detail panel
+    ax_details = fig.add_subplot(gs[:, 2])
     draw_detail_panel(
         ax_details,
         title="Invariants",
@@ -474,6 +484,7 @@ def plot_upset(result: OverlapResult, out_png: Path, *, top_k: int) -> None:
         font_size=12,
     )
 
+    # --- Intersection size bars (top-center) ---
     ax_bars.bar(x, heights, color="#1f77b4")
     for idx, height in enumerate(heights):
         ax_bars.text(
@@ -492,10 +503,13 @@ def plot_upset(result: OverlapResult, out_png: Path, *, top_k: int) -> None:
     ax_bars.set_title(
         f"Invariant overlap across fuzzers (top {len(intersections)} exact intersections)"
     )
+    for spine in ("top", "right"):
+        ax_bars.spines[spine].set_visible(False)
 
+    # --- Dot matrix (bottom-center) ---
     y_ticks = np.arange(len(fuzzers), dtype=float)
     for y in y_ticks:
-        ax_matrix.scatter(x, np.full_like(x, y), color="#d0d0d0", s=24, zorder=1)
+        ax_matrix.scatter(x, np.full_like(x, y), color="#d0d0d0", s=60, zorder=1)
 
     for xi, (combo, _) in enumerate(intersections):
         ys = sorted(y_pos[fuzzer] for fuzzer in combo)
@@ -503,33 +517,40 @@ def plot_upset(result: OverlapResult, out_png: Path, *, top_k: int) -> None:
             np.full(len(ys), xi, dtype=float),
             np.array(ys, dtype=float),
             color="#222222",
-            s=40,
+            s=80,
             zorder=3,
         )
         if len(ys) > 1:
-            ax_matrix.plot([xi, xi], [ys[0], ys[-1]], color="#222222", linewidth=1.4, zorder=2)
+            ax_matrix.plot([xi, xi], [ys[0], ys[-1]], color="#222222", linewidth=2.0, zorder=2)
 
     ax_matrix.set_yticks(y_ticks)
-    ax_matrix.set_yticklabels(fuzzers)
+    ax_matrix.set_yticklabels([])
     ax_matrix.set_xticks(x)
-    ax_matrix.set_xticklabels([str(i) for i in range(1, len(intersections) + 1)], fontsize=8)
-    ax_matrix.set_xlabel("Intersection ID (dot matrix; see top-left panel)")
-    ax_matrix.grid(axis="x", alpha=0.2)
+    ax_matrix.tick_params(axis="x", labelbottom=False)
+    ax_matrix.grid(axis="y", alpha=0.15)
     ax_matrix.set_xlim(-0.6, len(intersections) - 0.4)
     ax_matrix.invert_yaxis()
+    for spine in ("top", "right", "bottom"):
+        ax_matrix.spines[spine].set_visible(False)
 
+    # --- Set size bars pointing left (bottom-left) ---
     set_sizes = [result.set_sizes[fuzzer] for fuzzer in fuzzers]
     ax_sets.barh(y_ticks, set_sizes, color="#7daedb")
     max_set_size = max(max(set_sizes), 1)
     for y, size in zip(y_ticks, set_sizes):
-        ax_sets.text(size + max_set_size * 0.03, y, str(size), va="center", ha="left", fontsize=8)
+        ax_sets.text(
+            size + max_set_size * 0.03, y, str(size), va="center", ha="left", fontsize=8
+        )
     ax_sets.set_xlabel("Set size")
     ax_sets.set_yticks(y_ticks)
-    ax_sets.set_yticklabels([])
+    ax_sets.set_yticklabels(fuzzers)
     ax_sets.invert_yaxis()
-    ax_sets.set_xlim(0, max_set_size * 1.25)
+    ax_sets.invert_xaxis()
+    ax_sets.set_xlim(max_set_size * 1.25, 0)
+    for spine in ("top", "left"):
+        ax_sets.spines[spine].set_visible(False)
 
-    fig.savefig(out_png, dpi=200)
+    fig.savefig(out_png, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 
