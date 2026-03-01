@@ -13,6 +13,15 @@ import sys
 import time
 from dataclasses import dataclass
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+from analysis.trial_run import (  # noqa: E402
+    MIN_BUDGET_HOURS,
+    MIN_RUNS_PER_FUZZER,
+    format_trial_run_warning,
+)
+
 
 RUN_MANIFEST_RE = re.compile(r"^runs/([0-9]+)/([0-9a-f]{32})/manifest\.json$")
 PRICING_API_REGION = "us-east-1"
@@ -698,6 +707,22 @@ def main() -> int:
         elif r.analysis_kind == "reports":
             lines.append("::: tip Legacy analysis")
             lines.append("This run's analysis artifacts are stored under the legacy `reports/` prefix.")
+            lines.append(":::")
+            lines.append("")
+
+        instances = m.get("instances_per_fuzzer")
+        is_trial = False
+        if r.timeout_hours < MIN_BUDGET_HOURS:
+            is_trial = True
+        if instances is not None:
+            try:
+                if int(instances) < MIN_RUNS_PER_FUZZER:
+                    is_trial = True
+            except (TypeError, ValueError):
+                pass
+        if is_trial:
+            lines.append("::: warning Trial run")
+            lines.append(format_trial_run_warning())
             lines.append(":::")
             lines.append("")
 

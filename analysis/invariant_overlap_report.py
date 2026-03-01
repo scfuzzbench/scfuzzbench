@@ -7,8 +7,13 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import sys
 import textwrap
 from typing import Dict, List, Optional, Tuple
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import matplotlib
 
@@ -17,6 +22,12 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import numpy as np
 import pandas as pd
+
+from analysis.trial_run import (
+    MIN_BUDGET_HOURS,
+    MIN_RUNS_PER_FUZZER,
+    format_trial_run_warning,
+)
 
 REQUIRED_COLS = {"fuzzer", "event", "elapsed_seconds"}
 OPTIONAL_ID_COLS = ("run_id", "instance_id")
@@ -201,6 +212,7 @@ def write_md_report(
     budget_hours: Optional[float],
     top_k: int,
     max_items_per_group: int = 200,
+    runs_per_fuzzer: Optional[List[int]] = None,
 ) -> None:
     out_md.parent.mkdir(parents=True, exist_ok=True)
 
@@ -214,6 +226,15 @@ def write_md_report(
     lines.append(f"- Events considered: **{result.filtered_events} / {result.total_events}**")
     lines.append(f"- Unique invariants: **{len(result.invariants)}**")
     lines.append("")
+
+    is_trial = False
+    if budget_hours is not None and budget_hours < MIN_BUDGET_HOURS:
+        is_trial = True
+    if runs_per_fuzzer and min(runs_per_fuzzer) < MIN_RUNS_PER_FUZZER:
+        is_trial = True
+    if is_trial:
+        lines.append("> " + format_trial_run_warning())
+        lines.append("")
 
     if not result.invariants:
         lines.append("No broken invariants were found in the filtered event stream.")
@@ -690,6 +711,14 @@ def main() -> int:
     total_events = len(events)
     filtered = filter_budget(events, args.budget_hours)
 
+    runs_per_fuzzer: List[int] = []
+    if not filtered.empty:
+        for _, grp in filtered.groupby("fuzzer", sort=False):
+            run_keys = grp.apply(
+                lambda r: f"{r['run_id']}:{r['instance_id']}", axis=1
+            ).nunique()
+            runs_per_fuzzer.append(int(run_keys))
+
     result = build_overlap(filtered, total_events=total_events)
     write_csv_report(result, args.out_csv)
     write_md_report(
@@ -697,6 +726,7 @@ def main() -> int:
         args.out_md,
         budget_hours=args.budget_hours,
         top_k=args.top_k,
+        runs_per_fuzzer=runs_per_fuzzer,
     )
     plot_upset(result, args.out_png, top_k=args.top_k)
 

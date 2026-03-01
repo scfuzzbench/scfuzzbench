@@ -7,12 +7,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+from analysis.trial_run import format_trial_run_warning, is_trial_run
 
 REQUIRED_COLS = ["fuzzer", "run_id", "time_hours", "bugs_found"]
 REQUIRED_SAMPLE_BASE_COLS = ["fuzzer", "run_id", "instance_id", "elapsed_seconds"]
@@ -950,6 +956,9 @@ def write_report(
     lines.append("")
     lines.append(f"- Time budget: **{budget:.2f}h**")
     lines.append("")
+    if is_trial_run(budget, [m.runs for m in metrics]):
+        lines.append("> " + format_trial_run_warning())
+        lines.append("")
     lines.append("## Executive summary")
     lines.append(
         "This report is derived solely from cumulative bugs-found over time across repeated runs per fuzzer. "
@@ -1065,6 +1074,9 @@ def write_no_data_report(
     lines.append(f"- Time budget: **{budget:.2f}h**")
     lines.append(f"- Source CSV: `{csv_path}`")
     lines.append("")
+    if is_trial_run(budget, []):
+        lines.append("> " + format_trial_run_warning())
+        lines.append("")
     lines.append("## No data")
     lines.append("")
     lines.append(
