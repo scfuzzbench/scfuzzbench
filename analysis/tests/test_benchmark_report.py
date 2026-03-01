@@ -157,9 +157,11 @@ class BenchmarkReportTests(unittest.TestCase):
 
             self.assertIn("Progress metrics from logs", report)
             self.assertIn(
-                "| foundry | 1 | 0 | n/a | 1 | 280.00 [260.00,300.00] | 1 | 85.00 [80.00,90.00] | 1 | 66.00 [60.00,70.00] | 1 | 25.0% [20.0%,30.0%] |",
+                "| foundry | 1 | 0 | n/a | 1 | 280.00 [260.00,300.00] | 1 | 85.00 [80.00,90.00] |",
                 report,
             )
+            self.assertNotIn("Favored", report)
+            self.assertNotIn("Failure-rate", report)
 
     def test_cli_clamps_checkpoints_to_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -251,8 +253,8 @@ class BenchmarkReportTests(unittest.TestCase):
             self.assertIn("## No data", report)
             self.assertIn("## Throughput metrics (if supported by log format)", report)
             self.assertIn("## Progress metrics from logs (fuzzer-specific proxies)", report)
-            self.assertTrue((out_dir / "progress_metrics_levels.png").exists())
-            self.assertTrue((out_dir / "progress_metrics_availability.png").exists())
+            self.assertFalse((out_dir / "progress_metrics_levels.png").exists())
+            self.assertFalse((out_dir / "progress_metrics_availability.png").exists())
 
     def test_cli_generates_metric_timeseries_charts_from_samples(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -291,11 +293,11 @@ class BenchmarkReportTests(unittest.TestCase):
             progress_samples_csv.write_text(
                 "\n".join(
                     [
-                        "run_id,instance_id,fuzzer,fuzzer_label,elapsed_seconds,seq_per_second,coverage_proxy,corpus_size,favored_items,failure_rate,source,log_path",
-                        "run-1,i-1,foundry,foundry,0,5,100,50,20,0.10,text-metrics,a.log",
-                        "run-1,i-1,foundry,foundry,3600,6,130,70,24,0.05,text-metrics,a.log",
-                        "run-1,i-2,foundry,foundry,0,4,90,45,18,0.12,text-metrics,b.log",
-                        "run-1,i-2,foundry,foundry,3600,5,120,66,22,0.06,text-metrics,b.log",
+                        "run_id,instance_id,fuzzer,fuzzer_label,elapsed_seconds,seq_per_second,coverage_proxy,corpus_size,source,log_path",
+                        "run-1,i-1,foundry,foundry,0,5,100,50,text-metrics,a.log",
+                        "run-1,i-1,foundry,foundry,3600,6,130,70,text-metrics,a.log",
+                        "run-1,i-2,foundry,foundry,0,4,90,45,text-metrics,b.log",
+                        "run-1,i-2,foundry,foundry,3600,5,120,66,text-metrics,b.log",
                     ]
                 )
                 + "\n",
@@ -330,8 +332,8 @@ class BenchmarkReportTests(unittest.TestCase):
             self.assertTrue((out_dir / "seq_per_second_over_time.png").exists())
             self.assertTrue((out_dir / "coverage_proxy_over_time.png").exists())
             self.assertTrue((out_dir / "corpus_size_over_time.png").exists())
-            self.assertTrue((out_dir / "favored_items_over_time.png").exists())
-            self.assertTrue((out_dir / "failure_rate_over_time.png").exists())
+            self.assertFalse((out_dir / "favored_items_over_time.png").exists())
+            self.assertFalse((out_dir / "failure_rate_over_time.png").exists())
 
 
 class StatisticalTestsTests(unittest.TestCase):

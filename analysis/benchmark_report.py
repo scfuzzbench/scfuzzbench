@@ -29,8 +29,6 @@ PROGRESS_SAMPLE_VALUE_COLS = [
     "seq_per_second",
     "coverage_proxy",
     "corpus_size",
-    "favored_items",
-    "failure_rate",
 ]
 
 
@@ -396,7 +394,7 @@ def append_progress_metrics_section(
 
     lines.append("## Progress metrics from logs (fuzzer-specific proxies)")
     lines.append(
-        "Coverage/corpus/favored/failure-rate values are parsed from each fuzzer's native progress output and are useful for trend context, not strict cross-fuzzer equivalence."
+        "Coverage/corpus values are parsed from each fuzzer's native progress output and are useful for trend context, not strict cross-fuzzer equivalence."
     )
     header = [
         "Fuzzer",
@@ -407,10 +405,6 @@ def append_progress_metrics_section(
         "Coverage p50 [p25,p75]",
         "Corpus runs",
         "Corpus p50 [p25,p75]",
-        "Favored runs",
-        "Favored p50 [p25,p75]",
-        "Failure-rate runs",
-        "Failure-rate p50 [p25,p75]",
     ]
     lines.append("| " + " | ".join(header) + " |")
     lines.append("|" + "|".join(["---"] * len(header)) + "|")
@@ -440,126 +434,11 @@ def append_progress_metrics_section(
                     fmt_triplet(row.coverage_p50, row.coverage_p25, row.coverage_p75),
                     str(row.corpus_runs),
                     fmt_triplet(row.corpus_p50, row.corpus_p25, row.corpus_p75),
-                    str(row.favored_runs),
-                    fmt_triplet(row.favored_p50, row.favored_p25, row.favored_p75),
-                    str(row.failure_rate_runs),
-                    fmt_pct_triplet(
-                        row.failure_rate_p50,
-                        row.failure_rate_p25,
-                        row.failure_rate_p75,
-                    ),
                 ]
             )
             + " |"
         )
     lines.append("")
-
-
-def plot_progress_metrics_levels(
-    progress_metrics_by_fuzzer: Dict[str, ProgressMetricsSummary],
-    outpath: Path,
-    label_map: dict[str, str] | None,
-) -> None:
-    if not progress_metrics_by_fuzzer:
-        return
-
-    ordered = sorted(progress_metrics_by_fuzzer.keys())
-    fig, axes = plt.subplots(3, 2, figsize=(12, 10))
-    axes_flat = list(axes.flatten())
-
-    metric_specs = [
-        ("Seq/s (p50, IQR)", "seqps_p50", "seqps_p25", "seqps_p75", 1.0),
-        ("Coverage proxy (p50, IQR)", "coverage_p50", "coverage_p25", "coverage_p75", 1.0),
-        ("Corpus size (p50, IQR)", "corpus_p50", "corpus_p25", "corpus_p75", 1.0),
-        ("Favored items (p50, IQR)", "favored_p50", "favored_p25", "favored_p75", 1.0),
-        ("Failure rate % (p50, IQR)", "failure_rate_p50", "failure_rate_p25", "failure_rate_p75", 100.0),
-    ]
-
-    for idx, (title, p50_key, p25_key, p75_key, factor) in enumerate(metric_specs):
-        ax = axes_flat[idx]
-        labels: List[str] = []
-        values: List[float] = []
-        lower: List[float] = []
-        upper: List[float] = []
-        for fuzzer in ordered:
-            row = progress_metrics_by_fuzzer[fuzzer]
-            p50 = getattr(row, p50_key)
-            if p50 is None:
-                continue
-            p25 = getattr(row, p25_key)
-            p75 = getattr(row, p75_key)
-            if p25 is None:
-                p25 = p50
-            if p75 is None:
-                p75 = p50
-            labels.append(label_map.get(fuzzer, fuzzer) if label_map else fuzzer)
-            values.append(p50 * factor)
-            lower.append(max(0.0, (p50 - p25) * factor))
-            upper.append(max(0.0, (p75 - p50) * factor))
-
-        if not values:
-            ax.axis("off")
-            ax.text(0.5, 0.5, "n/a", ha="center", va="center")
-            ax.set_title(title)
-            continue
-
-        x = np.arange(len(values))
-        ax.bar(x, values, color="#5A7D9A", alpha=0.9)
-        ax.errorbar(
-            x,
-            values,
-            yerr=[lower, upper],
-            fmt="none",
-            ecolor="black",
-            capsize=3,
-            elinewidth=1.0,
-        )
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=20, ha="right")
-        ax.set_title(title)
-
-    for idx in range(len(metric_specs), len(axes_flat)):
-        axes_flat[idx].axis("off")
-
-    fig.suptitle("Progress metrics by fuzzer")
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
-    fig.savefig(outpath, dpi=200)
-    plt.close(fig)
-
-
-def plot_progress_metrics_availability(
-    progress_metrics_by_fuzzer: Dict[str, ProgressMetricsSummary],
-    outpath: Path,
-    label_map: dict[str, str] | None,
-) -> None:
-    if not progress_metrics_by_fuzzer:
-        return
-
-    ordered = sorted(progress_metrics_by_fuzzer.keys())
-    labels = [label_map.get(fuzzer, fuzzer) if label_map else fuzzer for fuzzer in ordered]
-    x = np.arange(len(ordered))
-    metric_specs = [
-        ("Seq/s", "seqps_runs"),
-        ("Coverage", "coverage_runs"),
-        ("Corpus", "corpus_runs"),
-        ("Favored", "favored_runs"),
-        ("Failure rate", "failure_rate_runs"),
-    ]
-    width = 0.8 / len(metric_specs)
-
-    plt.figure(figsize=(10, 5))
-    for idx, (name, attr) in enumerate(metric_specs):
-        vals = [float(getattr(progress_metrics_by_fuzzer[fuzzer], attr)) for fuzzer in ordered]
-        offset = (idx - (len(metric_specs) - 1) / 2.0) * width
-        plt.bar(x + offset, vals, width=width, label=name)
-
-    plt.xticks(x, labels)
-    plt.ylabel("Runs with metric samples")
-    plt.title("Progress metric availability by fuzzer")
-    plt.legend(ncol=3)
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=200)
-    plt.close()
 
 
 def nan_percentile_rows(arr: np.ndarray, percentile_value: float) -> np.ndarray:
@@ -685,20 +564,6 @@ def plot_sample_metric_charts(
             "Corpus size over time",
             "Corpus size",
             1.0,
-        ),
-        (
-            "favored_items",
-            "favored_items_over_time.png",
-            "Favored items over time",
-            "Favored items",
-            1.0,
-        ),
-        (
-            "failure_rate",
-            "failure_rate_over_time.png",
-            "Failure rate over time",
-            "Failure rate (%)",
-            100.0,
         ),
     ]
     for value_column, filename, title, ylabel, scale in progress_specs:
@@ -1462,17 +1327,6 @@ def main() -> int:
             images_outdir / "plateau_and_late_share.png",
             msg,
         )
-        if progress_metrics_by_fuzzer:
-            plot_progress_metrics_levels(
-                progress_metrics_by_fuzzer,
-                images_outdir / "progress_metrics_levels.png",
-                label_map=None,
-            )
-            plot_progress_metrics_availability(
-                progress_metrics_by_fuzzer,
-                images_outdir / "progress_metrics_availability.png",
-                label_map=None,
-            )
         sample_metric_plot_files = plot_sample_metric_charts(
             throughput_samples_df=throughput_samples_df,
             progress_metrics_samples_df=progress_metrics_samples_df,
@@ -1499,17 +1353,6 @@ def main() -> int:
     plot_time_to_k(metrics, ks=ks, outpath=images_outdir / "time_to_k.png", label_map=label_map)
     plot_final_distribution(df_grid, images_outdir / "final_distribution.png", label_map)
     plot_plateau_and_late_share(metrics, images_outdir / "plateau_and_late_share.png", label_map)
-    if progress_metrics_by_fuzzer:
-        plot_progress_metrics_levels(
-            progress_metrics_by_fuzzer,
-            images_outdir / "progress_metrics_levels.png",
-            label_map=label_map,
-        )
-        plot_progress_metrics_availability(
-            progress_metrics_by_fuzzer,
-            images_outdir / "progress_metrics_availability.png",
-            label_map=label_map,
-        )
     sample_metric_plot_files = plot_sample_metric_charts(
         throughput_samples_df=throughput_samples_df,
         progress_metrics_samples_df=progress_metrics_samples_df,
@@ -1536,13 +1379,6 @@ def main() -> int:
         "final_distribution.png",
         "plateau_and_late_share.png",
     ]
-    if progress_metrics_by_fuzzer:
-        plot_files.extend(
-            [
-                "progress_metrics_levels.png",
-                "progress_metrics_availability.png",
-            ]
-        )
     plot_files.extend(sample_metric_plot_files)
     print("plots: " + ", ".join(plot_files))
     return 0
