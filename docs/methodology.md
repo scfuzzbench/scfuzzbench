@@ -186,6 +186,10 @@ If input CSV is empty, the report explicitly records the no-data condition and e
   - `broken_invariants.csv`
   - `invariant_overlap_upset.png`
 - These artifacts provide per-fuzzer totals, exclusives, shared subsets, and normalized invariant labels.
+- Important interpretation note: UpSet overlap is approximate, not exact root-cause equivalence.
+  - Two assertions inside one target function can represent distinct bugs (for example, one in the `try` success path vs one in the `catch` path, where one indicates an unexpected successful-result condition and the other indicates a DoS/revert behavior).
+  - Foundry-side assertion surfacing depends on the current `foundry-rs/foundry#13322` behavior (<https://github.com/foundry-rs/foundry/issues/13322>), so normalized overlap should be read as an approximation.
+  - Even in Echidna vs Medusa comparisons, overlap is still approximate: Echidna may falsify `assert(x != y)` while Medusa falsifies `assert(a != b)` in the same target-function body, which are distinct bugs even if function-level normalization groups them together.
 - UpSet chart layout follows: Lex A, Gehlenborg N, Strobelt H, Vuillemot R, Pfister H. *UpSet: Visualization of Intersecting Sets*. IEEE TVCG 20(12), 2014 ([doi:10.1109/TVCG.2014.2346248](https://doi.org/10.1109/TVCG.2014.2346248)).
 
 ### Runner resource reporting (`analysis/runner_metrics_report.py`)
