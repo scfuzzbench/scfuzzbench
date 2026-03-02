@@ -61,6 +61,10 @@ Optional:
    - prefer minimal, rename-first edits when applying naming normalization
    - preserve existing harness behavior and side effects
    - if helper methods, handler splits, or action/assertion refactors are potentially ambiguous/confusing, ask the user first and apply their case-by-case preference
+11. Invariant signature compatibility rule:
+   - every `invariant_*` function across `test/recon/**` and inherited bases must be declared `returns (bool)`
+   - invariant functions must be nonpayable (not `view`/`pure`) for Medusa property compatibility
+   - include an explicit boolean return at function end (for example `return true;`)
 
 ## Workflow
 
@@ -135,6 +139,7 @@ Add these canaries to each target harness:
 2. Global invariant canary:
    - invariant function name must start with `invariant_`
    - canary invariant must take no parameters
+   - canary invariant must use signature `function invariant_canary() public returns (bool)`
    - use `invariant_canary` and make it fail immediately (`Canary invariant`)
 
 Reference implementation:
@@ -150,7 +155,7 @@ function assert_canary_ASSERTION_CANARY(uint256 entropy) public {
 
 function invariant_canary() public returns (bool) {
     t(false, INVARIANT_CANARY_GLOBAL_INVARIANT_FAILURE);
-    return false;
+    return true;
 }
 ```
 
@@ -177,11 +182,12 @@ function _recordAssertion(bool ok, string memory reason) internal {
     }
 }
 
-function invariant_assertion_failure_assert_canary_ASSERTION_CANARY() public view {
+function invariant_assertion_failure_assert_canary_ASSERTION_CANARY() public returns (bool) {
     assertTrue(
         !assertionFailures[ASSERTION_CANARY],
         ASSERTION_CANARY
     );
+    return true;
 }
 ```
 
