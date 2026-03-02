@@ -920,8 +920,9 @@ def format_statistical_report(
     lines.append("")
 
     if warnings_list:
+        lines.append("**Warnings:**")
         for w in warnings_list:
-            lines.append(f"**Warning:** {w}")
+            lines.append(f"- {w}")
         lines.append("")
 
     if results:
