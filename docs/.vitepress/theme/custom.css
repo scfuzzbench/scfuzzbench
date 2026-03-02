@@ -20,6 +20,7 @@
   --sb-brand-2: #5eead4; /* brighter teal */
   --sb-brand-3: #0f766e; /* deep teal */
   --sb-accent: #a3e635; /* lime */
+  --sb-danger: #ef4444; /* red */
 
   /* Light mode defaults (still supported) */
   --vp-c-brand-1: var(--sb-brand-3);
@@ -263,7 +264,12 @@
 }
 
 .vp-doc .custom-block.warning {
-  border-left-color: var(--sb-accent);
+  border-left-color: var(--sb-danger);
+  background: color-mix(in srgb, var(--sb-danger) 10%, var(--vp-c-bg-soft));
+}
+
+.vp-doc .custom-block.warning .custom-block-title {
+  color: var(--sb-danger);
 }
 
 /* Code blocks */
