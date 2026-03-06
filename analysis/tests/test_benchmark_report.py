@@ -4,9 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 from analysis import benchmark_report
+from analysis import plot_palette
 
 
 def _make_metrics(fuzzer, final_values, runs=None, **kwargs):
@@ -31,6 +33,33 @@ def _make_metrics(fuzzer, final_values, runs=None, **kwargs):
 
 
 class BenchmarkReportTests(unittest.TestCase):
+    def test_build_fuzzer_color_map_is_alphabetical_and_stable(self):
+        colors_a = plot_palette.build_fuzzer_color_map(
+            ["medusa", "foundry", "echidna", "medusa"]
+        )
+        colors_b = plot_palette.build_fuzzer_color_map(
+            ["echidna", "medusa", "foundry"]
+        )
+        self.assertEqual(colors_a, colors_b)
+        self.assertEqual(["echidna", "foundry", "medusa"], list(colors_a.keys()))
+
+    def test_non_fuzzer_shades_uses_purples(self):
+        shades = plot_palette.non_fuzzer_shades(3)
+        self.assertEqual(3, len(shades))
+
+        expected = [
+            plt.get_cmap("Purples")(0.45),
+            plt.get_cmap("Purples")(0.675),
+            plt.get_cmap("Purples")(0.9),
+        ]
+        self.assertEqual(expected, shades)
+
+    def test_build_non_fuzzer_color_map_is_alphabetical(self):
+        color_map = plot_palette.build_non_fuzzer_color_map(
+            ["medusa", "echidna", "foundry"]
+        )
+        self.assertEqual(["echidna", "foundry", "medusa"], list(color_map.keys()))
+
     def test_write_report_mentions_invariant_artifacts(self):
         metrics = [
             benchmark_report.FuzzerMetrics(

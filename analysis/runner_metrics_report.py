@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from analysis import analyze
+from analysis.plot_palette import build_fuzzer_color_map
 
 
 REQUIRED_COLS = [
@@ -368,13 +369,25 @@ def plot_usage(
 
     out_png.parent.mkdir(parents=True, exist_ok=True)
     plt.figure(figsize=(9, 5))
+    ax = plt.gca()
+    fuzzer_colors = build_fuzzer_color_map(dist["fuzzer"].tolist())
     for fuzzer, group in dist.groupby("fuzzer", sort=True):
+        color = fuzzer_colors.get(str(fuzzer))
+        if color is None:
+            color = ax._get_lines.get_next_color()
         x = group["elapsed_hours"].to_numpy(dtype=float)
         p25 = group["p25"].to_numpy(dtype=float)
         p50 = group["p50"].to_numpy(dtype=float)
         p75 = group["p75"].to_numpy(dtype=float)
-        plt.fill_between(x, p25, p75, step="post", alpha=0.15)
-        plt.step(x, p50, where="post", linewidth=2.5, label=f"{fuzzer} (median)")
+        plt.fill_between(x, p25, p75, step="post", alpha=0.15, color=color)
+        plt.step(
+            x,
+            p50,
+            where="post",
+            linewidth=2.5,
+            label=f"{fuzzer} (median)",
+            color=color,
+        )
 
     plt.title(title)
     plt.xlabel("Elapsed time (hours)")
