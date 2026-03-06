@@ -113,6 +113,121 @@ set_default_worker_env() {
   export "${var_name}"
 }
 
+is_sensitive_arg_name() {
+  local name="${1:-}"
+  name="${name,,}"
+  case "${name}" in
+    *token*|*secret*|*password*|*passwd*|*api-key*|*apikey*|*private-key*|*access-key*|*secret-key*|*auth*|*authorization*|*cookie*|*session*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+redact_url_userinfo() {
+  local value="${1:-}"
+  if [[ "${value}" =~ ^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]+@(.+)$ ]]; then
+    echo "${BASH_REMATCH[1]}__SCFUZZBENCH_REDACTED__@${BASH_REMATCH[2]}"
+    return 0
+  fi
+  echo "${value}"
+}
+
+sanitize_command_for_log() {
+  local -a sanitized=()
+  local redact_next=0
+  local arg key value normalized escaped rendered
+
+  for arg in "$@"; do
+    if [[ "${redact_next}" -eq 1 ]]; then
+      sanitized+=("__SCFUZZBENCH_REDACTED__")
+      redact_next=0
+      continue
+    fi
+
+    arg=$(redact_url_userinfo "${arg}")
+
+    if [[ "${arg}" == --*=* ]]; then
+      key="${arg%%=*}"
+      value=$(redact_url_userinfo "${arg#*=}")
+      normalized="${key#--}"
+      if is_sensitive_arg_name "${normalized}"; then
+        sanitized+=("${key}=__SCFUZZBENCH_REDACTED__")
+      else
+        sanitized+=("${key}=${value}")
+      fi
+      continue
+    fi
+
+    if [[ "${arg}" == *=* && "${arg}" != -* ]]; then
+      key="${arg%%=*}"
+      value=$(redact_url_userinfo "${arg#*=}")
+      if is_sensitive_arg_name "${key}"; then
+        sanitized+=("${key}=__SCFUZZBENCH_REDACTED__")
+      else
+        sanitized+=("${key}=${value}")
+      fi
+      continue
+    fi
+
+    if [[ "${arg}" == --* ]]; then
+      normalized="${arg#--}"
+      if is_sensitive_arg_name "${normalized}"; then
+        redact_next=1
+      fi
+      sanitized+=("${arg}")
+      continue
+    fi
+
+    if [[ "${arg}" == -* ]]; then
+      normalized="${arg#-}"
+      if is_sensitive_arg_name "${normalized}"; then
+        redact_next=1
+      fi
+      sanitized+=("${arg}")
+      continue
+    fi
+
+    sanitized+=("${arg}")
+  done
+
+  rendered=""
+  for arg in "${sanitized[@]}"; do
+    printf -v escaped '%q' "${arg}"
+    if [[ -n "${rendered}" ]]; then
+      rendered+=" "
+    fi
+    rendered+="${escaped}"
+  done
+  echo "${rendered}"
+}
+
+append_runner_command_log() {
+  local timeout_seconds="${1:-unknown}"
+  local grace_seconds="${2:-unknown}"
+  shift 2 || true
+
+  if [[ -z "${SCFUZZBENCH_LOG_DIR:-}" ]]; then
+    return 0
+  fi
+  if ! mkdir -p "${SCFUZZBENCH_LOG_DIR}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local cmd_log_path="${SCFUZZBENCH_LOG_DIR}/runner_commands.log"
+  local rendered_cmd
+  rendered_cmd=$(sanitize_command_for_log "$@")
+  if [[ -z "${rendered_cmd}" ]]; then
+    rendered_cmd="(empty command)"
+  fi
+  printf '[%s] timeout=%ss grace=%ss cmd=%s\n' \
+    "$(date -Is)" \
+    "${timeout_seconds}" \
+    "${grace_seconds}" \
+    "${rendered_cmd}" \
+    >> "${cmd_log_path}" 2>/dev/null || true
+}
+
 prepare_workspace() {
   mkdir -p "${SCFUZZBENCH_ROOT}" "${SCFUZZBENCH_WORKDIR}" "${SCFUZZBENCH_LOG_DIR}"
 }
@@ -802,6 +917,7 @@ run_with_timeout() {
   if [[ ! "${kill_after}" =~ ^[0-9]+$ ]]; then
     kill_after=300
   fi
+  append_runner_command_log "${SCFUZZBENCH_TIMEOUT_SECONDS}" "${kill_after}" "$@" || true
   log "Running command with timeout ${SCFUZZBENCH_TIMEOUT_SECONDS}s (grace ${kill_after}s)"
   set +e
   timeout --signal=SIGINT --kill-after="${kill_after}s" "${SCFUZZBENCH_TIMEOUT_SECONDS}s" "$@" 2>&1 | tee "${log_file}"

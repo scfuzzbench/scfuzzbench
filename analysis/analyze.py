@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 LOG_FILE_RE = re.compile(r".+\.log$")
 INSTANCE_PREFIX_RE = re.compile(r"^(i-[0-9a-f]+)-(.*)$")
+IGNORED_LOG_FILENAMES = {"runner_commands.log"}
 ABS_TS_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2} [0-9:.]+)\]")
 MEDUSA_ELAPSED_RE = re.compile(r"elapsed:\s*([0-9hms]+)")
 FOUNDATION_JSON_RE = re.compile(r"^\s*\{.*\}\s*$")
@@ -226,6 +227,12 @@ def normalize_fuzzer(fuzzer_label: str) -> str:
     if "foundry" in lower:
         return "foundry"
     return fuzzer_label
+
+
+def should_parse_log_file(path: Path) -> bool:
+    if not LOG_FILE_RE.match(path.name):
+        return False
+    return path.name.lower() not in IGNORED_LOG_FILENAMES
 
 
 def parse_optional_float(value: Any) -> Optional[float]:
@@ -746,7 +753,7 @@ def parse_logs(logs_dir: Path, run_id: Optional[str]) -> List[Event]:
     for path in logs_dir.rglob("*"):
         if not path.is_file():
             continue
-        if not LOG_FILE_RE.match(path.name):
+        if not should_parse_log_file(path):
             continue
         rel = path.relative_to(logs_dir)
         if len(rel.parts) < 2:
@@ -781,7 +788,7 @@ def parse_throughput_logs(logs_dir: Path, run_id: Optional[str]) -> List[Through
     for path in logs_dir.rglob("*"):
         if not path.is_file():
             continue
-        if not LOG_FILE_RE.match(path.name):
+        if not should_parse_log_file(path):
             continue
         rel = path.relative_to(logs_dir)
         if len(rel.parts) < 2:
@@ -921,7 +928,7 @@ def parse_progress_metrics_logs(
     for path in logs_dir.rglob("*"):
         if not path.is_file():
             continue
-        if not LOG_FILE_RE.match(path.name):
+        if not should_parse_log_file(path):
             continue
         rel = path.relative_to(logs_dir)
         if len(rel.parts) < 2:
