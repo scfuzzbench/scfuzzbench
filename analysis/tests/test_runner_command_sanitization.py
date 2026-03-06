@@ -24,9 +24,9 @@ class RunnerCommandSanitizationTests(unittest.TestCase):
             "--threads",
             "16",
         )
-        self.assertIn("--token __SCFUZZBENCH_REDACTED__", rendered)
-        self.assertIn("--api-key=__SCFUZZBENCH_REDACTED__", rendered)
-        self.assertIn("SECRET_VAR=__SCFUZZBENCH_REDACTED__", rendered)
+        self.assertIn("--token ***", rendered)
+        self.assertIn("--api-key=***", rendered)
+        self.assertIn("SECRET_VAR=***", rendered)
         self.assertIn("--threads 16", rendered)
 
     def test_redacts_url_userinfo_credentials(self):
@@ -36,7 +36,7 @@ class RunnerCommandSanitizationTests(unittest.TestCase):
             "--rpc-url=https://user:pass@example.test",
         )
         self.assertIn(
-            "--rpc-url=https://__SCFUZZBENCH_REDACTED__@example.test",
+            "--rpc-url=https://***@example.test",
             rendered,
         )
         self.assertNotIn("user:pass@", rendered)

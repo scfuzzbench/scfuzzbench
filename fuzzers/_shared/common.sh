@@ -127,7 +127,7 @@ is_sensitive_arg_name() {
 redact_url_userinfo() {
   local value="${1:-}"
   if [[ "${value}" =~ ^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]+@(.+)$ ]]; then
-    echo "${BASH_REMATCH[1]}__SCFUZZBENCH_REDACTED__@${BASH_REMATCH[2]}"
+    echo "${BASH_REMATCH[1]}***@${BASH_REMATCH[2]}"
     return 0
   fi
   echo "${value}"
@@ -136,11 +136,11 @@ redact_url_userinfo() {
 sanitize_command_for_log() {
   local -a sanitized=()
   local redact_next=0
-  local arg key value normalized escaped rendered
+  local arg key value normalized rendered
 
   for arg in "$@"; do
     if [[ "${redact_next}" -eq 1 ]]; then
-      sanitized+=("__SCFUZZBENCH_REDACTED__")
+      sanitized+=("***")
       redact_next=0
       continue
     fi
@@ -152,7 +152,7 @@ sanitize_command_for_log() {
       value=$(redact_url_userinfo "${arg#*=}")
       normalized="${key#--}"
       if is_sensitive_arg_name "${normalized}"; then
-        sanitized+=("${key}=__SCFUZZBENCH_REDACTED__")
+        sanitized+=("${key}=***")
       else
         sanitized+=("${key}=${value}")
       fi
@@ -163,7 +163,7 @@ sanitize_command_for_log() {
       key="${arg%%=*}"
       value=$(redact_url_userinfo "${arg#*=}")
       if is_sensitive_arg_name "${key}"; then
-        sanitized+=("${key}=__SCFUZZBENCH_REDACTED__")
+        sanitized+=("${key}=***")
       else
         sanitized+=("${key}=${value}")
       fi
@@ -193,11 +193,10 @@ sanitize_command_for_log() {
 
   rendered=""
   for arg in "${sanitized[@]}"; do
-    printf -v escaped '%q' "${arg}"
     if [[ -n "${rendered}" ]]; then
       rendered+=" "
     fi
-    rendered+="${escaped}"
+    rendered+="${arg}"
   done
   echo "${rendered}"
 }
