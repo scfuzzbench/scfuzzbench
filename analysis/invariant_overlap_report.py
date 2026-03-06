@@ -23,6 +23,10 @@ from matplotlib.patches import Circle
 import numpy as np
 import pandas as pd
 
+from analysis.plot_palette import (
+    build_non_fuzzer_color_map,
+    non_fuzzer_shades,
+)
 from analysis.trial_run import (
     MIN_BUDGET_HOURS,
     MIN_RUNS_PER_FUZZER,
@@ -442,6 +446,11 @@ def plot_upset(result: OverlapResult, out_png: Path, *, top_k: int) -> None:
     max_height = max(float(np.max(heights)), 1.0)
     top_pad = max(0.5, max_height * 0.08)
     combo_ids = [combo_id(combo) for combo, _ in intersections]
+    purple_scale = non_fuzzer_shades(4, min_shade=0.35, max_shade=0.9)
+    inactive_dot_color = purple_scale[0]
+    set_bar_color = purple_scale[1]
+    intersection_bar_color = purple_scale[2]
+    active_dot_color = purple_scale[3]
 
     detail_entries = [
         (
@@ -493,7 +502,7 @@ def plot_upset(result: OverlapResult, out_png: Path, *, top_k: int) -> None:
     )
 
     # --- Intersection size bars (top-center) ---
-    ax_bars.bar(x, heights, color="#1f77b4")
+    ax_bars.bar(x, heights, color=intersection_bar_color)
     for idx, height in enumerate(heights):
         ax_bars.text(
             idx,
@@ -517,19 +526,19 @@ def plot_upset(result: OverlapResult, out_png: Path, *, top_k: int) -> None:
     # --- Dot matrix (bottom-center) ---
     y_ticks = np.arange(len(fuzzers), dtype=float)
     for y in y_ticks:
-        ax_matrix.scatter(x, np.full_like(x, y), color="#d0d0d0", s=60, zorder=1)
+        ax_matrix.scatter(x, np.full_like(x, y), color=inactive_dot_color, s=60, zorder=1)
 
     for xi, (combo, _) in enumerate(intersections):
         ys = sorted(y_pos[fuzzer] for fuzzer in combo)
         ax_matrix.scatter(
             np.full(len(ys), xi, dtype=float),
             np.array(ys, dtype=float),
-            color="#222222",
+            color=active_dot_color,
             s=80,
             zorder=3,
         )
         if len(ys) > 1:
-            ax_matrix.plot([xi, xi], [ys[0], ys[-1]], color="#222222", linewidth=2.0, zorder=2)
+            ax_matrix.plot([xi, xi], [ys[0], ys[-1]], color=active_dot_color, linewidth=2.0, zorder=2)
 
     ax_matrix.set_yticks(y_ticks)
     ax_matrix.set_yticklabels([])
@@ -545,7 +554,7 @@ def plot_upset(result: OverlapResult, out_png: Path, *, top_k: int) -> None:
 
     # --- Set size bars pointing left (bottom-left) ---
     set_sizes = [result.set_sizes[fuzzer] for fuzzer in fuzzers]
-    ax_sets.barh(y_ticks, set_sizes, color="#7daedb")
+    ax_sets.barh(y_ticks, set_sizes, color=set_bar_color)
     max_set_size = max(max(set_sizes), 1)
     for y, size in zip(y_ticks, set_sizes):
         ax_sets.text(
@@ -579,6 +588,7 @@ def plot_venn_like(result: OverlapResult, out_png: Path) -> None:
         return
 
     fuzzers = sorted(result.fuzzers)
+    venn_colors = build_non_fuzzer_color_map(fuzzers, min_shade=0.55, max_shade=0.9)
     n = len(fuzzers)
 
     if n == 1:
@@ -587,7 +597,7 @@ def plot_venn_like(result: OverlapResult, out_png: Path) -> None:
         gs = fig.add_gridspec(1, 2, width_ratios=[1.4, 1.2], wspace=0.15)
         ax = fig.add_subplot(gs[0, 0])
         ax_details = fig.add_subplot(gs[0, 1])
-        ax.add_patch(Circle((0.5, 0.5), 0.3, alpha=0.25, color="#1f77b4", lw=2))
+        ax.add_patch(Circle((0.5, 0.5), 0.3, alpha=0.25, color=venn_colors[fuzzer], lw=2))
         ax.text(
             0.5,
             0.5,
@@ -634,8 +644,8 @@ def plot_venn_like(result: OverlapResult, out_png: Path) -> None:
         gs = fig.add_gridspec(1, 2, width_ratios=[1.5, 1.1], wspace=0.15)
         ax = fig.add_subplot(gs[0, 0])
         ax_details = fig.add_subplot(gs[0, 1])
-        ax.add_patch(Circle((0.42, 0.5), 0.28, alpha=0.28, color="#1f77b4", lw=2))
-        ax.add_patch(Circle((0.58, 0.5), 0.28, alpha=0.28, color="#ff7f0e", lw=2))
+        ax.add_patch(Circle((0.42, 0.5), 0.28, alpha=0.28, color=venn_colors[a], lw=2))
+        ax.add_patch(Circle((0.58, 0.5), 0.28, alpha=0.28, color=venn_colors[b], lw=2))
         ax.text(0.33, 0.5, str(a_only), ha="center", va="center", fontsize=15)
         ax.text(0.67, 0.5, str(b_only), ha="center", va="center", fontsize=15)
         ax.text(0.5, 0.5, str(ab), ha="center", va="center", fontsize=15, fontweight="bold")
@@ -677,9 +687,9 @@ def plot_venn_like(result: OverlapResult, out_png: Path) -> None:
         gs = fig.add_gridspec(1, 2, width_ratios=[1.6, 1.1], wspace=0.15)
         ax = fig.add_subplot(gs[0, 0])
         ax_details = fig.add_subplot(gs[0, 1])
-        ax.add_patch(Circle((0.43, 0.58), 0.24, alpha=0.28, color="#1f77b4", lw=2))
-        ax.add_patch(Circle((0.57, 0.58), 0.24, alpha=0.28, color="#ff7f0e", lw=2))
-        ax.add_patch(Circle((0.50, 0.42), 0.24, alpha=0.28, color="#2ca02c", lw=2))
+        ax.add_patch(Circle((0.43, 0.58), 0.24, alpha=0.28, color=venn_colors[a], lw=2))
+        ax.add_patch(Circle((0.57, 0.58), 0.24, alpha=0.28, color=venn_colors[b], lw=2))
+        ax.add_patch(Circle((0.50, 0.42), 0.24, alpha=0.28, color=venn_colors[c], lw=2))
         ax.text(0.34, 0.60, str(a_only), ha="center", va="center", fontsize=13)
         ax.text(0.66, 0.60, str(b_only), ha="center", va="center", fontsize=13)
         ax.text(0.50, 0.30, str(c_only), ha="center", va="center", fontsize=13)

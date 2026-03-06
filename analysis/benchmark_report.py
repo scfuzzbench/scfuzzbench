@@ -21,6 +21,11 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from analysis.plot_palette import (
+    build_fuzzer_color_map,
+    collect_fuzzer_names,
+    non_fuzzer_shades,
+)
 from analysis.trial_run import format_trial_run_warning, is_trial_run
 
 REQUIRED_COLS = ["fuzzer", "run_id", "time_hours", "bugs_found"]
@@ -31,9 +36,6 @@ PROGRESS_SAMPLE_VALUE_COLS = [
     "coverage_proxy",
     "corpus_size",
 ]
-FUZZER_BASE_COLORS = list(plt.get_cmap("tab20").colors)
-FUZZER_COLOR_SEQUENCE = FUZZER_BASE_COLORS[::2] + FUZZER_BASE_COLORS[1::2]
-NON_FUZZER_CMAP = plt.get_cmap("Purples")
 
 
 def die(msg: str) -> None:
@@ -455,52 +457,6 @@ def nan_percentile_rows(arr: np.ndarray, percentile_value: float) -> np.ndarray:
     return out
 
 
-def collect_fuzzer_names(*frames: pd.DataFrame) -> List[str]:
-    names: List[str] = []
-    seen: set[str] = set()
-    for frame in frames:
-        if "fuzzer" not in frame.columns:
-            continue
-        for raw_name in frame["fuzzer"].dropna().astype(str):
-            name = raw_name.strip()
-            if not name or name in seen:
-                continue
-            names.append(name)
-            seen.add(name)
-    return names
-
-
-def non_fuzzer_shades(
-    count: int, *, min_shade: float = 0.45, max_shade: float = 0.9
-) -> List[tuple]:
-    if count <= 0:
-        return []
-    if count == 1:
-        return [NON_FUZZER_CMAP(max_shade)]
-    return [
-        NON_FUZZER_CMAP(
-            min_shade + (max_shade - min_shade) * (idx / float(count - 1))
-        )
-        for idx in range(count)
-    ]
-
-
-def build_fuzzer_color_map(fuzzers: List[str]) -> Dict[str, tuple]:
-    ordered_fuzzers = sorted({str(fuzzer).strip() for fuzzer in fuzzers if str(fuzzer).strip()})
-    if not ordered_fuzzers:
-        return {}
-
-    colors = list(FUZZER_COLOR_SEQUENCE[: len(ordered_fuzzers)])
-    extra = len(ordered_fuzzers) - len(colors)
-    if extra > 0:
-        hsv = plt.get_cmap("hsv")
-        for idx in range(extra):
-            hue = (idx * 0.61803398875) % 1.0
-            colors.append(hsv(hue))
-
-    return {fuzzer: colors[idx] for idx, fuzzer in enumerate(ordered_fuzzers)}
-
-
 def plot_metric_over_time(
     *,
     metric_df: pd.DataFrame,
@@ -860,7 +816,7 @@ def plot_final_distribution(
             else "#333333"
         )
 
-    boxplot = plt.boxplot(data, labels=labels, showfliers=False, patch_artist=True)
+    boxplot = plt.boxplot(data, tick_labels=labels, showfliers=False, patch_artist=True)
     for idx, color in enumerate(box_colors):
         boxplot["boxes"][idx].set_facecolor(mcolors.to_rgba(color, alpha=0.25))
         boxplot["boxes"][idx].set_edgecolor(color)
@@ -1373,7 +1329,11 @@ def main() -> int:
         else pd.DataFrame(columns=["fuzzer", "series_id", "time_hours", *PROGRESS_SAMPLE_VALUE_COLS])
     )
     fuzzer_colors = build_fuzzer_color_map(
-        collect_fuzzer_names(df, throughput_samples_df, progress_metrics_samples_df)
+        collect_fuzzer_names(
+            df["fuzzer"],
+            throughput_samples_df["fuzzer"],
+            progress_metrics_samples_df["fuzzer"],
+        )
     )
 
     if args.budget is None:
