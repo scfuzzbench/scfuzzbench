@@ -18,9 +18,11 @@ Environment variables:
 - `ECHIDNA_CONFIG` or `ECHIDNA_TARGET` (required; add `ECHIDNA_CONTRACT` if needed)
 - `ECHIDNA_WORKERS`, `ECHIDNA_TEST_MODE`, `ECHIDNA_EXTRA_ARGS`
 - `ECHIDNA_CORPUS_DIR`
+- `ECHIDNA_RTS_ARGS` (optional; defaults to `-A1g`; set to empty to disable RTS args)
 
 Notes:
 - In `property` mode, the runner rewrites `prefix: "invariant_"` to `prefix: "echidna_"` inside the config file so global properties are treated like assertions.
+- By default, the runner appends `+RTS -A1g -RTS` to reduce GC overhead on multicore instances.
 
 ## Echidna (symexec)
 

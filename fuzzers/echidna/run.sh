@@ -73,6 +73,12 @@ if [[ -n "${ECHIDNA_TARGET:-}" ]]; then
   cmd+=("${ECHIDNA_TARGET}")
 fi
 
+echidna_rts_args="${ECHIDNA_RTS_ARGS:--A1g}"
+if [[ -n "${echidna_rts_args}" ]]; then
+  read -r -a rts_args <<< "${echidna_rts_args}"
+  cmd+=(+RTS "${rts_args[@]}" -RTS)
+fi
+
 set +e
 pushd "${repo_dir}" >/dev/null
 run_with_timeout "${log_file}" "${cmd[@]}"
