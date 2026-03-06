@@ -15,6 +15,7 @@ if str(_REPO_ROOT) not in sys.path:
 import matplotlib
 
 matplotlib.use("Agg")
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -30,6 +31,9 @@ PROGRESS_SAMPLE_VALUE_COLS = [
     "coverage_proxy",
     "corpus_size",
 ]
+FUZZER_BASE_COLORS = list(plt.get_cmap("tab20").colors)
+FUZZER_COLOR_SEQUENCE = FUZZER_BASE_COLORS[::2] + FUZZER_BASE_COLORS[1::2]
+NON_FUZZER_CMAP = plt.get_cmap("Purples")
 
 
 def die(msg: str) -> None:
@@ -451,6 +455,52 @@ def nan_percentile_rows(arr: np.ndarray, percentile_value: float) -> np.ndarray:
     return out
 
 
+def collect_fuzzer_names(*frames: pd.DataFrame) -> List[str]:
+    names: List[str] = []
+    seen: set[str] = set()
+    for frame in frames:
+        if "fuzzer" not in frame.columns:
+            continue
+        for raw_name in frame["fuzzer"].dropna().astype(str):
+            name = raw_name.strip()
+            if not name or name in seen:
+                continue
+            names.append(name)
+            seen.add(name)
+    return names
+
+
+def non_fuzzer_shades(
+    count: int, *, min_shade: float = 0.45, max_shade: float = 0.9
+) -> List[tuple]:
+    if count <= 0:
+        return []
+    if count == 1:
+        return [NON_FUZZER_CMAP(max_shade)]
+    return [
+        NON_FUZZER_CMAP(
+            min_shade + (max_shade - min_shade) * (idx / float(count - 1))
+        )
+        for idx in range(count)
+    ]
+
+
+def build_fuzzer_color_map(fuzzers: List[str]) -> Dict[str, tuple]:
+    ordered_fuzzers = sorted({str(fuzzer).strip() for fuzzer in fuzzers if str(fuzzer).strip()})
+    if not ordered_fuzzers:
+        return {}
+
+    colors = list(FUZZER_COLOR_SEQUENCE[: len(ordered_fuzzers)])
+    extra = len(ordered_fuzzers) - len(colors)
+    if extra > 0:
+        hsv = plt.get_cmap("hsv")
+        for idx in range(extra):
+            hue = (idx * 0.61803398875) % 1.0
+            colors.append(hsv(hue))
+
+    return {fuzzer: colors[idx] for idx, fuzzer in enumerate(ordered_fuzzers)}
+
+
 def plot_metric_over_time(
     *,
     metric_df: pd.DataFrame,
@@ -459,16 +509,21 @@ def plot_metric_over_time(
     title: str,
     ylabel: str,
     label_map: dict[str, str] | None,
+    fuzzer_colors: Dict[str, tuple] | None,
     scale: float = 1.0,
 ) -> bool:
     if metric_df.empty:
         return False
 
     plt.figure(figsize=(9, 5))
+    ax = plt.gca()
     plotted = False
 
     for fuzzer, group in metric_df.groupby("fuzzer", sort=False):
         label = label_map.get(str(fuzzer), str(fuzzer)) if label_map else str(fuzzer)
+        color = fuzzer_colors.get(str(fuzzer)) if fuzzer_colors else None
+        if color is None:
+            color = ax._get_lines.get_next_color()
         pivot = (
             group.pivot_table(
                 index="time_hours", columns="series_id", values=value_column, aggfunc="mean"
@@ -486,8 +541,15 @@ def plot_metric_over_time(
         if not np.isfinite(p50).any():
             continue
 
-        plt.fill_between(time, p25, p75, step="post", alpha=0.15)
-        plt.step(time, p50, where="post", linewidth=2.5, label=f"{label} (median)")
+        plt.fill_between(time, p25, p75, step="post", alpha=0.15, color=color)
+        plt.step(
+            time,
+            p50,
+            where="post",
+            linewidth=2.5,
+            label=f"{label} (median)",
+            color=color,
+        )
         plotted = True
 
     if not plotted:
@@ -511,6 +573,7 @@ def plot_sample_metric_charts(
     grid: np.ndarray,
     images_outdir: Path,
     label_map: dict[str, str] | None,
+    fuzzer_colors: Dict[str, tuple] | None,
 ) -> List[str]:
     generated: List[str] = []
 
@@ -539,6 +602,7 @@ def plot_sample_metric_charts(
             title=title,
             ylabel=ylabel,
             label_map=label_map,
+            fuzzer_colors=fuzzer_colors,
             scale=scale,
         ):
             generated.append(filename)
@@ -577,6 +641,7 @@ def plot_sample_metric_charts(
             title=title,
             ylabel=ylabel,
             label_map=label_map,
+            fuzzer_colors=fuzzer_colors,
             scale=scale,
         ):
             generated.append(filename)
@@ -670,7 +735,10 @@ def compute_metrics(
 
 
 def plot_bugs_over_time(
-    df_grid: pd.DataFrame, outpath: Path, label_map: dict[str, str] | None
+    df_grid: pd.DataFrame,
+    outpath: Path,
+    label_map: dict[str, str] | None,
+    fuzzer_colors: Dict[str, tuple] | None,
 ) -> None:
     plt.figure(figsize=(9, 5))
     ax = plt.gca()
@@ -689,7 +757,9 @@ def plot_bugs_over_time(
         p50 = np.percentile(arr, 50, axis=1)
         p75 = np.percentile(arr, 75, axis=1)
 
-        color = ax._get_lines.get_next_color()
+        color = fuzzer_colors.get(str(fuzzer)) if fuzzer_colors else None
+        if color is None:
+            color = ax._get_lines.get_next_color()
 
         # Individual runs (faint dotted lines)
         run_labels = [str(run_id).split(":", 1)[-1] for run_id in pivot.columns]
@@ -739,27 +809,20 @@ def plot_time_to_k(
     fuzzers = [label_map.get(m.fuzzer, m.fuzzer) if label_map else m.fuzzer for m in metrics]
     x = np.arange(len(fuzzers))
     width = 0.8 / max(1, len(ks))
-    cmap = plt.get_cmap("Blues")
     sorted_ks = sorted(ks)
-    k_rank = {k: idx for idx, k in enumerate(sorted_ks)}
-    min_shade = 0.45
-    max_shade = 0.9
+    k_colors = {k: color for k, color in zip(sorted_ks, non_fuzzer_shades(len(sorted_ks)))}
 
     for j, k in enumerate(ks):
         vals = []
         for metric in metrics:
             t = metric.time_to_k_p50[k]
             vals.append(np.nan if not math.isfinite(t) else t)
-        if len(ks) == 1:
-            shade = max_shade
-        else:
-            shade = min_shade + (max_shade - min_shade) * (k_rank[k] / (len(ks) - 1))
         plt.bar(
             x + (j - (len(ks) - 1) / 2) * width,
             vals,
             width=width,
             label=f"k={k}",
-            color=cmap(shade),
+            color=k_colors[k],
         )
 
     plt.xticks(x, fuzzers)
@@ -772,11 +835,15 @@ def plot_time_to_k(
 
 
 def plot_final_distribution(
-    df_grid: pd.DataFrame, outpath: Path, label_map: dict[str, str] | None
+    df_grid: pd.DataFrame,
+    outpath: Path,
+    label_map: dict[str, str] | None,
+    fuzzer_colors: Dict[str, tuple] | None,
 ) -> None:
     plt.figure(figsize=(9, 5))
     data = []
     labels = []
+    box_colors = []
     for fuzzer, group in df_grid.groupby("fuzzer", sort=False):
         pivot = (
             group.pivot_table(
@@ -787,8 +854,23 @@ def plot_final_distribution(
         )
         data.append(pivot.iloc[-1].to_numpy(dtype=float))
         labels.append(label_map.get(str(fuzzer), str(fuzzer)) if label_map else str(fuzzer))
+        box_colors.append(
+            fuzzer_colors.get(str(fuzzer), "#333333")
+            if fuzzer_colors
+            else "#333333"
+        )
 
-    plt.boxplot(data, labels=labels, showfliers=False)
+    boxplot = plt.boxplot(data, labels=labels, showfliers=False, patch_artist=True)
+    for idx, color in enumerate(box_colors):
+        boxplot["boxes"][idx].set_facecolor(mcolors.to_rgba(color, alpha=0.25))
+        boxplot["boxes"][idx].set_edgecolor(color)
+        boxplot["medians"][idx].set_color(color)
+        boxplot["medians"][idx].set_linewidth(2.0)
+        for whisker in boxplot["whiskers"][idx * 2 : (idx + 1) * 2]:
+            whisker.set_color(color)
+        for cap in boxplot["caps"][idx * 2 : (idx + 1) * 2]:
+            cap.set_color(color)
+
     plt.ylim(bottom=0)
     plt.ylabel("Bugs found at end of budget")
     plt.title("End-of-budget bug count distribution (per run)")
@@ -807,9 +889,24 @@ def plot_plateau_and_late_share(
 
     x = np.arange(len(fuzzers))
     width = 0.35
+    purple_pair = non_fuzzer_shades(2, min_shade=0.55, max_shade=0.85)
+    plateau_color = purple_pair[1]
+    late_color = purple_pair[0]
 
-    plt.bar(x - width / 2, plateau, width=width, label="Plateau time (h)")
-    plt.bar(x + width / 2, late, width=width, label="Late discovery share")
+    plt.bar(
+        x - width / 2,
+        plateau,
+        width=width,
+        label="Plateau time (h)",
+        color=plateau_color,
+    )
+    plt.bar(
+        x + width / 2,
+        late,
+        width=width,
+        label="Late discovery share",
+        color=late_color,
+    )
 
     plt.xticks(x, fuzzers)
     plt.title("Plateau time and late discovery share")
@@ -1275,6 +1372,9 @@ def main() -> int:
         if args.progress_metrics_samples_csv is not None
         else pd.DataFrame(columns=["fuzzer", "series_id", "time_hours", *PROGRESS_SAMPLE_VALUE_COLS])
     )
+    fuzzer_colors = build_fuzzer_color_map(
+        collect_fuzzer_names(df, throughput_samples_df, progress_metrics_samples_df)
+    )
 
     if args.budget is None:
         if df.empty:
@@ -1334,6 +1434,7 @@ def main() -> int:
             grid=grid,
             images_outdir=images_outdir,
             label_map=None,
+            fuzzer_colors=fuzzer_colors,
         )
         print(f"wrote: {report_outdir / 'REPORT.md'} (no data)")
         if sample_metric_plot_files:
@@ -1350,9 +1451,19 @@ def main() -> int:
         fuzzers = sorted({str(f) for f in df_grid["fuzzer"].unique()})
         label_map = {fz: f"Fuzzer {chr(65 + idx)}" for idx, fz in enumerate(fuzzers)}
 
-    plot_bugs_over_time(df_grid, images_outdir / "bugs_over_time.png", label_map)
+    plot_bugs_over_time(
+        df_grid,
+        images_outdir / "bugs_over_time.png",
+        label_map,
+        fuzzer_colors,
+    )
     plot_time_to_k(metrics, ks=ks, outpath=images_outdir / "time_to_k.png", label_map=label_map)
-    plot_final_distribution(df_grid, images_outdir / "final_distribution.png", label_map)
+    plot_final_distribution(
+        df_grid,
+        images_outdir / "final_distribution.png",
+        label_map,
+        fuzzer_colors,
+    )
     plot_plateau_and_late_share(metrics, images_outdir / "plateau_and_late_share.png", label_map)
     sample_metric_plot_files = plot_sample_metric_charts(
         throughput_samples_df=throughput_samples_df,
@@ -1360,6 +1471,7 @@ def main() -> int:
         grid=grid,
         images_outdir=images_outdir,
         label_map=label_map,
+        fuzzer_colors=fuzzer_colors,
     )
     write_report(
         metrics,
