@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+from urllib.parse import urljoin
 from dataclasses import dataclass
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +25,10 @@ from analysis.trial_run import (  # noqa: E402
 
 
 RUN_MANIFEST_RE = re.compile(r"^runs/([0-9]+)/([0-9a-f]{32})/manifest\.json$")
+MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<url>[^)\s]+)(?:\s+\"[^\"]*\")?\)")
 PRICING_API_REGION = "us-east-1"
+SITE_ORIGIN = "https://scfuzzbench.com"
+DEFAULT_SOCIAL_DESCRIPTION = "Benchmark suite for smart-contract fuzzers."
 DEFAULT_DOCS_EC2_PRICES_USD_PER_HOUR = {
     "c6a.4xlarge": 0.612,
     "c6a.8xlarge": 1.224,
@@ -125,6 +129,154 @@ def rewrite_headings(md: str, *, add: int) -> str:
         hashes, rest = m.group(1), m.group(2)
         out.append("#" * (len(hashes) + add) + rest)
     return "\n".join(out).rstrip() + "\n"
+
+
+def yaml_quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def truncate_meta_text(value: str, *, max_len: int) -> str:
+    text = " ".join(value.split())
+    if len(text) <= max_len:
+        return text
+    trimmed = text[: max_len - 3].rstrip(" .,;:-")
+    return f"{trimmed}..."
+
+
+def first_markdown_image(lines: list[str]) -> tuple[str, str] | None:
+    in_fence = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = MARKDOWN_IMAGE_RE.search(line)
+        if not m:
+            continue
+        url = m.group("url").strip()
+        if not url:
+            continue
+        alt = m.group("alt").strip() or "Preview image"
+        return url, alt
+    return None
+
+
+def first_heading_text(lines: list[str]) -> str:
+    for line in lines:
+        if not line.startswith("# "):
+            continue
+        heading = line[2:].strip()
+        # Replace inline code spans `code` with their inner text, then remove any remaining backticks.
+        heading = re.sub(r"`([^`]*)`", r"\1", heading)
+        heading = heading.replace("`", "")
+        return heading
+    return ""
+
+
+def run_social_title(run_id: int, benchmark_uuid: str, target_repo_url: str) -> str:
+    target_label = compact_repo_label(target_repo_url)
+    if target_label:
+        return f"scfuzzbench run {run_id} - {target_label}"
+    return f"scfuzzbench run {run_id} - {short_uuid(benchmark_uuid)}"
+
+
+def run_social_description(run: Run) -> str:
+    m = run.manifest
+    parts: list[str] = [
+        f"Benchmark {run.benchmark_uuid}",
+        f"Date {utc_ts(run.run_id)}",
+        f"Timeout {run.timeout_hours:g}h",
+    ]
+
+    target_repo = str(m.get("target_repo_url", "")).strip()
+    if target_repo:
+        parts.append(f"Target {compact_repo_label(target_repo)}")
+
+    target_commit = str(m.get("target_commit", "")).strip()
+    if target_commit:
+        parts.append(f"Commit {shortish(target_commit, max_len=10)}")
+
+    fuzzer_keys = m.get("fuzzer_keys")
+    if isinstance(fuzzer_keys, list):
+        fuzzers = ", ".join(str(x).strip() for x in fuzzer_keys if str(x).strip())
+        if fuzzers:
+            parts.append(f"Fuzzers {fuzzers}")
+
+    return truncate_meta_text(". ".join(parts) + ".", max_len=240)
+
+
+def with_social_preview_head(
+    lines: list[str],
+    *,
+    page_path: str,
+    title: str | None = None,
+    description: str | None = None,
+) -> list[str]:
+    image = first_markdown_image(lines)
+    if image is None:
+        return lines
+
+    image_url, image_alt = image
+    page_url = urljoin(f"{SITE_ORIGIN}/", page_path.lstrip("/"))
+    absolute_image_url = urljoin(page_url, image_url)
+    meta_title = truncate_meta_text(
+        (title or "").strip() or first_heading_text(lines) or "scfuzzbench",
+        max_len=120,
+    )
+    meta_description = truncate_meta_text(
+        (description or "").strip() or DEFAULT_SOCIAL_DESCRIPTION,
+        max_len=240,
+    )
+
+    return [
+        "---",
+        "head:",
+        "  - - meta",
+        "    - name: description",
+        f"      content: {yaml_quote(meta_description)}",
+        "  - - meta",
+        "    - property: og:title",
+        f"      content: {yaml_quote(meta_title)}",
+        "  - - meta",
+        "    - property: og:description",
+        f"      content: {yaml_quote(meta_description)}",
+        "  - - meta",
+        "    - property: og:type",
+        "      content: website",
+        "  - - meta",
+        "    - property: og:url",
+        f"      content: {yaml_quote(page_url)}",
+        "  - - meta",
+        "    - property: og:image",
+        f"      content: {yaml_quote(absolute_image_url)}",
+        "  - - meta",
+        "    - property: og:image:secure_url",
+        f"      content: {yaml_quote(absolute_image_url)}",
+        "  - - meta",
+        "    - property: og:image:alt",
+        f"      content: {yaml_quote(image_alt)}",
+        "  - - meta",
+        "    - name: twitter:card",
+        "      content: summary_large_image",
+        "  - - meta",
+        "    - name: twitter:title",
+        f"      content: {yaml_quote(meta_title)}",
+        "  - - meta",
+        "    - name: twitter:description",
+        f"      content: {yaml_quote(meta_description)}",
+        "  - - meta",
+        "    - name: twitter:image",
+        f"      content: {yaml_quote(absolute_image_url)}",
+        "  - - meta",
+        "    - name: twitter:image:alt",
+        f"      content: {yaml_quote(image_alt)}",
+        "---",
+        "",
+        *lines,
+    ]
 
 
 def shortish(s: str, *, max_len: int = 10) -> str:
@@ -964,7 +1116,17 @@ def main() -> int:
             list_and_render(f"logs/{r.run_id}/{r.benchmark_uuid}/", "Raw logs (.zip)")
             list_and_render(f"corpus/{r.run_id}/{r.benchmark_uuid}/", "Raw corpus (.zip)")
 
-        write_text(run_dir / "index.md", "\n".join(lines).rstrip() + "\n")
+        page_lines = with_social_preview_head(
+            lines,
+            page_path=f"/runs/{r.run_id}/{r.benchmark_uuid}/",
+            title=run_social_title(
+                run_id=r.run_id,
+                benchmark_uuid=r.benchmark_uuid,
+                target_repo_url=str(m.get("target_repo_url", "")).strip(),
+            ),
+            description=run_social_description(r),
+        )
+        write_text(run_dir / "index.md", "\n".join(page_lines).rstrip() + "\n")
 
     return 0
 
