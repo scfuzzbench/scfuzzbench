@@ -168,7 +168,11 @@ def first_heading_text(lines: list[str]) -> str:
     for line in lines:
         if not line.startswith("# "):
             continue
-        return line[2:].strip().strip("`")
+        heading = line[2:].strip()
+        # Replace inline code spans `code` with their inner text, then remove any remaining backticks.
+        heading = re.sub(r"`([^`]*)`", r"\1", heading)
+        heading = heading.replace("`", "")
+        return heading
     return ""
 
 
