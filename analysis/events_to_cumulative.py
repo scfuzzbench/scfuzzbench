@@ -66,12 +66,13 @@ def inventory_runs_from_logs(
     logs_dir: Path,
     run_id: Optional[str],
     exclude_fuzzers: Optional[set[str]] = None,
+    raw_labels: bool = False,
 ) -> List[Tuple[str, str]]:
     run_id_value = run_id or infer_run_id(logs_dir) or "unknown"
     runs: List[Tuple[str, str]] = []
     for instance_dir in sorted([p for p in logs_dir.iterdir() if p.is_dir()]):
         instance_id, fuzzer_label = split_instance_label(instance_dir.name)
-        fuzzer = normalize_fuzzer(fuzzer_label)
+        fuzzer = fuzzer_label if raw_labels else normalize_fuzzer(fuzzer_label)
         if exclude_fuzzers:
             if str(fuzzer).lower() in exclude_fuzzers or fuzzer_label.lower() in exclude_fuzzers:
                 continue
@@ -86,11 +87,13 @@ def build_cumulative_rows(
     logs_dir: Optional[Path] = None,
     run_id: Optional[str] = None,
     exclude_fuzzers: Optional[set[str]] = None,
+    raw_labels: bool = False,
 ) -> List[Tuple[str, str, float, int]]:
     grouped: dict[Tuple[str, str], List[float]] = {}
     if logs_dir is not None:
         for fuzzer, run_key in inventory_runs_from_logs(
-            logs_dir=logs_dir, run_id=run_id, exclude_fuzzers=exclude_fuzzers
+            logs_dir=logs_dir, run_id=run_id, exclude_fuzzers=exclude_fuzzers,
+            raw_labels=raw_labels,
         ):
             grouped.setdefault((fuzzer, run_key), [])
 
@@ -140,6 +143,11 @@ def main() -> int:
         help="Comma-separated list of fuzzer names to exclude (normalized name).",
     )
     parser.add_argument("--no-zero", action="store_true", help="Do not emit an initial time=0 row.")
+    parser.add_argument(
+        "--raw-labels",
+        action="store_true",
+        help="Use raw directory names as fuzzer labels instead of normalizing.",
+    )
     args = parser.parse_args()
 
     events = load_events_csv(args.events_csv)
@@ -150,6 +158,7 @@ def main() -> int:
         logs_dir=args.logs_dir,
         run_id=args.run_id,
         exclude_fuzzers=exclude,
+        raw_labels=args.raw_labels,
     )
 
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)

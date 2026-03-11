@@ -8,7 +8,7 @@ import re
 import statistics
 import sys
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -1421,19 +1421,49 @@ def parse_args() -> argparse.Namespace:
     parse_parser.add_argument("--logs-dir", required=True, type=Path)
     parse_parser.add_argument("--run-id", default=None)
     parse_parser.add_argument("--out-csv", required=True, type=Path)
+    parse_parser.add_argument(
+        "--raw-labels",
+        action="store_true",
+        help="Use raw directory names as fuzzer labels instead of normalizing.",
+    )
 
     run_parser = subparsers.add_parser("run", help="Parse logs and write CSVs.")
     run_parser.add_argument("--logs-dir", required=True, type=Path)
     run_parser.add_argument("--run-id", default=None)
     run_parser.add_argument("--out-dir", required=True, type=Path)
+    run_parser.add_argument(
+        "--raw-labels",
+        action="store_true",
+        help="Use raw directory names as fuzzer labels instead of normalizing.",
+    )
 
     return parser.parse_args()
 
 
+def _apply_raw_labels_events(events: List[Event]) -> List[Event]:
+    """Replace normalized fuzzer with the raw fuzzer_label."""
+    return [replace(e, fuzzer=e.fuzzer_label) for e in events]
+
+
+def _apply_raw_labels_throughput(
+    samples: List[ThroughputSample],
+) -> List[ThroughputSample]:
+    return [replace(s, fuzzer=s.fuzzer_label) for s in samples]
+
+
+def _apply_raw_labels_progress(
+    samples: List[ProgressMetricsSample],
+) -> List[ProgressMetricsSample]:
+    return [replace(s, fuzzer=s.fuzzer_label) for s in samples]
+
+
 def main() -> int:
     args = parse_args()
+    raw_labels = getattr(args, "raw_labels", False)
     if args.command == "parse":
         events = parse_logs(args.logs_dir, args.run_id)
+        if raw_labels:
+            events = _apply_raw_labels_events(events)
         write_events_csv(events, args.out_csv)
         return 0
     if args.command == "run":
@@ -1443,6 +1473,12 @@ def main() -> int:
         progress_metrics_samples = parse_progress_metrics_logs(
             args.logs_dir, args.run_id
         )
+        if raw_labels:
+            events = _apply_raw_labels_events(events)
+            throughput_samples = _apply_raw_labels_throughput(throughput_samples)
+            progress_metrics_samples = _apply_raw_labels_progress(
+                progress_metrics_samples
+            )
         events_csv = out_dir / "events.csv"
         summary_csv = out_dir / "summary.csv"
         overlap_csv = out_dir / "overlap.csv"

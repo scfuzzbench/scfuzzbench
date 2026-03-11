@@ -81,6 +81,7 @@ def load_metrics_for_instance(
     run_id: str,
     instance_label: str,
     budget_hours: Optional[float],
+    raw_labels: bool = False,
 ) -> pd.DataFrame:
     try:
         raw = pd.read_csv(metrics_path)
@@ -95,7 +96,7 @@ def load_metrics_for_instance(
         return pd.DataFrame(columns=TIMESERIES_COLS)
 
     instance_id, fuzzer_label = analyze.split_instance_label(instance_label)
-    fuzzer = analyze.normalize_fuzzer(fuzzer_label)
+    fuzzer = fuzzer_label if raw_labels else analyze.normalize_fuzzer(fuzzer_label)
 
     work = raw.copy()
     work["run_id"] = run_id
@@ -148,7 +149,10 @@ def load_metrics_for_instance(
     return work[TIMESERIES_COLS].reset_index(drop=True)
 
 
-def collect_metrics(logs_dir: Path, run_id: str, budget_hours: Optional[float]) -> pd.DataFrame:
+def collect_metrics(
+    logs_dir: Path, run_id: str, budget_hours: Optional[float],
+    raw_labels: bool = False,
+) -> pd.DataFrame:
     frames: List[pd.DataFrame] = []
     for instance_dir in sorted(path for path in logs_dir.iterdir() if path.is_dir()):
         metrics_files = sorted(path for path in instance_dir.rglob("*.csv") if is_runner_metrics_csv(path))
@@ -159,6 +163,7 @@ def collect_metrics(logs_dir: Path, run_id: str, budget_hours: Optional[float]) 
                 run_id=run_id,
                 instance_label=instance_dir.name,
                 budget_hours=budget_hours,
+                raw_labels=raw_labels,
             )
             if not frame.empty:
                 frames.append(frame)
@@ -415,6 +420,11 @@ def main() -> int:
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--budget-hours", type=float, default=None)
     parser.add_argument("--bin-seconds", type=int, default=60)
+    parser.add_argument(
+        "--raw-labels",
+        action="store_true",
+        help="Use raw directory names as fuzzer labels instead of normalizing.",
+    )
     args = parser.parse_args()
 
     if not args.logs_dir.exists():
@@ -423,7 +433,10 @@ def main() -> int:
         raise SystemExit("error: --bin-seconds must be > 0")
 
     run_id = args.run_id or analyze.infer_run_id(args.logs_dir) or "unknown"
-    timeseries = collect_metrics(args.logs_dir, run_id=run_id, budget_hours=args.budget_hours)
+    timeseries = collect_metrics(
+        args.logs_dir, run_id=run_id, budget_hours=args.budget_hours,
+        raw_labels=args.raw_labels,
+    )
     summary = summarize_instances(timeseries)
 
     write_timeseries_csv(timeseries, args.out_timeseries_csv)

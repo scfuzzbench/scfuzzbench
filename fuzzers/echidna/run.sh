@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /opt/scfuzzbench/common.sh
+source "${SCFUZZBENCH_COMMON_SH:-/opt/scfuzzbench/common.sh}"
 
 register_shutdown_trap
 
 prepare_workspace
-export PATH="/root/.foundry/bin:${PATH}"
+export PATH="${HOME}/.foundry/bin:${PATH}"
 
 require_env ECHIDNA_VERSION
 SCFUZZBENCH_FUZZER_LABEL="echidna-v${ECHIDNA_VERSION}"
@@ -39,7 +39,9 @@ if [[ "${corpus_dir}" != /* ]]; then
   corpus_dir="${repo_dir}/${corpus_dir}"
 fi
 export SCFUZZBENCH_CORPUS_DIR="${corpus_dir}"
-mkdir -p "${SCFUZZBENCH_CORPUS_DIR}"
+log "Cleaning corpus directory ${corpus_dir}"
+rm -rf "${corpus_dir:?}"
+mkdir -p "${corpus_dir}"
 
 set_default_worker_env ECHIDNA_WORKERS
 

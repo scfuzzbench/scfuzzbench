@@ -1,7 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCFUZZBENCH_ROOT=${SCFUZZBENCH_ROOT:-/opt/scfuzzbench}
+SCFUZZBENCH_LOCAL_MODE=${SCFUZZBENCH_LOCAL_MODE:-}
+
+is_local_mode() {
+  [[ -n "${SCFUZZBENCH_LOCAL_MODE:-}" ]]
+}
+
+if is_local_mode; then
+  SCFUZZBENCH_ROOT=${SCFUZZBENCH_ROOT:-${HOME}/.scfuzzbench}
+  SCFUZZBENCH_BIN_DIR=${SCFUZZBENCH_BIN_DIR:-${HOME}/.local/bin}
+  SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE=1
+  export SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE
+  mkdir -p "${SCFUZZBENCH_BIN_DIR}"
+  case ":${PATH}:" in
+    *":${SCFUZZBENCH_BIN_DIR}:"*) ;;
+    *) export PATH="${SCFUZZBENCH_BIN_DIR}:${PATH}" ;;
+  esac
+else
+  SCFUZZBENCH_ROOT=${SCFUZZBENCH_ROOT:-/opt/scfuzzbench}
+  SCFUZZBENCH_BIN_DIR=${SCFUZZBENCH_BIN_DIR:-/usr/local/bin}
+fi
+
 SCFUZZBENCH_WORKDIR=${SCFUZZBENCH_WORKDIR:-${SCFUZZBENCH_ROOT}/work}
 SCFUZZBENCH_LOG_DIR=${SCFUZZBENCH_LOG_DIR:-${SCFUZZBENCH_ROOT}/logs}
 SCFUZZBENCH_CORPUS_DIR=${SCFUZZBENCH_CORPUS_DIR:-}
@@ -235,7 +255,13 @@ install_shutdown_script() {
   if [[ -f "${shutdown_path}" ]]; then
     return 0
   fi
-  cat <<'SHUTDOWN' >"${shutdown_path}"
+  if is_local_mode; then
+    cat <<'SHUTDOWN' >"${shutdown_path}"
+#!/usr/bin/env bash
+echo "[$(date -Is)] Shutdown suppressed (local mode)"
+SHUTDOWN
+  else
+    cat <<'SHUTDOWN' >"${shutdown_path}"
 #!/usr/bin/env bash
 set +e
 
@@ -247,10 +273,15 @@ log "Shutting down instance"
 sync || true
 shutdown -h now || systemctl poweroff || halt -p || true
 SHUTDOWN
+  fi
   chmod +x "${shutdown_path}"
 }
 
 shutdown_instance() {
+  if is_local_mode; then
+    log "Skipping instance shutdown (local mode)"
+    return 0
+  fi
   install_shutdown_script
   local delay="${SCFUZZBENCH_SHUTDOWN_GRACE_SECONDS:-0}"
   if [[ "${delay}" =~ ^[0-9]+$ ]] && [[ "${delay}" -gt 0 ]]; then
@@ -404,7 +435,9 @@ finalize_run() {
   set +e
   stop_runner_metrics || true
   if [[ -z "${SCFUZZBENCH_UPLOAD_DONE:-}" ]]; then
-    if [[ -n "${SCFUZZBENCH_S3_BUCKET:-}" && -n "${SCFUZZBENCH_RUN_ID:-}" && -n "${SCFUZZBENCH_FUZZER_LABEL:-}" ]]; then
+    if is_local_mode; then
+      save_results_local || true
+    elif [[ -n "${SCFUZZBENCH_S3_BUCKET:-}" && -n "${SCFUZZBENCH_RUN_ID:-}" && -n "${SCFUZZBENCH_FUZZER_LABEL:-}" ]]; then
       upload_results || true
     else
       log "Skipping upload in finalize; missing S3 bucket, run id, or fuzzer label."
@@ -426,6 +459,10 @@ register_shutdown_trap() {
 }
 
 install_base_packages() {
+  if is_local_mode; then
+    log "Skipping system package installation (local mode)"
+    return 0
+  fi
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y \
@@ -458,12 +495,14 @@ install_base_packages() {
 install_foundry() {
   if [[ -n "${FOUNDRY_GIT_REPO:-}" ]]; then
     log "Installing Foundry from ${FOUNDRY_GIT_REPO}"
-    export HOME=/root
+    if ! is_local_mode; then
+      export HOME=/root
+    fi
     if ! command -v cargo >/dev/null 2>&1; then
       log "Installing Rust toolchain"
       curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
       # shellcheck source=/dev/null
-      source /root/.cargo/env
+      source "${HOME}/.cargo/env"
     fi
     local tmp_dir
     tmp_dir=$(mktemp -d)
@@ -476,23 +515,25 @@ install_foundry() {
     commit=$(git -C "${tmp_dir}/foundry" rev-parse --short HEAD)
     log "Building Foundry at ${commit}"
     # shellcheck source=/dev/null
-    source /root/.cargo/env
+    source "${HOME}/.cargo/env"
     cargo build --release --manifest-path "${tmp_dir}/foundry/Cargo.toml"
-    install -m 0755 "${tmp_dir}/foundry/target/release/forge" /usr/local/bin/forge
-    install -m 0755 "${tmp_dir}/foundry/target/release/cast" /usr/local/bin/cast
-    install -m 0755 "${tmp_dir}/foundry/target/release/anvil" /usr/local/bin/anvil
-    install -m 0755 "${tmp_dir}/foundry/target/release/chisel" /usr/local/bin/chisel || true
-    echo "${commit}" > /opt/scfuzzbench/foundry_commit
-    echo "${FOUNDRY_GIT_REPO}" > /opt/scfuzzbench/foundry_repo
+    install -m 0755 "${tmp_dir}/foundry/target/release/forge" "${SCFUZZBENCH_BIN_DIR}/forge"
+    install -m 0755 "${tmp_dir}/foundry/target/release/cast" "${SCFUZZBENCH_BIN_DIR}/cast"
+    install -m 0755 "${tmp_dir}/foundry/target/release/anvil" "${SCFUZZBENCH_BIN_DIR}/anvil"
+    install -m 0755 "${tmp_dir}/foundry/target/release/chisel" "${SCFUZZBENCH_BIN_DIR}/chisel" || true
+    echo "${commit}" > "${SCFUZZBENCH_ROOT}/foundry_commit"
+    echo "${FOUNDRY_GIT_REPO}" > "${SCFUZZBENCH_ROOT}/foundry_repo"
     rm -rf "${tmp_dir}"
     forge --version
   else
     require_env FOUNDRY_VERSION
     log "Installing Foundry ${FOUNDRY_VERSION}"
-    export HOME=/root
+    if ! is_local_mode; then
+      export HOME=/root
+    fi
     curl -L https://foundry.paradigm.xyz | bash
-    export PATH="/root/.foundry/bin:${PATH}"
-    /root/.foundry/bin/foundryup -i "${FOUNDRY_VERSION}"
+    export PATH="${HOME}/.foundry/bin:${PATH}"
+    "${HOME}/.foundry/bin/foundryup" -i "${FOUNDRY_VERSION}"
     forge --version
   fi
 }
@@ -925,6 +966,10 @@ run_with_timeout() {
 }
 
 upload_results() {
+  if is_local_mode; then
+    save_results_local
+    return $?
+  fi
   require_env SCFUZZBENCH_S3_BUCKET SCFUZZBENCH_RUN_ID SCFUZZBENCH_FUZZER_LABEL
   stop_runner_metrics || true
   cache_instance_id || true
@@ -983,5 +1028,43 @@ upload_results() {
     log "No corpus directory configured or found; skipping corpus upload."
   fi
 
+  export SCFUZZBENCH_UPLOAD_DONE=1
+}
+
+save_results_local() {
+  stop_runner_metrics || true
+  cache_instance_id || true
+  local fuzzer_label="${SCFUZZBENCH_FUZZER_LABEL:-unknown}"
+  local repo_name
+  repo_name=$(basename "${SCFUZZBENCH_REPO_URL:-unknown}" .git)
+  local timestamp
+  timestamp=$(date +%Y-%m-%dT%H-%M-%S)
+  local run_dir="${repo_name}/${fuzzer_label}/${timestamp}"
+  local output_dir="${SCFUZZBENCH_LOCAL_OUTPUT_DIR:-${SCFUZZBENCH_ROOT}/output}/${run_dir}"
+  mkdir -p "${output_dir}"
+
+  if [[ -n "${SCFUZZBENCH_BENCHMARK_MANIFEST_B64:-}" ]]; then
+    echo "${SCFUZZBENCH_BENCHMARK_MANIFEST_B64}" | base64 -d > "${output_dir}/benchmark_manifest.json"
+  fi
+
+  if [[ -d "${SCFUZZBENCH_LOG_DIR}" ]]; then
+    local log_zip="${output_dir}/logs.zip"
+    local log_parent log_base
+    log_parent=$(dirname "${SCFUZZBENCH_LOG_DIR}")
+    log_base=$(basename "${SCFUZZBENCH_LOG_DIR}")
+    (cd "${log_parent}" && zip -r -q "${log_zip}" "${log_base}")
+    log "Logs saved to ${log_zip}"
+  fi
+
+  if [[ -n "${SCFUZZBENCH_CORPUS_DIR:-}" && -d "${SCFUZZBENCH_CORPUS_DIR}" ]]; then
+    local corpus_zip="${output_dir}/corpus.zip"
+    local corpus_parent corpus_base
+    corpus_parent=$(dirname "${SCFUZZBENCH_CORPUS_DIR}")
+    corpus_base=$(basename "${SCFUZZBENCH_CORPUS_DIR}")
+    (cd "${corpus_parent}" && zip -r -q "${corpus_zip}" "${corpus_base}")
+    log "Corpus saved to ${corpus_zip}"
+  fi
+
+  log "Results saved to ${output_dir}"
   export SCFUZZBENCH_UPLOAD_DONE=1
 }

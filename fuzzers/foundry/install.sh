@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /opt/scfuzzbench/common.sh
+source "${SCFUZZBENCH_COMMON_SH:-/opt/scfuzzbench/common.sh}"
 
 prepare_workspace
 install_base_packages

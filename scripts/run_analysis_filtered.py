@@ -19,6 +19,11 @@ def main() -> int:
         default="",
         help="Comma-separated list of fuzzer names to exclude (normalized name or label).",
     )
+    parser.add_argument(
+        "--raw-labels",
+        action="store_true",
+        help="Use raw directory names as fuzzer labels instead of normalizing.",
+    )
     args = parser.parse_args()
 
     exclude = {item.strip().lower() for item in args.exclude_fuzzers.split(",") if item.strip()}
@@ -27,6 +32,12 @@ def main() -> int:
     progress_metrics_samples = analyze.parse_progress_metrics_logs(
         args.logs_dir, args.run_id
     )
+    if args.raw_labels:
+        events = analyze._apply_raw_labels_events(events)
+        throughput_samples = analyze._apply_raw_labels_throughput(throughput_samples)
+        progress_metrics_samples = analyze._apply_raw_labels_progress(
+            progress_metrics_samples
+        )
     if exclude:
         events = [
             event

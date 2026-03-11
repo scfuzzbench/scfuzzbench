@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /opt/scfuzzbench/common.sh
+source "${SCFUZZBENCH_COMMON_SH:-/opt/scfuzzbench/common.sh}"
 
 prepare_workspace
 install_base_packages
@@ -25,7 +25,7 @@ if [[ -z "${bin_path}" ]]; then
   log "echidna binary not found in archive"
   exit 1
 fi
-install -m 0755 "${bin_path}" /usr/local/bin/echidna-test
+install -m 0755 "${bin_path}" "${SCFUZZBENCH_BIN_DIR}/echidna-test"
 
 rm -rf "${tmp_dir}"
 
@@ -42,7 +42,7 @@ if [[ -z "${bin_path}" ]]; then
   log "bitwuzla binary not found in archive"
   exit 1
 fi
-install -m 0755 "${bin_path}" /usr/local/bin/bitwuzla
+install -m 0755 "${bin_path}" "${SCFUZZBENCH_BIN_DIR}/bitwuzla"
 rm -rf "${tmp_dir}"
 
 command -v bitwuzla

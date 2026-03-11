@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /opt/scfuzzbench/common.sh
+source "${SCFUZZBENCH_COMMON_SH:-/opt/scfuzzbench/common.sh}"
 
 register_shutdown_trap
 
 prepare_workspace
-export PATH="/root/.foundry/bin:${PATH}"
+export PATH="${HOME}/.foundry/bin:${PATH}"
 
 if [[ -n "${FOUNDRY_LABEL:-}" ]]; then
   SCFUZZBENCH_FUZZER_LABEL="${FOUNDRY_LABEL}"
-elif [[ -f /opt/scfuzzbench/foundry_commit ]]; then
-  foundry_commit=$(cat /opt/scfuzzbench/foundry_commit)
+elif [[ -f "${SCFUZZBENCH_ROOT:-/opt/scfuzzbench}/foundry_commit" ]]; then
+  foundry_commit=$(cat "${SCFUZZBENCH_ROOT:-/opt/scfuzzbench}/foundry_commit")
   SCFUZZBENCH_FUZZER_LABEL="foundry-git-${foundry_commit}"
 else
   require_env FOUNDRY_VERSION
