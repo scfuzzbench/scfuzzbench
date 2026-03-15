@@ -477,11 +477,11 @@ install_foundry() {
     log "Building Foundry at ${commit}"
     # shellcheck source=/dev/null
     source /root/.cargo/env
-    cargo build --release --manifest-path "${tmp_dir}/foundry/Cargo.toml"
-    install -m 0755 "${tmp_dir}/foundry/target/release/forge" /usr/local/bin/forge
-    install -m 0755 "${tmp_dir}/foundry/target/release/cast" /usr/local/bin/cast
-    install -m 0755 "${tmp_dir}/foundry/target/release/anvil" /usr/local/bin/anvil
-    install -m 0755 "${tmp_dir}/foundry/target/release/chisel" /usr/local/bin/chisel || true
+    cargo build --profile maxperf --manifest-path "${tmp_dir}/foundry/Cargo.toml"
+    install -m 0755 "${tmp_dir}/foundry/target/maxperf/forge" /usr/local/bin/forge
+    install -m 0755 "${tmp_dir}/foundry/target/maxperf/cast" /usr/local/bin/cast
+    install -m 0755 "${tmp_dir}/foundry/target/maxperf/anvil" /usr/local/bin/anvil
+    install -m 0755 "${tmp_dir}/foundry/target/maxperf/chisel" /usr/local/bin/chisel || true
     echo "${commit}" > /opt/scfuzzbench/foundry_commit
     echo "${FOUNDRY_GIT_REPO}" > /opt/scfuzzbench/foundry_repo
     rm -rf "${tmp_dir}"
