@@ -498,12 +498,16 @@ install_foundry() {
     if ! is_local_mode; then
       export HOME=/root
     fi
-    if ! command -v cargo >/dev/null 2>&1; then
-      log "Installing Rust toolchain"
+    local foundry_build_profile="${FOUNDRY_BUILD_PROFILE:-maxperf}"
+    local foundry_rust_toolchain="${FOUNDRY_RUST_TOOLCHAIN:-1.91.0}"
+    if ! command -v rustup >/dev/null 2>&1; then
+      log "Installing Rust toolchain manager"
       curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-      # shellcheck source=/dev/null
-      source "${HOME}/.cargo/env"
     fi
+    # shellcheck source=/dev/null
+    source "${HOME}/.cargo/env"
+    log "Installing Rust ${foundry_rust_toolchain} for custom Foundry build"
+    rustup toolchain install "${foundry_rust_toolchain}" --profile minimal
     local tmp_dir
     tmp_dir=$(mktemp -d)
     git clone --depth 1 "${FOUNDRY_GIT_REPO}" "${tmp_dir}/foundry"
@@ -513,14 +517,15 @@ install_foundry() {
     fi
     local commit
     commit=$(git -C "${tmp_dir}/foundry" rev-parse --short HEAD)
-    log "Building Foundry at ${commit}"
-    # shellcheck source=/dev/null
-    source "${HOME}/.cargo/env"
-    cargo build --profile maxperf --manifest-path "${tmp_dir}/foundry/Cargo.toml"
-    install -m 0755 "${tmp_dir}/foundry/target/maxperf/forge" "${SCFUZZBENCH_BIN_DIR}/forge"
-    install -m 0755 "${tmp_dir}/foundry/target/maxperf/cast" "${SCFUZZBENCH_BIN_DIR}/cast"
-    install -m 0755 "${tmp_dir}/foundry/target/maxperf/anvil" "${SCFUZZBENCH_BIN_DIR}/anvil"
-    install -m 0755 "${tmp_dir}/foundry/target/maxperf/chisel" "${SCFUZZBENCH_BIN_DIR}/chisel" || true
+    log "Building Foundry at ${commit} with profile ${foundry_build_profile} on Rust ${foundry_rust_toolchain}"
+    cargo +"${foundry_rust_toolchain}" build \
+      --locked \
+      --profile "${foundry_build_profile}" \
+      --manifest-path "${tmp_dir}/foundry/Cargo.toml"
+    install -m 0755 "${tmp_dir}/foundry/target/${foundry_build_profile}/forge" "${SCFUZZBENCH_BIN_DIR}/forge"
+    install -m 0755 "${tmp_dir}/foundry/target/${foundry_build_profile}/cast" "${SCFUZZBENCH_BIN_DIR}/cast"
+    install -m 0755 "${tmp_dir}/foundry/target/${foundry_build_profile}/anvil" "${SCFUZZBENCH_BIN_DIR}/anvil"
+    install -m 0755 "${tmp_dir}/foundry/target/${foundry_build_profile}/chisel" "${SCFUZZBENCH_BIN_DIR}/chisel" || true
     echo "${commit}" > "${SCFUZZBENCH_ROOT}/foundry_commit"
     echo "${FOUNDRY_GIT_REPO}" > "${SCFUZZBENCH_ROOT}/foundry_repo"
     rm -rf "${tmp_dir}"
