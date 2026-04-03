@@ -434,13 +434,18 @@ def normalize_foundry_failure_name(value: Any) -> Optional[str]:
     name = str(value).strip()
     if not name:
         return None
-    if ":" in name:
-        name = name.rsplit(":", 1)[-1].strip()
+    # Foundry fail_on_assert failures use "Contract:function"; keep only function
+    # name for cross-fuzzer normalization. Ignore unexpected multi-colon values.
+    if name.count(":") == 1:
+        contract_name, function_name = name.split(":", 1)
+        if contract_name and function_name:
+            name = function_name.strip()
     return name or None
 
 
 def extract_foundry_failure(payload: Dict[str, Any]) -> Tuple[Optional[str], Optional[float], Optional[str]]:
     ts_value = parse_optional_float(payload.get("timestamp"))
+    # We require timestamps to compute elapsed seconds in benchmark reports.
     if ts_value is None:
         return None, None, None
 
@@ -449,8 +454,10 @@ def extract_foundry_failure(payload: Dict[str, Any]) -> Tuple[Optional[str], Opt
     if invariant_name and payload_type == "invariant_failure":
         return invariant_name, ts_value, "foundry-invariant-failure"
 
-    # Fallback emitted by the local failure watcher.
-    if invariant_name and "failed" in payload:
+    # Backward-compat fallback for older watcher lines emitted before
+    # `type: invariant_failure` was added in `fuzzers/foundry/run.sh`.
+    failed_value = parse_optional_float(payload.get("failed"))
+    if invariant_name and failed_value is not None and failed_value > 0:
         return invariant_name, ts_value, "foundry-watcher-failure"
 
     # Newer Foundry failure event schema.

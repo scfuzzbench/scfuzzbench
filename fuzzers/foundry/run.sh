@@ -62,7 +62,9 @@ start_failure_watcher() {
           continue
         fi
         ts=$(date +%s)
-        printf '{"type":"invariant_failure","timestamp":%s,"invariant":"%s","failed":1}\n' "${ts}" "${invariant_name}" >> "${out_log}"
+        escaped_invariant="${invariant_name//\\/\\\\}"
+        escaped_invariant="${escaped_invariant//\"/\\\"}"
+        printf '{"type":"invariant_failure","timestamp":%d,"invariant":"%s","failed":1}\n' "${ts}" "${escaped_invariant}" >> "${out_log}"
       done < <(find "${failure_root}" -type f -print0 2>/dev/null)
     }
 

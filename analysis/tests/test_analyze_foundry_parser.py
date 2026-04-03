@@ -29,15 +29,23 @@ class FoundryParserTests(unittest.TestCase):
         )
 
         events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
-        self.assertEqual([event.event for event in events], ["invariant_a", "invariant_b"])
+        self.assertEqual(
+            [event.event for event in events],
+            ["invariant_a", "invariant_b", "legacy_invariant"],
+        )
         self.assertEqual(
             [event.source for event in events],
-            ["foundry-invariant-failure", "foundry-invariant-failure"],
+            [
+                "foundry-invariant-failure",
+                "foundry-invariant-failure",
+                "foundry-watcher-failure",
+            ],
         )
-        self.assertAlmostEqual(events[0].elapsed_seconds, 1.0)
-        self.assertAlmostEqual(events[1].elapsed_seconds, 3.0)
+        self.assertAlmostEqual(events[0].elapsed_seconds, 0.0)
+        self.assertAlmostEqual(events[1].elapsed_seconds, 2.0)
+        self.assertAlmostEqual(events[2].elapsed_seconds, 3.0)
 
-    def test_ignores_legacy_foundry_records_without_type(self):
+    def test_parses_legacy_watcher_records_without_type(self):
         log_path = self.write_log(
             [
                 '{"timestamp":100,"invariant":"legacy_invariant","failed":1,"metrics":{"cumulative_edges_seen":1}}',
@@ -46,7 +54,31 @@ class FoundryParserTests(unittest.TestCase):
         )
 
         events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
-        self.assertEqual(events, [])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "legacy_invariant")
+        self.assertEqual(events[0].source, "foundry-watcher-failure")
+
+    def test_parses_fail_on_assert_failure_events(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":200,"event":"failure","target":"CryticToFoundry:assert_canary_ASSERTION_CANARY","type":"assertion"}',
+                '{"timestamp":201,"event":"pulse","metrics":{"cumulative_edges_seen":4}}',
+                '{"timestamp":202,"event":"failure","target":"CryticToFoundry:assert_canary_ASSERTION_CANARY","type":"assertion"}',
+                '{"timestamp":203,"event":"failure","target":"CryticToFoundry:invariant_canary","type":"invariant"}',
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(
+            [event.event for event in events],
+            ["assert_canary_ASSERTION_CANARY", "invariant_canary"],
+        )
+        self.assertEqual(
+            [event.source for event in events],
+            ["foundry-failure-event", "foundry-failure-event"],
+        )
+        self.assertAlmostEqual(events[0].elapsed_seconds, 0.0)
+        self.assertAlmostEqual(events[1].elapsed_seconds, 3.0)
 
     def test_parses_throughput_from_json_cumulative_metrics(self):
         log_path = self.write_log(

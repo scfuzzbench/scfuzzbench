@@ -122,7 +122,8 @@ Required:
 5. do not add Foundry-only wrapper invariants (`invariant_assertion_failure_*`)
 6. do not add `_isAssertion`, `assertionFailures`, or overridden assert helpers in `CryticToFoundry.sol`
 7. `setUp()` must include handler routing (`targetContract`, multiple `targetSender` values)
-8. local review must confirm canonical identifier compatibility:
+8. include `invariant_noop() public returns (bool)` in `CryticToFoundry.sol` for assertion-focused smoke checks
+9. local review must confirm canonical identifier compatibility:
    - Echidna/Medusa report handler name (`targetFunctionName(...)`)
    - Foundry failure traces include handler name (`targetFunctionName_ASSERTION_*`)
    - canonical dedup key is `targetFunctionName`
@@ -317,6 +318,6 @@ Done means all are true:
 7. each fuzzer reports at least 2 canary bugs (assertion + global invariant) within 2 minutes
 8. exact `/start` JSON is provided
 9. PR URL is recorded in final report; include tracking issue URL only if one was explicitly requested
-10. all assertion failure reasons are constants in `Properties.sol` and all begin with `!!!`
+10. all assertion failure reasons are constants in `Properties.sol`; `!!!` prefix is recommended for consistent parser extraction
 11. every assertion handler `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>` has exactly one referenced `ASSERTION_*` constant
 12. assertion failures normalize to `targetFunctionName` across Echidna, Medusa, and Foundry
