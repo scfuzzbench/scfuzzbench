@@ -23,8 +23,6 @@ class FoundryParserTests(unittest.TestCase):
                 '{"timestamp":101,"event":"failure","target":"CryticToFoundry:invariant_a","type":"invariant"}',
                 '{"timestamp":102,"event":"failure","target":"CryticToFoundry:invariant_a","type":"invariant"}',
                 '{"timestamp":103,"event":"failure","target":"CryticToFoundry:invariant_b","type":"assertion"}',
-                '{"type":"invariant_failure","timestamp":104,"invariant":"legacy_invariant","failed_total":1}',
-                '{"timestamp":105,"invariant":"legacy_watcher","failed":1}',
             ]
         )
 
@@ -37,7 +35,7 @@ class FoundryParserTests(unittest.TestCase):
         self.assertAlmostEqual(events[0].elapsed_seconds, 1.0)
         self.assertAlmostEqual(events[1].elapsed_seconds, 3.0)
 
-    def test_ignores_legacy_foundry_failure_records(self):
+    def test_parses_legacy_foundry_failure_records(self):
         log_path = self.write_log(
             [
                 '{"type":"invariant_failure","timestamp":100,"invariant":"legacy_invariant","failed_total":1}',
@@ -47,7 +45,23 @@ class FoundryParserTests(unittest.TestCase):
         )
 
         events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
-        self.assertEqual(events, [])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "legacy_invariant")
+        self.assertEqual(events[0].source, "foundry-invariant-failure")
+        self.assertAlmostEqual(events[0].elapsed_seconds, 0.0)
+
+    def test_dedupes_across_foundry_failure_formats(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"failure","target":"CryticToFoundry:invariant_a","type":"invariant"}',
+                '{"type":"invariant_failure","timestamp":101,"invariant":"invariant_a","failed_total":1}',
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "invariant_a")
+        self.assertEqual(events[0].source, "foundry-failure-event")
 
     def test_parses_fail_on_assert_failure_events(self):
         log_path = self.write_log(

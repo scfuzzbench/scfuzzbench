@@ -454,6 +454,11 @@ def extract_foundry_failure(payload: Dict[str, Any]) -> Tuple[Optional[str], Opt
         if target_name:
             return target_name, ts_value, "foundry-failure-event"
 
+    if str(payload.get("type") or "").strip() == "invariant_failure":
+        invariant_name = normalize_foundry_failure_name(payload.get("invariant"))
+        if invariant_name:
+            return invariant_name, ts_value, "foundry-invariant-failure"
+
     return None, ts_value, None
 
 
