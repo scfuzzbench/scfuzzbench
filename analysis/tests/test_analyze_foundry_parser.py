@@ -16,15 +16,15 @@ class FoundryParserTests(unittest.TestCase):
             tmp.close()
             raise
 
-    def test_parses_only_invariant_failure_records(self):
+    def test_parses_failure_event_records(self):
         log_path = self.write_log(
             [
-                '{"type":"invariant_metrics","timestamp":100,"invariant":"invariant_a","failed_current":0,"failed_total":0,"metrics":{"cumulative_edges_seen":1}}',
-                '{"type":"invariant_failure","timestamp":101,"invariant":"invariant_a","failed_total":1}',
-                '{"type":"invariant_failure","timestamp":102,"invariant":"invariant_a","failed_total":1}',
-                '{"type":"invariant_failure","timestamp":103,"invariant":"invariant_b","failed_total":2}',
-                '{"timestamp":104,"invariant":"legacy_invariant","failed":1,"metrics":{"cumulative_edges_seen":2}}',
-                "[FAIL: legacy] legacy_invariant()",
+                '{"timestamp":100,"event":"pulse","metrics":{"cumulative_edges_seen":1}}',
+                '{"timestamp":101,"event":"failure","target":"CryticToFoundry:invariant_a","type":"invariant"}',
+                '{"timestamp":102,"event":"failure","target":"CryticToFoundry:invariant_a","type":"invariant"}',
+                '{"timestamp":103,"event":"failure","target":"CryticToFoundry:invariant_b","type":"assertion"}',
+                '{"type":"invariant_failure","timestamp":104,"invariant":"legacy_invariant","failed_total":1}',
+                '{"timestamp":105,"invariant":"legacy_watcher","failed":1}',
             ]
         )
 
@@ -32,14 +32,15 @@ class FoundryParserTests(unittest.TestCase):
         self.assertEqual([event.event for event in events], ["invariant_a", "invariant_b"])
         self.assertEqual(
             [event.source for event in events],
-            ["foundry-invariant-failure", "foundry-invariant-failure"],
+            ["foundry-failure-event", "foundry-failure-event"],
         )
         self.assertAlmostEqual(events[0].elapsed_seconds, 1.0)
         self.assertAlmostEqual(events[1].elapsed_seconds, 3.0)
 
-    def test_ignores_legacy_foundry_records_without_type(self):
+    def test_ignores_legacy_foundry_failure_records(self):
         log_path = self.write_log(
             [
+                '{"type":"invariant_failure","timestamp":100,"invariant":"legacy_invariant","failed_total":1}',
                 '{"timestamp":100,"invariant":"legacy_invariant","failed":1,"metrics":{"cumulative_edges_seen":1}}',
                 "[FAIL: legacy] legacy_invariant()",
             ]
@@ -47,6 +48,28 @@ class FoundryParserTests(unittest.TestCase):
 
         events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
         self.assertEqual(events, [])
+
+    def test_parses_fail_on_assert_failure_events(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":200,"event":"failure","target":"CryticToFoundry:assert_canary_ASSERTION_CANARY","type":"assertion"}',
+                '{"timestamp":201,"event":"pulse","metrics":{"cumulative_edges_seen":4}}',
+                '{"timestamp":202,"event":"failure","target":"CryticToFoundry:assert_canary_ASSERTION_CANARY","type":"assertion"}',
+                '{"timestamp":203,"event":"failure","target":"CryticToFoundry:invariant_canary","type":"invariant"}',
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(
+            [event.event for event in events],
+            ["assert_canary_ASSERTION_CANARY", "invariant_canary"],
+        )
+        self.assertEqual(
+            [event.source for event in events],
+            ["foundry-failure-event", "foundry-failure-event"],
+        )
+        self.assertAlmostEqual(events[0].elapsed_seconds, 0.0)
+        self.assertAlmostEqual(events[1].elapsed_seconds, 3.0)
 
     def test_parses_throughput_from_json_cumulative_metrics(self):
         log_path = self.write_log(

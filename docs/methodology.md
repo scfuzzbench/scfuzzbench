@@ -129,7 +129,7 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
 ### Event extraction semantics (`analysis/analyze.py`)
 
 - Parser is fuzzer-aware:
-  - Foundry: parse JSON lines and count events only from records with `type=invariant_failure`, using the first JSON `timestamp` as elapsed-time baseline.
+  - Foundry: parse JSON lines, count events only from records with `event=failure`, and use the first JSON `timestamp` as the elapsed-time baseline.
   - Medusa: parse elapsed markers and failed assertions/properties from textual logs.
   - Echidna variants: parse falsification markers from textual logs.
   - Unknown fuzzers: fall back to generic pattern parsing.

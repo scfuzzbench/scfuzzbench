@@ -35,12 +35,12 @@ export TF_VAR_timeout_hours=1
 export TF_VAR_instances_per_fuzzer=4
 export TF_VAR_fuzzers='["echidna","medusa","foundry"]'
 export TF_VAR_git_token_ssm_parameter_name="/scfuzzbench/recon/github_token"
-export TF_VAR_foundry_git_repo="https://github.com/aviggiano/foundry"
-export TF_VAR_foundry_git_ref="master"
+export TF_VAR_foundry_git_repo="https://github.com/0xalpharush/foundry"
+export TF_VAR_foundry_git_ref="fail_on_assert"
 ```
 
-For Foundry runs, use [aviggiano/foundry](https://github.com/aviggiano/foundry) with JSON `invariant_failure` emission enabled.
-Current analysis intentionally relies on these explicit failure events.
+For Foundry runs, use [0xalpharush/foundry](https://github.com/0xalpharush/foundry/tree/fail_on_assert).
+Current analysis expects the branch's `event: failure` JSON events.
 
 ## Re-run A Benchmark
 

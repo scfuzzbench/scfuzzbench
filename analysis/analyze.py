@@ -428,6 +428,35 @@ def extract_bang_event(line: str) -> Optional[str]:
     return candidate
 
 
+def normalize_foundry_failure_name(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    name = str(value).strip()
+    if not name:
+        return None
+    # Foundry fail_on_assert failures use "Contract:function"; keep only function
+    # name for cross-fuzzer normalization. Ignore unexpected multi-colon values.
+    if name.count(":") == 1:
+        contract_name, function_name = name.split(":", 1)
+        if contract_name and function_name:
+            name = function_name.strip()
+    return name or None
+
+
+def extract_foundry_failure(payload: Dict[str, Any]) -> Tuple[Optional[str], Optional[float], Optional[str]]:
+    ts_value = parse_optional_float(payload.get("timestamp"))
+    # We require timestamps to compute elapsed seconds in benchmark reports.
+    if ts_value is None:
+        return None, None, None
+
+    if str(payload.get("event") or "").strip() == "failure":
+        target_name = normalize_foundry_failure_name(payload.get("target"))
+        if target_name:
+            return target_name, ts_value, "foundry-failure-event"
+
+    return None, ts_value, None
+
+
 def parse_foundry_log(
     path: Path, run_id: str, instance_id: str, fuzzer_label: str
 ) -> List[Event]:
@@ -443,35 +472,29 @@ def parse_foundry_log(
                 except json.JSONDecodeError:
                     payload = None
                 if payload is not None:
-                    invariant = payload.get("invariant")
-                    ts = payload.get("timestamp")
-                    if invariant and ts is not None:
-                        try:
-                            ts_value = float(ts)
-                        except (TypeError, ValueError):
-                            ts_value = None
-                        if ts_value is not None:
-                            if first_ts is None:
-                                # Foundry emits epoch timestamps; use the first seen
-                                # timestamp as the baseline so elapsed_seconds measures
-                                # time since the run began, not time since the first
-                                # failure.
-                                first_ts = ts_value
+                    payload_ts = parse_optional_float(payload.get("timestamp"))
+                    if payload_ts is not None and first_ts is None:
+                        # Foundry emits epoch timestamps. Anchor elapsed time to the
+                        # first JSON event so failures are measured since the run
+                        # began, not since the first failure.
+                        first_ts = payload_ts
 
-                            if payload.get("type") == "invariant_failure" and invariant not in seen:
-                                seen.add(invariant)
-                                events.append(
-                                    Event(
-                                        run_id=run_id,
-                                        instance_id=instance_id,
-                                        fuzzer=normalize_fuzzer(fuzzer_label),
-                                        fuzzer_label=fuzzer_label,
-                                        event=invariant,
-                                        elapsed_seconds=ts_value - first_ts,
-                                        source="foundry-invariant-failure",
-                                        log_path=str(path),
-                                    )
+                    event_name, ts_value, source = extract_foundry_failure(payload)
+                    if event_name and ts_value is not None and source:
+                        if event_name not in seen:
+                            seen.add(event_name)
+                            events.append(
+                                Event(
+                                    run_id=run_id,
+                                    instance_id=instance_id,
+                                    fuzzer=normalize_fuzzer(fuzzer_label),
+                                    fuzzer_label=fuzzer_label,
+                                    event=event_name,
+                                    elapsed_seconds=ts_value - (first_ts or ts_value),
+                                    source=source,
+                                    log_path=str(path),
                                 )
+                            )
                     continue
     return events
 
