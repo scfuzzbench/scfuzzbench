@@ -1,0 +1,27 @@
+{
+  "available": false,
+  "generated_at_utc": "",
+  "metric": "UnblendedCost",
+  "currency": "USD",
+  "cost_explorer_region": "us-east-1",
+  "history_months": 12,
+  "max_stacked_services": 5,
+  "public_data_path": "/data/aws-costs.json",
+  "error": "Build-time cost payload has not been generated yet.",
+  "history": {
+    "months": [],
+    "top_services": []
+  },
+  "previous_month": null,
+  "current_month": {
+    "key": "",
+    "label": "",
+    "start": "",
+    "end_exclusive": "",
+    "total_usd": 0,
+    "estimated": true,
+    "tax_usd": 0,
+    "by_service": [],
+    "daily": []
+  }
+}

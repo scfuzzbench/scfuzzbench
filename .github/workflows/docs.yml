@@ -72,6 +72,10 @@ jobs:
       - name: Install Node deps
         run: npm ci
 
+      - name: Generate AWS transparency payload
+        run: |
+          python3 scripts/generate_cost_transparency.py
+
       - name: Generate docs from S3 index
         run: |
           python3 scripts/generate_docs_site.py --bucket "${SCFUZZBENCH_BUCKET}" --region "${AWS_REGION}"
