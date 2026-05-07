@@ -93,7 +93,7 @@ def normalize_service_groups(groups: list[dict], *, total: Decimal) -> list[dict
     items: list[ServiceCost] = []
     for group in groups:
         cost = Decimal(group["Metrics"][METRIC]["Amount"])
-        if cost <= 0:
+        if cost == 0:
             continue
         service = str(group["Keys"][0]).strip() or "Unknown"
         items.append(ServiceCost(service=service, cost=cost))
@@ -114,12 +114,15 @@ def normalize_service_groups(groups: list[dict], *, total: Decimal) -> list[dict
     return normalized
 
 
-def make_unavailable_payload(generated_at: str, message: str) -> dict:
+def make_unavailable_payload(generated_at: str, message: str, *, history_months: int) -> dict:
     return {
         "available": False,
         "generated_at_utc": generated_at,
         "metric": METRIC,
         "currency": "USD",
+        "cost_explorer_region": COST_EXPLORER_REGION,
+        "history_months": history_months,
+        "max_stacked_services": MAX_STACKED_SERVICES,
         "public_data_path": PUBLIC_DATA_PATH,
         "error": message,
         "history": {"months": [], "top_services": []},
@@ -274,6 +277,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_HISTORY_MONTHS,
         help="How many monthly buckets to include, counting the current month.",
     )
+    parser.add_argument(
+        "--allow-unavailable",
+        action="store_true",
+        help="Write an unavailable placeholder instead of failing when AWS cost lookup errors.",
+    )
     return parser.parse_args()
 
 
@@ -289,8 +297,15 @@ def main() -> int:
     try:
         payload = build_payload(profile=args.profile, history_months=args.history_months, today=today)
     except Exception as exc:
+        if not args.allow_unavailable:
+            print(f"ERROR: failed to generate AWS cost transparency payload: {exc}", file=sys.stderr)
+            return 1
         print(f"WARNING: failed to generate AWS cost transparency payload: {exc}", file=sys.stderr)
-        payload = make_unavailable_payload(generated_at, str(exc))
+        payload = make_unavailable_payload(
+            generated_at,
+            str(exc),
+            history_months=args.history_months,
+        )
 
     write_json(GENERATED_JSON_PATH, payload)
     write_json(PUBLIC_JSON_PATH, payload)

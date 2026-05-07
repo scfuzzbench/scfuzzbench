@@ -100,6 +100,14 @@ const overviewCards = computed(() => [
 const currentMonthServices = computed(() =>
   (currentMonth.value.by_service ?? []).filter((item) => item.cost_usd > 0)
 );
+const currentMonthPositiveTotal = computed(() =>
+  currentMonthServices.value.reduce((sum, item) => sum + item.cost_usd, 0)
+);
+const currentMonthAdjustmentTotal = computed(() =>
+  (currentMonth.value.by_service ?? [])
+    .filter((item) => item.cost_usd < 0)
+    .reduce((sum, item) => sum + item.cost_usd, 0)
+);
 
 const monthlyChart = computed(() => {
   const buckets = historyMonths.value;
@@ -116,7 +124,7 @@ const currentMonthDailyChart = computed(() => {
 const historyTopServices = computed(() => {
   const totals = new Map<string, number>();
   for (const month of historyMonths.value) {
-    for (const service of month.by_service) {
+    for (const service of month.by_service.filter((item) => item.cost_usd > 0)) {
       totals.set(service.service, (totals.get(service.service) ?? 0) + service.cost_usd);
     }
   }
@@ -128,15 +136,22 @@ const historyTopServices = computed(() => {
 
 const stackedHistory = computed(() =>
   historyMonths.value.map((month) => {
-    const serviceMap = new Map(month.by_service.map((item) => [item.service, item.cost_usd]));
+    const positiveServices = month.by_service.filter((item) => item.cost_usd > 0);
+    const serviceMap = new Map(positiveServices.map((item) => [item.service, item.cost_usd]));
     const topServices = historyTopServices.value.map((service) => ({
       service,
       cost_usd: serviceMap.get(service) ?? 0,
     }));
     const known = topServices.reduce((sum, item) => sum + item.cost_usd, 0);
-    const other = Math.max(month.total_usd - known, 0);
+    const positiveTotal = positiveServices.reduce((sum, item) => sum + item.cost_usd, 0);
+    const other = Math.max(positiveTotal - known, 0);
+    const adjustmentTotal = month.by_service
+      .filter((item) => item.cost_usd < 0)
+      .reduce((sum, item) => sum + item.cost_usd, 0);
     return {
       ...month,
+      positive_total_usd: positiveTotal,
+      adjustment_total_usd: adjustmentTotal,
       segments: other > 0 ? [...topServices, { service: "Other", cost_usd: other }] : topServices,
     };
   })
@@ -152,6 +167,12 @@ const serviceLegend = computed(() => {
 
 const serviceBreakdownMax = computed(() =>
   Math.max(...currentMonthServices.value.map((item) => item.cost_usd), 0)
+);
+const stackedHistoryMax = computed(() =>
+  Math.max(...stackedHistory.value.map((month) => month.positive_total_usd), 0)
+);
+const hasHistoricalAdjustments = computed(() =>
+  stackedHistory.value.some((month) => month.adjustment_total_usd < 0)
 );
 
 const monthlyChartWidth = 880;
@@ -185,6 +206,13 @@ function dayAxisLabel(iso: string): string {
 
 function percent(value: number): string {
   return `${value.toFixed(1)}%`;
+}
+
+function percentOfTotal(value: number, total: number): string {
+  if (total <= 0) {
+    return "0.0%";
+  }
+  return percent((value / total) * 100);
 }
 
 function serviceColor(service: string, indexHint = 0): string {
@@ -270,6 +298,10 @@ function dailyBarHeight(value: number, max: number): number {
       <div class="cost-page__notes">
         <p>Month-to-date buckets are estimated and the current UTC day may still be partial.</p>
         <p>Totals include every service Cost Explorer reports for this account, including tax when present.</p>
+        <p v-if="currentMonthAdjustmentTotal < 0">
+          Net totals currently include {{ formatUsd(currentMonthAdjustmentTotal) }} in credits, refunds, or other
+          downward adjustments.
+        </p>
       </div>
 
       <section class="cost-section">
@@ -363,9 +395,9 @@ function dailyBarHeight(value: number, max: number): number {
           <div class="cost-section__heading">
             <div>
               <p class="cost-section__eyebrow">Current Mix</p>
-              <h3>Service breakdown for {{ currentMonth.label }}</h3>
+              <h3>Positive service breakdown for {{ currentMonth.label }}</h3>
             </div>
-            <p>{{ currentMonthServices.length }} billed services with non-zero cost.</p>
+            <p>{{ currentMonthServices.length }} services with positive net cost.</p>
           </div>
           <div class="service-bars">
             <div v-for="(service, index) in currentMonthServices" :key="service.service" class="service-row">
@@ -384,7 +416,7 @@ function dailyBarHeight(value: number, max: number): number {
               </div>
               <div class="service-row__value">
                 <strong>{{ formatUsd(service.cost_usd) }}</strong>
-                <span>{{ percent(service.share_of_total_pct) }}</span>
+                <span>{{ percentOfTotal(service.cost_usd, currentMonthPositiveTotal) }}</span>
               </div>
             </div>
           </div>
@@ -394,10 +426,14 @@ function dailyBarHeight(value: number, max: number): number {
           <div class="cost-section__heading">
             <div>
               <p class="cost-section__eyebrow">Historical Mix</p>
-              <h3>Service composition over time</h3>
+              <h3>Positive service composition over time</h3>
             </div>
-            <p>Top services across the full history window; smaller categories collapse into Other.</p>
+            <p>Top positive-cost services across the full history window; smaller categories collapse into Other.</p>
           </div>
+          <p v-if="hasHistoricalAdjustments" class="cost-section__note">
+            Credits, refunds, and other downward adjustments remain in the net totals and raw JSON, but are excluded
+            from this positive-charge mix chart.
+          </p>
           <div class="chart-shell">
             <svg
               class="chart-svg"
@@ -424,10 +460,10 @@ function dailyBarHeight(value: number, max: number): number {
                         bucket.segments
                           .slice(0, segmentIndex + 1)
                           .reduce((sum, item) => sum + item.cost_usd, 0),
-                        monthlyChart.max
+                        stackedHistoryMax
                       )
                     "
-                    :height="monthlyBarHeight(segment.cost_usd, monthlyChart.max)"
+                    :height="monthlyBarHeight(segment.cost_usd, stackedHistoryMax)"
                     :fill="serviceColor(segment.service, segmentIndex)"
                   />
                 </template>
@@ -532,6 +568,7 @@ function dailyBarHeight(value: number, max: number): number {
 .cost-card__meta,
 .cost-page__notes,
 .cost-section__heading p,
+.cost-section__note,
 .service-row__value span {
   color: var(--vp-c-text-2);
 }
@@ -547,7 +584,8 @@ function dailyBarHeight(value: number, max: number): number {
 }
 
 .cost-page__notes p,
-.cost-section__heading p {
+.cost-section__heading p,
+.cost-section__note {
   margin: 0;
 }
 
