@@ -12,14 +12,15 @@ DEFAULT_OUT = REPO_ROOT / "docs" / "public" / "images" / "ethereum-security-qf-g
 BADGE_SVG = """\
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="64" y1="34" x2="462" y2="493" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#121B4B"/>
-      <stop offset="0.48" stop-color="#101827"/>
-      <stop offset="1" stop-color="#0F766E"/>
+    <linearGradient id="bg" x1="35" y1="70" x2="486" y2="426" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6256D6"/>
+      <stop offset="0.52" stop-color="#4856B0"/>
+      <stop offset="1" stop-color="#285C72"/>
     </linearGradient>
-    <linearGradient id="grant" x1="122" y1="333" x2="390" y2="333" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FF3C38"/>
-      <stop offset="1" stop-color="#2DD4BF"/>
+    <linearGradient id="grant" x1="60" y1="352" x2="452" y2="352" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E83430"/>
+      <stop offset="0.58" stop-color="#5060B8"/>
+      <stop offset="1" stop-color="#285C72"/>
     </linearGradient>
     <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
       <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity="0.26"/>
@@ -27,8 +28,13 @@ BADGE_SVG = """\
   </defs>
   <rect width="512" height="512" rx="76" fill="url(#bg)"/>
   <rect x="18" y="18" width="476" height="476" rx="62" stroke="#FFFFFF" stroke-opacity="0.12" stroke-width="2"/>
-  <path d="M42 150H470M42 255H470M42 360H470M150 42V470M255 42V470M360 42V470"
-        stroke="#FFFFFF" stroke-opacity="0.055" stroke-width="2"/>
+  <path d="M448 -18C382 14 350 80 350 154C350 239 405 311 480 334M482 38C420 62 384 111 384 170C384 239 428 298 488 322"
+        stroke="#7EB5C3" stroke-opacity="0.28" stroke-width="3"/>
+  <rect x="80" y="92" width="80" height="80" rx="2" fill="#8190DF" fill-opacity="0.16"/>
+  <rect x="174" y="118" width="82" height="82" rx="2" fill="#8190DF" fill-opacity="0.13"/>
+  <rect x="68" y="346" width="82" height="82" rx="2" fill="#8190DF" fill-opacity="0.13"/>
+  <rect x="386" y="126" width="84" height="84" rx="2" fill="#5D83B5" fill-opacity="0.14"/>
+  <rect x="274" y="390" width="82" height="82" rx="2" fill="#5D83B5" fill-opacity="0.14"/>
 
   <g filter="url(#shadow)">
     <rect x="76" y="70" width="138" height="138" rx="30" fill="#F8FAFC"/>
@@ -40,9 +46,11 @@ BADGE_SVG = """\
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="298" y="70" width="138" height="138" rx="30" fill="#FF3C38"/>
-    <path d="M335 170V106H359C368 106 375 107 380 111C386 116 391 123 394 132C397 140 398 149 398 158C398 168 396 177 392 184C388 190 382 195 375 198C370 200 363 201 354 201H335ZM353 184H357C364 184 369 183 373 181C376 179 379 176 381 172C383 168 384 163 384 157C384 146 381 138 376 134C372 130 366 128 356 128H353V184Z" fill="#FFFFFF"/>
-    <rect x="323" y="148" width="55" height="12" fill="#FFFFFF"/>
+    <path d="M368 58C389 72 416 78 437 76L439 152C434 194 404 224 368 242C332 224 302 194 297 152L299 76C320 78 347 72 368 58Z" fill="#F8FAFC"/>
+    <path d="M368 71C386 83 409 88 426 87L428 149C424 185 398 211 368 226C338 211 312 185 308 149L310 87C327 88 350 83 368 71Z" fill="#E83430"/>
+    <path d="M368 86C383 96 401 100 416 99L417 146C414 176 392 198 368 211C344 198 322 176 319 146L320 99C335 100 353 96 368 86Z" fill="none" stroke="#F8FAFC" stroke-width="4"/>
+    <path d="M346 174V113H368C377 113 384 115 389 120C394 125 398 133 399 144C401 156 399 166 394 174C389 183 381 187 369 187H346ZM362 173H367C373 173 378 171 381 167C384 162 386 155 386 147C386 139 384 133 380 129C377 126 372 124 366 124H362V173Z" fill="#FFFFFF"/>
+    <rect x="337" y="144" width="42" height="10" fill="#FFFFFF"/>
   </g>
 
   <g transform="translate(205 164)">
@@ -52,7 +60,7 @@ BADGE_SVG = """\
     <path d="M51 126V168L102 96L51 126Z" fill="#64748B" fill-opacity="0.82"/>
   </g>
 
-  <rect x="60" y="318" width="392" height="102" rx="30" fill="url(#grant)" fill-opacity="0.94"/>
+  <rect x="60" y="318" width="392" height="102" rx="30" fill="url(#grant)" fill-opacity="0.95"/>
   <text x="256" y="359" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="31" font-weight="800" fill="#F8FAFC">Ethereum Security</text>
   <text x="256" y="397" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="800" fill="#F8FAFC">QF Grant</text>
   <text x="256" y="456" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="700" fill="#D8FFF8">Giveth x TheDAO</text>
