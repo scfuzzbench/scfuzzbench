@@ -1,0 +1,41 @@
+{
+  "available": true,
+  "generated_at_utc": "2026-05-28T10:22:24+00:00",
+  "currency": "USD",
+  "address": "0x20f4614a502d61d119a461fb6e320f6f54953adc",
+  "public_data_path": "/data/grant-wallet.json",
+  "source": "ethereum_rpc_coingecko",
+  "source_label": "Ethereum RPC + CoinGecko",
+  "coverage": "Ethereum mainnet ETH balance only",
+  "zerion_url": "https://app.zerion.io/0x20f4614a502d61d119a461fb6e320f6f54953adc/overview",
+  "etherscan_url": "https://etherscan.io/address/0x20f4614a502d61d119a461fb6e320f6f54953adc",
+  "round": {
+    "name": "Ethereum Security QF Round",
+    "results_url": "https://forum.giveth.io/t/ethereum-security-qf-round-results-april-23-may-14-2026/2201",
+    "dates": "April 23-May 14, 2026",
+    "matching_pool_eth": 637.4274,
+    "total_donated_usd": 315020,
+    "networks": [
+      "Ethereum",
+      "Gnosis",
+      "Optimism",
+      "Polygon",
+      "Celo",
+      "Arbitrum",
+      "Base"
+    ]
+  },
+  "portfolio": {
+    "total_usd": 2.659828,
+    "absolute_1d_usd": null,
+    "percent_1d": null,
+    "eth_balance": 0.001337,
+    "eth_price_usd": 1989.4,
+    "positions_distribution_by_chain": {
+      "ethereum": 2.659828
+    },
+    "positions_distribution_by_type": {
+      "wallet": 2.659828
+    }
+  }
+}

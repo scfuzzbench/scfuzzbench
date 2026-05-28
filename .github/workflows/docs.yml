@@ -23,6 +23,7 @@ jobs:
     env:
       AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
       SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
+      ZERION_API_KEY: ${{ secrets.ZERION_API_KEY }}
     steps:
       - name: Checkout (tarball)
         timeout-minutes: 5
@@ -75,6 +76,10 @@ jobs:
       - name: Generate AWS transparency payload
         run: |
           python3 scripts/generate_cost_transparency.py
+
+      - name: Generate grant wallet payload
+        run: |
+          python3 scripts/generate_grant_wallet.py --allow-unavailable
 
       - name: Generate docs from S3 index
         run: |
