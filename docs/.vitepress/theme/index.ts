@@ -4,6 +4,7 @@ import "./custom.css";
 
 import CustomLayout from "../components/CustomLayout.vue";
 import CostTransparencyDashboard from "../components/CostTransparencyDashboard.vue";
+import GrantTransparencyTracker from "../components/GrantTransparencyTracker.vue";
 import StartBenchmark from "../components/StartBenchmark.vue";
 
 export default {
@@ -12,6 +13,7 @@ export default {
   enhanceApp(ctx) {
     DefaultTheme.enhanceApp?.(ctx);
     ctx.app.component("CostTransparencyDashboard", CostTransparencyDashboard);
+    ctx.app.component("GrantTransparencyTracker", GrantTransparencyTracker);
     ctx.app.component("StartBenchmark", StartBenchmark);
   },
 } satisfies Theme;
