@@ -9,7 +9,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 DEFAULT_ECHIDNA_VERSION="2.3.1"
 DEFAULT_MEDUSA_VERSION="1.4.1"
-DEFAULT_FOUNDRY_VERSION="v1.6.0-rc1"
+DEFAULT_FOUNDRY_VERSION="v1.7.1"
+# Cloud runs build upstream foundry-rs/foundry at the commit pinned in
+# infrastructure/variables.tf (foundry_git_ref). Export FOUNDRY_GIT_REPO and
+# FOUNDRY_GIT_REF before invoking to match that build locally; the plain
+# FOUNDRY_VERSION path installs a released binary via foundryup instead.
 DEFAULT_RECON_VERSION="0.4.6"
 DEFAULT_BENCHMARK_TYPE="property"
 DEFAULT_TIMEOUT="86400"   # 24 h – same as cloud default

@@ -72,20 +72,20 @@ variable "benchmark_type" {
 
 variable "foundry_version" {
   type        = string
-  description = "Pinned Foundry version (tag used by foundryup)."
-  default     = "v1.6.0-rc1"
+  description = "Pinned Foundry version (tag used by foundryup). Only used when foundry_git_repo is empty."
+  default     = "v1.7.1"
 }
 
 variable "foundry_git_repo" {
   type        = string
-  description = "Optional git repository to build Foundry from."
-  default     = "https://github.com/aviggiano/foundry"
+  description = "Git repository to build Foundry from. Defaults to upstream foundry-rs/foundry."
+  default     = "https://github.com/foundry-rs/foundry"
 }
 
 variable "foundry_git_ref" {
   type        = string
-  description = "Optional git ref (branch, tag, or commit) for Foundry repo."
-  default     = "fail_on_assert"
+  description = "Git ref (branch, tag, or commit) for the Foundry repo. Pinned to a master commit that includes invariant assertion-failure reporting (foundry-rs/foundry#14275) and continuous invariant campaigns with handler-bug dedup (foundry-rs/foundry#14482); stable releases up to v1.7.1 predate #14482."
+  default     = "907ba0817e8feb2404da9d506a12b69834cfb393"
 }
 
 variable "echidna_version" {

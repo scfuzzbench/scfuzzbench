@@ -35,12 +35,16 @@ export TF_VAR_timeout_hours=1
 export TF_VAR_instances_per_fuzzer=4
 export TF_VAR_fuzzers='["echidna","medusa","foundry","recon-fuzzer"]'
 export TF_VAR_git_token_ssm_parameter_name="/scfuzzbench/recon/github_token"
-export TF_VAR_foundry_git_repo="https://github.com/aviggiano/foundry"
-export TF_VAR_foundry_git_ref="fail_on_assert"
 ```
 
-For Foundry runs, use [aviggiano/foundry](https://github.com/aviggiano/foundry/tree/fail_on_assert).
-Current analysis expects the branch's `event: failure` JSON events.
+Foundry builds from upstream [foundry-rs/foundry](https://github.com/foundry-rs/foundry) at the commit
+pinned in `infrastructure/variables.tf` (`foundry_git_ref`). The pin must include invariant
+assertion-failure reporting ([foundry-rs/foundry#14275](https://github.com/foundry-rs/foundry/pull/14275))
+and continuous invariant campaigns with handler-bug dedup
+([foundry-rs/foundry#14482](https://github.com/foundry-rs/foundry/pull/14482)); stable releases up to
+v1.7.1 predate #14482, so keep the commit pin until a stable release ships both. The analysis pipeline
+consumes upstream's `event: failure` JSON pulse events. Override `TF_VAR_foundry_git_repo` /
+`TF_VAR_foundry_git_ref` only for experiments.
 
 ## Re-run A Benchmark
 
