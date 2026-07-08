@@ -3,7 +3,7 @@
 This page creates a **benchmark request** issue in GitHub.
 
 Need a new target first? Use the target onboarding skill at
-[`skills/target-onboarding/SKILL.md`](https://github.com/Recon-Fuzz/scfuzzbench/blob/main/skills/target-onboarding/SKILL.md)
+[`skills/target-onboarding/SKILL.md`](https://github.com/scfuzzbench/scfuzzbench/blob/main/skills/target-onboarding/SKILL.md)
 and follow its workflow.
 
 The request moves through GitHub labels:
@@ -14,12 +14,17 @@ The request moves through GitHub labels:
 
 Use the preconfigured target selector to auto-fill target repo/commit for the current benchmark targets listed in `README.md`.
 
-Current preconfigured targets:
+Every target is a fork under the [scfuzzbench GitHub org](https://github.com/scfuzzbench):
+the benchmark always consumes the **`main`** branch (upstream code plus the harness), and
+**`pre-target`** holds the pristine upstream baseline — compare `pre-target...main` in the
+target repo to see exactly what the harness adds.
 
-- Aave v4 (`v0.5.6-recon`)
-- Superform v2-periphery (`dev-recon`)
-- Liquity v2 Governance (`recon`)
-- Nerite (`dev-recon`)
+Current preconfigured targets (all at `main`):
+
+- [Aave v4](https://github.com/scfuzzbench/aave-v4-scfuzzbench)
+- [Superform v2-periphery](https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench)
+- [Liquity v2 Governance](https://github.com/scfuzzbench/liquity-V2-gov-scfuzzbench)
+- [Nerite](https://github.com/scfuzzbench/nerite-scfuzzbench)
 
 <StartBenchmark />
 

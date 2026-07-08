@@ -42,7 +42,7 @@ Instructions for working on Terraform in this repository.
 If the user requests, git worktrees should be created with following naming scheme:
 
 - `.worktrees/issue-ISSUE_ID-SHORT_DESCRIPTION`
-- `ISSUE_ID` comes from the GitHub issue number (e.g. `https://github.com/Recon-Fuzz/scfuzzbench/issues/73` -> `73`)
+- `ISSUE_ID` comes from the GitHub issue number (e.g. `https://github.com/scfuzzbench/scfuzzbench/issues/73` -> `73`)
 - `SHORT_DESCRIPTION` is a max 3-word kebab-case summary of the issue (e.g. `fix-lcov`)
 
 If no GitHub issue is provided, use:

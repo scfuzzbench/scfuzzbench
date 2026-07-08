@@ -7,24 +7,36 @@ metadata:
 
 # Target Onboarding Skill
 
-Use this skill when onboarding a new benchmark target for `Recon-Fuzz/scfuzzbench`.
+Use this skill when onboarding a new benchmark target for `scfuzzbench/scfuzzbench`.
 
 This skill covers:
-- creating/maintaining `dev` and `dev-recon` branches in the target repo
+- creating/maintaining `pre-target` and `main` branches in the target repo
 - porting recon harness/config files
 - running local validation
-- opening `dev-recon -> dev` PR with exact `/start` request JSON
+- opening `harness -> main` PR with exact `/start` request JSON
+
+## Branch convention (mandatory)
+
+Every target repo lives as a fork under the **scfuzzbench GitHub org** and uses exactly
+two long-lived branches:
+
+- **`pre-target`**: the pristine upstream state at the vulnerable baseline commit,
+  before any harness is added. Never rebased or amended.
+- **`main`** (default branch): `pre-target` plus the harness. This is the only ref the
+  benchmark consumes; `/start` requests always use `target_commit: "main"`.
+
+Seeing what the harness adds is always `compare pre-target...main` on GitHub — no other
+branch/ref bookkeeping is allowed. Work branches (e.g. `harness`) are temporary and merge
+into `main` via PR.
 
 ## Inputs
 
 Required:
 - `upstream_target_repo_url`: upstream project URL
-- `vulnerable_baseline_commit_sha_for_dev`: baseline commit for `dev`
+- `vulnerable_baseline_commit_sha`: baseline commit for `pre-target`
 - `recon_harness_source_repo_url`: source repo containing recon harness
 - `recon_harness_source_ref_for_test_recon`: source branch/commit to copy harness from
-- `destination_repo_url`: `https://github.com/Recon-Fuzz/<repo>-scfuzzbench`
-- `base_branch_name`: usually `dev`
-- `recon_branch_name`: usually `dev-recon`
+- `destination_repo_url`: `https://github.com/scfuzzbench/<repo>-scfuzzbench`
 - `benchmark_type`: `property` or `optimization`
 
 Optional:
@@ -64,19 +76,24 @@ Optional:
    - every `invariant_*` function across `test/recon/**` and inherited bases must be declared `returns (bool)`
    - invariant functions must be nonpayable (not `view`/`pure`) for Medusa property compatibility
    - include an explicit boolean return at function end (for example `return true;`)
+12. Single-harness rule:
+   - the exact same harness must run unmodified on Foundry, Echidna, Medusa, and Recon
+   - no per-fuzzer shims: no `_isAssertion(...)`, no `assertionFailures` mapping, no `invariant_assertion_failure_*` wrappers, no fuzzer-conditional code paths
+13. No agent-instruction files:
+   - target repos must not contain `AGENTS.md`, `CLAUDE.md`, or similar agent-instruction files; they go stale and do not belong in benchmark targets
 
 ## Workflow
 
-### 1) Create target repo baseline branch
+### 1) Create target repo and baseline branches
 
-In destination repo:
-1. Checkout vulnerable baseline commit.
-2. Create `base_branch_name` (default `dev`) at that commit.
-3. Push and set as baseline/default as needed.
+1. Fork/copy the upstream project into the scfuzzbench org as `scfuzzbench/<repo>-scfuzzbench`.
+2. Checkout the vulnerable baseline commit.
+3. Create `pre-target` at that commit and push it. Never touch it again.
+4. Create `main` at the same commit, push it, and set it as the default branch.
 
-### 2) Create recon branch and port harness
+### 2) Create harness branch and port harness
 
-1. Create `recon_branch_name` from base branch (default `dev-recon` from `dev`).
+1. Create a work branch (e.g. `harness`) from `main`.
 2. Port full recon setup from source ref.
 
 Minimum files/directories to port:
@@ -249,12 +266,13 @@ Debug-only fallback for Foundry output inspection:
 FOUNDRY_INVARIANT_CONTINUOUS_RUN=false forge test --match-contract CryticToFoundry --match-test 'invariant_' -vv
 ```
 
-### 8) Open PR from recon branch to base branch
+### 8) Open PR from harness branch to main
 
-Create PR `dev-recon -> dev` (or configured branch names).
+Create PR `harness -> main` (with `main` still at the `pre-target` baseline, so the PR
+diff is the full harness).
 
 PR description must include:
-1. vulnerable baseline ref used for base branch
+1. vulnerable baseline ref used for `pre-target`
 2. recon harness source ref
 3. files copied/changed
 4. local smoke test summary
@@ -266,8 +284,8 @@ PR description must include:
 ### 9) Final `/start` request JSON guidance
 
 Typical fields:
-1. `target_repo_url`: destination repo URL
-2. `target_commit`: usually `dev-recon`
+1. `target_repo_url`: destination repo URL (under the scfuzzbench org)
+2. `target_commit`: always `main` (after the harness PR is merged)
 3. `benchmark_type`: `property` or `optimization`
 4. `instance_type`
 5. `instances_per_fuzzer`
@@ -304,15 +322,16 @@ Typical fields:
 ## Completion checklist
 
 Done means all are true:
-1. destination repo is created/updated in `Recon-Fuzz`
-2. base and recon branches are pushed
-3. recon PR is open with required validation details
-4. canary assertion + canary `invariant_` global failure are present and intentionally failing
-5. no parameterized function is prefixed `invariant_` (use `global_*` for parameterized globals)
-6. naming rules are satisfied across inherited recon property contracts, not only `Properties.sol`
-7. each fuzzer reports at least 2 canary bugs (assertion + global invariant) within 2 minutes
-8. exact `/start` JSON is provided
-9. PR URL is recorded in final report; include tracking issue URL only if one was explicitly requested
-10. all assertion failure reasons are constants in `Properties.sol`; `!!!` prefix is recommended for consistent parser extraction
-11. every assertion handler `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>` has exactly one referenced `ASSERTION_*` constant
-12. assertion failures normalize to `targetFunctionName` across Echidna, Medusa, and Foundry
+1. destination repo is created/updated in the `scfuzzbench` org
+2. `pre-target` and `main` branches are pushed (`main` is the default branch)
+3. harness PR is open with required validation details
+4. no `AGENTS.md`/`CLAUDE.md` or other agent-instruction files exist in the target repo
+5. canary assertion + canary `invariant_` global failure are present and intentionally failing
+6. no parameterized function is prefixed `invariant_` (use `global_*` for parameterized globals)
+7. naming rules are satisfied across inherited recon property contracts, not only `Properties.sol`
+8. each fuzzer reports at least 2 canary bugs (assertion + global invariant) within 2 minutes
+9. exact `/start` JSON is provided
+10. PR URL is recorded in final report; include tracking issue URL only if one was explicitly requested
+11. all assertion failure reasons are constants in `Properties.sol`; `!!!` prefix is recommended for consistent parser extraction
+12. every assertion handler `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>` has exactly one referenced `ASSERTION_*` constant
+13. assertion failures normalize to `targetFunctionName` across Echidna, Medusa, and Foundry
