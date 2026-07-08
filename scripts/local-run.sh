@@ -9,7 +9,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 DEFAULT_ECHIDNA_VERSION="2.3.1"
 DEFAULT_MEDUSA_VERSION="1.4.1"
-DEFAULT_FOUNDRY_VERSION="v1.6.0-rc1"
+DEFAULT_FOUNDRY_VERSION="v1.7.1"
+# Cloud runs build upstream foundry-rs/foundry at the commit pinned in
+# infrastructure/variables.tf (foundry_git_ref). Export FOUNDRY_GIT_REPO and
+# FOUNDRY_GIT_REF before invoking to match that build locally; the plain
+# FOUNDRY_VERSION path installs a released binary via foundryup instead.
 DEFAULT_RECON_VERSION="0.4.6"
 DEFAULT_BENCHMARK_TYPE="property"
 DEFAULT_TIMEOUT="86400"   # 24 h – same as cloud default
@@ -61,15 +65,15 @@ Environment variables:
 
 Examples:
   # Echidna – 10-minute run, 4 workers
-  $(basename "$0") -f echidna -r https://github.com/Recon-Fuzz/example-scfuzzbench \\
-    -b dev-recon -t 600 -w 4 \\
+  $(basename "$0") -f echidna -r https://github.com/scfuzzbench/example-scfuzzbench \\
+    -b main -t 600 -w 4 \\
     --echidna-config echidna.yaml \\
     --echidna-target test/recon/CryticTester.sol \\
     --echidna-contract CryticTester
 
   # Medusa – default timeout, auto workers
-  $(basename "$0") -f medusa -r https://github.com/Recon-Fuzz/example-scfuzzbench \\
-    -b dev-recon --medusa-config medusa.json
+  $(basename "$0") -f medusa -r https://github.com/scfuzzbench/example-scfuzzbench \\
+    -b main --medusa-config medusa.json
 
   # Install + run in one shot
   $(basename "$0") --install -f echidna -r https://github.com/... -b main ...

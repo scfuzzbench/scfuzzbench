@@ -92,8 +92,8 @@ const participatingFuzzerKeys = computed(() => {
 
 // Advanced / optional overrides.
 const foundryVersion = ref("");
-const foundryGitRepo = ref("https://github.com/aviggiano/foundry");
-const foundryGitRef = ref("fail_on_assert");
+const foundryGitRepo = ref("");
+const foundryGitRef = ref("");
 
 const echidnaVersion = ref("");
 const medusaVersion = ref("");
@@ -371,7 +371,7 @@ const showAdvanced = ref(false);
 
           <label class="sb-start__field">
             <div class="sb-start__label">Foundry version override (optional)</div>
-            <input v-model="foundryVersion" class="sb-start__input" type="text" placeholder="e.g. v1.6.0-rc1" />
+            <input v-model="foundryVersion" class="sb-start__input" type="text" placeholder="e.g. v1.7.1" />
           </label>
 
           <label class="sb-start__field">

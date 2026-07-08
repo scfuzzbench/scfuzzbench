@@ -29,9 +29,28 @@ build_target
 repo_dir="${SCFUZZBENCH_WORKDIR}/target"
 log_file="${SCFUZZBENCH_LOG_DIR}/foundry.log"
 
+# Start cold even if the target repo accidentally committed fuzzing artifacts:
+# a persisted corpus warm-starts coverage and persisted failures replay at t~0,
+# which would skew time-to-bug comparisons against the other fuzzers.
+rm -rf "${repo_dir}/corpus/foundry" "${repo_dir}/cache/invariant" "${repo_dir}/cache/test-failures"
+
 extra_args=()
 if [[ -n "${FOUNDRY_TEST_ARGS:-}" ]]; then
   read -r -a extra_args <<< "${FOUNDRY_TEST_ARGS}"
+fi
+
+# --show-progress installs forge's SIGINT handler (bars stay hidden on non-TTY), so the
+# benchmark timeout's SIGINT triggers a graceful exit that prints the end-of-run summary —
+# the only place handler assertion bugs appear with their names.
+has_progress_arg=0
+for arg in "${extra_args[@]}"; do
+  if [[ "${arg}" == "--show-progress" ]]; then
+    has_progress_arg=1
+    break
+  fi
+done
+if [[ "${has_progress_arg}" -eq 0 ]]; then
+  extra_args+=(--show-progress)
 fi
 
 set_default_worker_env FOUNDRY_THREADS

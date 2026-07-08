@@ -192,6 +192,112 @@ class BenchmarkReportTests(unittest.TestCase):
             self.assertNotIn("Favored", report)
             self.assertNotIn("Failure-rate", report)
 
+    def test_write_report_omits_scoreboard_without_relative_scores_csv(self):
+        metrics = [
+            _make_metrics("echidna", [8, 10], final_p50=9),
+            _make_metrics("medusa", [3, 5], final_p50=4),
+        ]
+        progress = {
+            "echidna": benchmark_report.ProgressMetricsSummary(
+                fuzzer="echidna",
+                runs=2,
+                seqps_runs=0,
+                coverage_runs=2,
+                corpus_runs=0,
+                favored_runs=0,
+                failure_rate_runs=0,
+                seqps_p50=None,
+                seqps_p25=None,
+                seqps_p75=None,
+                coverage_p50=300.0,
+                coverage_p25=280.0,
+                coverage_p75=320.0,
+                corpus_p50=None,
+                corpus_p25=None,
+                corpus_p75=None,
+                favored_p50=None,
+                favored_p25=None,
+                favored_p75=None,
+                failure_rate_p50=None,
+                failure_rate_p25=None,
+                failure_rate_p75=None,
+            ),
+            "medusa": benchmark_report.ProgressMetricsSummary(
+                fuzzer="medusa",
+                runs=2,
+                seqps_runs=0,
+                coverage_runs=2,
+                corpus_runs=0,
+                favored_runs=0,
+                failure_rate_runs=0,
+                seqps_p50=None,
+                seqps_p25=None,
+                seqps_p75=None,
+                coverage_p50=150.0,
+                coverage_p25=140.0,
+                coverage_p75=160.0,
+                corpus_p50=None,
+                corpus_p25=None,
+                corpus_p75=None,
+                favored_p50=None,
+                favored_p25=None,
+                favored_p75=None,
+                failure_rate_p50=None,
+                failure_rate_p25=None,
+                failure_rate_p75=None,
+            ),
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outpath = Path(tmp) / "REPORT.md"
+            benchmark_report.write_report(
+                metrics=metrics,
+                budget=1.0,
+                checkpoints=[1.0],
+                ks=[1],
+                outpath=outpath,
+                progress_metrics_by_fuzzer=progress,
+            )
+            report = outpath.read_text(encoding="utf-8")
+
+            # Without an explicit --relative-scores-csv there is no commensurable
+            # cross-fuzzer score: per-fuzzer coverage proxies use different units,
+            # so the scoreboard must not render at all.
+            self.assertNotIn("## Fuzzer scoreboard (higher is better)", report)
+            self.assertNotIn("relscore", report)
+            self.assertNotIn("relcov", report)
+
+    def test_relative_scores_csv_renders_scoreboard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            rel_csv = tmp_dir / "relative.csv"
+            rel_csv.write_text(
+                "\n".join(
+                    [
+                        "fuzzer,relscores,relcov",
+                        "echidna,0.75,1.0",
+                        "medusa,1.0,0.5",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            relative = benchmark_report.load_relative_scores(rel_csv)
+            outpath = tmp_dir / "REPORT.md"
+            benchmark_report.write_report(
+                metrics=[_make_metrics("echidna", [10]), _make_metrics("medusa", [1])],
+                budget=1.0,
+                checkpoints=[1.0],
+                ks=[1],
+                outpath=outpath,
+                relative_scores_by_fuzzer=relative,
+            )
+            report = outpath.read_text(encoding="utf-8")
+
+            self.assertIn("Best bug-finding score: **medusa** (1.000 relscore)", report)
+            self.assertIn("Best coverage score: **echidna** (1.000 relcov)", report)
+            self.assertIn("| 1 | medusa | 1.000 | 0.500 | compare both scores |", report)
+
     def test_cli_clamps_checkpoints_to_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)

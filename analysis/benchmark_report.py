@@ -191,6 +191,13 @@ class ProgressMetricsSummary:
     failure_rate_p75: Optional[float]
 
 
+@dataclass
+class RelativeScoreSummary:
+    fuzzer: str
+    relscore: Optional[float]
+    relcov: Optional[float]
+
+
 def parse_optional_float(value: str | None) -> Optional[float]:
     if value is None:
         return None
@@ -268,6 +275,42 @@ def load_progress_metrics_summary(path: Path) -> Dict[str, ProgressMetricsSummar
                 failure_rate_p50=parse_optional_float(row.get("failure_rate_p50")),
                 failure_rate_p25=parse_optional_float(row.get("failure_rate_p25")),
                 failure_rate_p75=parse_optional_float(row.get("failure_rate_p75")),
+            )
+    return rows
+
+
+def _find_column(fieldnames: List[str], candidates: List[str]) -> Optional[str]:
+    normalized = {name.strip().lower().replace("_", ""): name for name in fieldnames}
+    for candidate in candidates:
+        found = normalized.get(candidate.strip().lower().replace("_", ""))
+        if found is not None:
+            return found
+    return None
+
+
+def load_relative_scores(path: Path) -> Dict[str, RelativeScoreSummary]:
+    if not path.exists():
+        return {}
+    rows: Dict[str, RelativeScoreSummary] = {}
+    with path.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames or []
+        fuzzer_col = _find_column(fieldnames, ["fuzzer", "fuzzer_label", "tool", "name"])
+        relscore_col = _find_column(fieldnames, ["relscore", "relscores", "relative_score"])
+        relcov_col = _find_column(fieldnames, ["relcov", "relative_coverage", "coverage_score"])
+        if fuzzer_col is None:
+            die(f"missing fuzzer column in relative score CSV {path}")
+        if relscore_col is None and relcov_col is None:
+            die(f"missing relscore/relscores or relcov column in relative score CSV {path}")
+
+        for row in reader:
+            fuzzer = str(row.get(fuzzer_col, "")).strip()
+            if not fuzzer:
+                continue
+            rows[fuzzer] = RelativeScoreSummary(
+                fuzzer=fuzzer,
+                relscore=parse_optional_float(row.get(relscore_col)) if relscore_col else None,
+                relcov=parse_optional_float(row.get(relcov_col)) if relcov_col else None,
             )
     return rows
 
@@ -440,6 +483,159 @@ def append_progress_metrics_section(
                     fmt_triplet(row.coverage_p50, row.coverage_p25, row.coverage_p75),
                     str(row.corpus_runs),
                     fmt_triplet(row.corpus_p50, row.corpus_p25, row.corpus_p75),
+                ]
+            )
+            + " |"
+        )
+    lines.append("")
+
+
+def _relative_to_best(value: Optional[float], best: float) -> Optional[float]:
+    if value is None or not math.isfinite(value) or best <= 0:
+        return None
+    return value / best
+
+
+def build_relative_score_summaries(
+    *,
+    metrics: List[FuzzerMetrics],
+    relative_scores_by_fuzzer: Dict[str, RelativeScoreSummary],
+) -> Dict[str, RelativeScoreSummary]:
+    # Scores come exclusively from the explicit --relative-scores-csv input. There is
+    # deliberately no fallback: bug counts already have their own table, and per-fuzzer
+    # coverage proxies (echidna `cov:` values, foundry edge counts, medusa branches-hit)
+    # are in different units, so ranking them against each other would declare a
+    # meaningless "best coverage" winner.
+    summaries: Dict[str, RelativeScoreSummary] = {}
+    for metric in metrics:
+        current = relative_scores_by_fuzzer.get(metric.fuzzer)
+        summaries[metric.fuzzer] = RelativeScoreSummary(
+            fuzzer=metric.fuzzer,
+            relscore=current.relscore if current else None,
+            relcov=current.relcov if current else None,
+        )
+    return summaries
+
+
+def fmt_relative_score(value: Optional[float]) -> str:
+    if value is None or not math.isfinite(value):
+        return "n/a"
+    return f"{value:.3f}"
+
+
+def append_relative_scoreboard(
+    lines: List[str],
+    relative_scores_by_fuzzer: Dict[str, RelativeScoreSummary],
+    fuzzer_order: List[str],
+) -> None:
+    if not relative_scores_by_fuzzer:
+        return
+
+    def sort_key(score: RelativeScoreSummary) -> Tuple[float, float, str]:
+        relscore = (
+            score.relscore
+            if score.relscore is not None and math.isfinite(score.relscore)
+            else -1.0
+        )
+        relcov = (
+            score.relcov
+            if score.relcov is not None and math.isfinite(score.relcov)
+            else -1.0
+        )
+        return (relscore, relcov, score.fuzzer)
+
+    ordered = sorted(relative_scores_by_fuzzer.values(), key=sort_key, reverse=True)
+    best_relscore = max(
+        (
+            score.relscore
+            for score in ordered
+            if score.relscore is not None and math.isfinite(score.relscore)
+        ),
+        default=None,
+    )
+    best_relcov = max(
+        (
+            score.relcov
+            for score in ordered
+            if score.relcov is not None and math.isfinite(score.relcov)
+        ),
+        default=None,
+    )
+    relscore_leaders = [
+        score.fuzzer
+        for score in ordered
+        if best_relscore is not None
+        and score.relscore is not None
+        and math.isclose(score.relscore, best_relscore)
+    ]
+    relcov_leaders = [
+        score.fuzzer
+        for score in ordered
+        if best_relcov is not None
+        and score.relcov is not None
+        and math.isclose(score.relcov, best_relcov)
+    ]
+
+    lines.append("## Fuzzer scoreboard (higher is better)")
+    lines.append(
+        "`relscore` is the relative bug-finding score; `relcov` is the relative coverage score. "
+        "A value of 1.000 is the best observed fuzzer for that score, and lower values trail that leader."
+    )
+    if relscore_leaders:
+        lines.append(
+            f"- Best bug-finding score: **{', '.join(relscore_leaders)}** "
+            f"({fmt_relative_score(best_relscore)} relscore)"
+        )
+    if relcov_leaders:
+        lines.append(
+            f"- Best coverage score: **{', '.join(relcov_leaders)}** "
+            f"({fmt_relative_score(best_relcov)} relcov)"
+        )
+    lines.append("")
+
+    order_index = {fuzzer: idx for idx, fuzzer in enumerate(fuzzer_order)}
+    ordered = sorted(
+        ordered,
+        key=lambda score: (
+            -(
+                score.relscore
+                if score.relscore is not None and math.isfinite(score.relscore)
+                else -1.0
+            ),
+            -(
+                score.relcov
+                if score.relcov is not None and math.isfinite(score.relcov)
+                else -1.0
+            ),
+            order_index.get(score.fuzzer, len(order_index)),
+            score.fuzzer,
+        ),
+    )
+    header = ["Rank", "Fuzzer", "relscore", "relcov", "Readout"]
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("|" + "|".join(["---"] * len(header)) + "|")
+    for rank, score in enumerate(ordered, start=1):
+        if score.relscore is not None and score.relcov is not None:
+            readout = (
+                "best overall"
+                if score.fuzzer in relscore_leaders and score.fuzzer in relcov_leaders
+                else "compare both scores"
+            )
+        elif score.relscore is not None:
+            readout = "bug score only"
+        elif score.relcov is not None:
+            readout = "coverage score only"
+        else:
+            readout = "no relative scores"
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(rank),
+                    score.fuzzer,
+                    fmt_relative_score(score.relscore),
+                    fmt_relative_score(score.relcov),
+                    readout,
                 ]
             )
             + " |"
@@ -1075,6 +1271,7 @@ def write_report(
     outpath: Path,
     throughput_by_fuzzer: Dict[str, ThroughputSummary] | None = None,
     progress_metrics_by_fuzzer: Dict[str, ProgressMetricsSummary] | None = None,
+    relative_scores_by_fuzzer: Dict[str, RelativeScoreSummary] | None = None,
     stat_results: Optional[List[PairwiseResult]] = None,
     stat_warnings: Optional[List[str]] = None,
     alpha: float = 0.05,
@@ -1094,6 +1291,18 @@ def write_report(
         "(plateau time, late discovery share) instead of single-run time-to-first-bug."
     )
     lines.append("")
+
+    # Only rendered when --relative-scores-csv was explicitly provided; without it
+    # there is no commensurable cross-fuzzer score to rank.
+    if relative_scores_by_fuzzer:
+        append_relative_scoreboard(
+            lines,
+            build_relative_score_summaries(
+                metrics=metrics,
+                relative_scores_by_fuzzer=relative_scores_by_fuzzer,
+            ),
+            fuzzer_order=[metric.fuzzer for metric in metrics],
+        )
 
     lines.append("## Bugs found at fixed time budgets (median [IQR])")
     header = ["Fuzzer", "Runs"] + [f"{t:g}h" for t in checkpoints]
@@ -1289,6 +1498,18 @@ def main() -> int:
         help="Optional progress metrics samples CSV for time-series charts.",
     )
     parser.add_argument(
+        "--relative-scores-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Optional CSV enabling the report scoreboard (omitted = no scoreboard). "
+            "Schema: one row per fuzzer with columns 'fuzzer' (or 'tool'/'name'), "
+            "'relscore' (or 'relscores') and/or 'relcov' (or 'relative_coverage'/"
+            "'coverage_score'); values are ratios in [0, 1] relative to the best "
+            "fuzzer, computed by the caller from commensurable data."
+        ),
+    )
+    parser.add_argument(
         "--additional-metrics-summary-csv",
         dest="progress_metrics_summary_csv",
         type=Path,
@@ -1314,6 +1535,11 @@ def main() -> int:
     progress_metrics_by_fuzzer = (
         load_progress_metrics_summary(args.progress_metrics_summary_csv)
         if args.progress_metrics_summary_csv is not None
+        else {}
+    )
+    relative_scores_by_fuzzer = (
+        load_relative_scores(args.relative_scores_csv)
+        if args.relative_scores_csv is not None
         else {}
     )
     throughput_samples_df = (
@@ -1441,6 +1667,7 @@ def main() -> int:
         outpath=report_outdir / "REPORT.md",
         throughput_by_fuzzer=throughput_by_fuzzer,
         progress_metrics_by_fuzzer=progress_metrics_by_fuzzer,
+        relative_scores_by_fuzzer=relative_scores_by_fuzzer,
         stat_results=stat_results,
         stat_warnings=stat_warnings,
     )

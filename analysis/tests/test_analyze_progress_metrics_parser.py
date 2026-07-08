@@ -78,6 +78,26 @@ class ProgressMetricsParserTests(unittest.TestCase):
         self.assertAlmostEqual(samples[1].favored_items, 44.0)
         self.assertAlmostEqual(samples[1].failure_rate, 0.25)
 
+    def test_parses_foundry_progress_metrics_from_oss333_pulse(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"cumulative_edges_seen":231,"corpus_count":47,"favored_items":34,"broken_invariants":0,"broken_assertions":0},"total_txs":20,"total_gas":2000,"tps":10.12,"gps":1000.34,"worker":{"id":0,"count":1}}',
+                '{"timestamp":105,"event":"pulse","contract":"CryticToFoundry","metrics":{"cumulative_edges_seen":259,"corpus_count":65,"favored_items":44,"broken_invariants":1,"broken_assertions":2},"total_txs":80,"total_gas":9000,"tps":16.0,"gps":1800.0,"worker":{"id":0,"count":1}}',
+            ]
+        )
+
+        samples = analyze.parse_progress_metrics_log(
+            log_path, "run-1", "i-1", "foundry-git-test"
+        )
+        self.assertEqual(len(samples), 2)
+        self.assertEqual(samples[1].fuzzer, "foundry")
+        self.assertEqual(samples[1].source, "json-metrics")
+        self.assertAlmostEqual(samples[1].elapsed_seconds, 5.0)
+        self.assertAlmostEqual(samples[1].coverage_proxy, 259.0)
+        self.assertAlmostEqual(samples[1].corpus_size, 65.0)
+        self.assertAlmostEqual(samples[1].favored_items, 44.0)
+        self.assertIsNone(samples[1].failure_rate)
+
     def test_writes_progress_metrics_summary_csv_with_latest_run_values(self):
         samples = [
             analyze.ProgressMetricsSample(

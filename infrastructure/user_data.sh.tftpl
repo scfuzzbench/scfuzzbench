@@ -52,7 +52,30 @@ export SCFUZZBENCH_GIT_TOKEN_SSM_PARAMETER="${git_token_ssm_parameter_name}"
 export ${key}="${value}"
 %{ endfor ~}
 
+# Upload the bootstrap (install/clone phase) log so instances that die before
+# the fuzzer runner uploads its own logs are still diagnosable from S3.
+upload_bootstrap_log() {
+  set +e
+  cache_instance_id || true
+  local instance_id="$${SCFUZZBENCH_INSTANCE_ID:-unknown}"
+  local prefix="${run_id}"
+  if [[ -n "${benchmark_uuid}" ]]; then
+    prefix="${run_id}/${benchmark_uuid}"
+  fi
+  aws_cli s3 cp /var/log/scfuzzbench-user-data.log \
+    "s3://${s3_bucket}/logs/$${prefix}/$${instance_id}-${fuzzer_key}-bootstrap.log" \
+    --no-progress || true
+}
+trap 'upload_bootstrap_log; shutdown_instance' EXIT
+
 bash /opt/scfuzzbench/fuzzers/${fuzzer_key}/install.sh
+
+# Upload the bootstrap log once right after a successful install: the EXIT-trap
+# upload below can race the instance poweroff started by run.sh's own shutdown
+# trap, so this is the upload guaranteed to land for instances that reach
+# run.sh. Runs in a subshell so the function's set +e does not leak here.
+( upload_bootstrap_log )
+
 bash /opt/scfuzzbench/fuzzers/${fuzzer_key}/run.sh || true
 
 touch /opt/scfuzzbench/.bootstrapped

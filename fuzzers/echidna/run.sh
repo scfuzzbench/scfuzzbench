@@ -53,6 +53,19 @@ if [[ -z "${ECHIDNA_CONFIG:-}" && -z "${ECHIDNA_TARGET:-}" ]]; then
   exit 1
 fi
 
+# Some targets keep the harness under tests/ instead of test/ (upstream layout,
+# e.g. Aave). Fall back automatically so no per-target override is needed.
+if [[ -n "${ECHIDNA_TARGET:-}" && "${ECHIDNA_TARGET}" != /* && ! -f "${repo_dir}/${ECHIDNA_TARGET}" ]]; then
+  alt_target="${ECHIDNA_TARGET/#test\//tests/}"
+  if [[ "${alt_target}" == "${ECHIDNA_TARGET}" ]]; then
+    alt_target="${ECHIDNA_TARGET/#tests\//test/}"
+  fi
+  if [[ "${alt_target}" != "${ECHIDNA_TARGET}" && -f "${repo_dir}/${alt_target}" ]]; then
+    log "ECHIDNA_TARGET ${ECHIDNA_TARGET} not found; using ${alt_target}"
+    ECHIDNA_TARGET="${alt_target}"
+  fi
+fi
+
 cmd=(echidna-test)
 if [[ -n "${ECHIDNA_CONFIG:-}" ]]; then
   cmd+=(--config "${ECHIDNA_CONFIG}")
