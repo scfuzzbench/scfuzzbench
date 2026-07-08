@@ -499,7 +499,12 @@ install_foundry() {
       export HOME=/root
     fi
     local foundry_build_profile="${FOUNDRY_BUILD_PROFILE:-dist}"
-    local foundry_rust_toolchain="${FOUNDRY_RUST_TOOLCHAIN:-1.91.0}"
+    # Must satisfy the pinned commit's LOCKED transitive dependencies, not its
+    # workspace MSRV (Cargo.toml says rust-version = "1.89", but the locked
+    # foundry-compilers 0.21 / reth 2.3 / alloy-op crates require rustc >= 1.95).
+    # A `--locked` build fails on an older toolchain. Bump this in lockstep with
+    # foundry_git_ref if a future pin raises the floor again.
+    local foundry_rust_toolchain="${FOUNDRY_RUST_TOOLCHAIN:-1.95.0}"
     if ! command -v rustup >/dev/null 2>&1; then
       log "Installing Rust toolchain manager"
       curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
