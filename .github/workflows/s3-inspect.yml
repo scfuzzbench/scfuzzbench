@@ -1,0 +1,65 @@
+name: S3 Inspect
+
+# Operational helper: list run artifacts under a prefix and optionally print one
+# small text object (e.g. a bootstrap log) so run triage does not require local
+# AWS credentials. Read-only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      prefix:
+        description: "S3 key prefix to list (e.g. logs/<run_id>/)."
+        required: false
+        default: "logs/"
+      key:
+        description: "Optional single S3 key to print (text objects only, tail -200)."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
+      SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate inputs
+        env:
+          PREFIX: ${{ inputs.prefix }}
+          KEY: ${{ inputs.key }}
+        run: |
+          set -euo pipefail
+          for v in "${PREFIX}" "${KEY}"; do
+            if [[ "$v" == *".."* || "$v" == /* ]]; then
+              echo "Invalid input: $v" >&2
+              exit 1
+            fi
+          done
+
+      - name: List prefix
+        env:
+          PREFIX: ${{ inputs.prefix }}
+        run: |
+          set -euo pipefail
+          echo "Listing s3://${SCFUZZBENCH_BUCKET}/${PREFIX}"
+          aws s3 ls --recursive "s3://${SCFUZZBENCH_BUCKET}/${PREFIX}" | tail -300
+
+      - name: Print object
+        if: ${{ inputs.key != '' }}
+        env:
+          KEY: ${{ inputs.key }}
+        run: |
+          set -euo pipefail
+          echo "===== s3://${SCFUZZBENCH_BUCKET}/${KEY} (last 200 lines) ====="
+          aws s3 cp "s3://${SCFUZZBENCH_BUCKET}/${KEY}" - | tail -200
