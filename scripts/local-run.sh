@@ -65,15 +65,15 @@ Environment variables:
 
 Examples:
   # Echidna – 10-minute run, 4 workers
-  $(basename "$0") -f echidna -r https://github.com/Recon-Fuzz/example-scfuzzbench \\
-    -b dev-recon -t 600 -w 4 \\
+  $(basename "$0") -f echidna -r https://github.com/scfuzzbench/example-scfuzzbench \\
+    -b main -t 600 -w 4 \\
     --echidna-config echidna.yaml \\
     --echidna-target test/recon/CryticTester.sol \\
     --echidna-contract CryticTester
 
   # Medusa – default timeout, auto workers
-  $(basename "$0") -f medusa -r https://github.com/Recon-Fuzz/example-scfuzzbench \\
-    -b dev-recon --medusa-config medusa.json
+  $(basename "$0") -f medusa -r https://github.com/scfuzzbench/example-scfuzzbench \\
+    -b main --medusa-config medusa.json
 
   # Install + run in one shot
   $(basename "$0") --install -f echidna -r https://github.com/... -b main ...

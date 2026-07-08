@@ -149,6 +149,60 @@ class FoundryParserTests(unittest.TestCase):
         self.assertAlmostEqual(events[1].elapsed_seconds, 2.0)
         self.assertAlmostEqual(events[2].elapsed_seconds, 2.0)
 
+    def test_names_synthetic_handler_bugs_from_end_of_run_summary(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":0,"broken_assertions":0}}',
+                '{"timestamp":130,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":0,"broken_assertions":1}}',
+                '{"timestamp":200,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":0,"broken_assertions":2}}',
+                "Assertion Tests: 2 assertion bug(s) found",
+                "[FAIL: assertion failed] test/recon/CryticToFoundry.sol:CryticToFoundry::assert_canary_ASSERTION_CANARY",
+                "[FAIL: panic: assertion failed (0x01)] test/recon/CryticToFoundry.sol:CryticToFoundry::doomsday_probe_STATELESS",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(
+            [event.event for event in events],
+            ["assert_canary_ASSERTION_CANARY", "doomsday_probe_STATELESS"],
+        )
+        self.assertEqual(
+            [event.source for event in events],
+            ["foundry-handler-summary", "foundry-handler-summary"],
+        )
+        # Discovery times from the pulse deltas are preserved through the rename.
+        self.assertAlmostEqual(events[0].elapsed_seconds, 30.0)
+        self.assertAlmostEqual(events[1].elapsed_seconds, 100.0)
+
+    def test_handler_summary_without_pulse_synthetics_emits_named_event(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"cumulative_edges_seen":1}}',
+                '{"timestamp":160,"event":"pulse","contract":"CryticToFoundry","metrics":{"cumulative_edges_seen":2}}',
+                "[FAIL: assertion failed] test/recon/CryticToFoundry.sol:CryticToFoundry::assert_canary_ASSERTION_CANARY",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "assert_canary_ASSERTION_CANARY")
+        self.assertEqual(events[0].source, "foundry-handler-summary")
+        # Anchored to the last JSON pulse timestamp rather than 0.0.
+        self.assertAlmostEqual(events[0].elapsed_seconds, 60.0)
+
+    def test_handler_summary_dedupes_repeated_entries(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":0,"broken_assertions":1}}',
+                "[FAIL: assertion failed] test/recon/CryticToFoundry.sol:CryticToFoundry::assert_canary_ASSERTION_CANARY",
+                "[FAIL: assertion failed] test/recon/CryticToFoundry.sol:CryticToFoundry::assert_canary_ASSERTION_CANARY",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "assert_canary_ASSERTION_CANARY")
+
     def test_parses_foundry_text_failure_summary_lines(self):
         log_path = self.write_log(
             [
