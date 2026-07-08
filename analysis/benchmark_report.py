@@ -499,43 +499,21 @@ def _relative_to_best(value: Optional[float], best: float) -> Optional[float]:
 def build_relative_score_summaries(
     *,
     metrics: List[FuzzerMetrics],
-    progress_metrics_by_fuzzer: Dict[str, ProgressMetricsSummary],
-    relative_scores_by_fuzzer: Dict[str, RelativeScoreSummary] | None = None,
+    relative_scores_by_fuzzer: Dict[str, RelativeScoreSummary],
 ) -> Dict[str, RelativeScoreSummary]:
-    summaries: Dict[str, RelativeScoreSummary] = {
-        name: RelativeScoreSummary(
-            fuzzer=score.fuzzer,
-            relscore=score.relscore,
-            relcov=score.relcov,
-        )
-        for name, score in (relative_scores_by_fuzzer or {}).items()
-    }
-
-    best_final = max((float(metric.final_p50) for metric in metrics), default=0.0)
-    best_cov = max(
-        (
-            float(row.coverage_p50)
-            for row in progress_metrics_by_fuzzer.values()
-            if row.coverage_p50 is not None and math.isfinite(row.coverage_p50)
-        ),
-        default=0.0,
-    )
-
+    # Scores come exclusively from the explicit --relative-scores-csv input. There is
+    # deliberately no fallback: bug counts already have their own table, and per-fuzzer
+    # coverage proxies (echidna `cov:` values, foundry edge counts, medusa branches-hit)
+    # are in different units, so ranking them against each other would declare a
+    # meaningless "best coverage" winner.
+    summaries: Dict[str, RelativeScoreSummary] = {}
     for metric in metrics:
-        current = summaries.get(metric.fuzzer)
-        relscore = current.relscore if current else None
-        relcov = current.relcov if current else None
-        if relscore is None:
-            relscore = _relative_to_best(float(metric.final_p50), best_final)
-        if relcov is None:
-            progress = progress_metrics_by_fuzzer.get(metric.fuzzer)
-            relcov = _relative_to_best(progress.coverage_p50 if progress else None, best_cov)
+        current = relative_scores_by_fuzzer.get(metric.fuzzer)
         summaries[metric.fuzzer] = RelativeScoreSummary(
             fuzzer=metric.fuzzer,
-            relscore=relscore,
-            relcov=relcov,
+            relscore=current.relscore if current else None,
+            relcov=current.relcov if current else None,
         )
-
     return summaries
 
 
@@ -1314,15 +1292,17 @@ def write_report(
     )
     lines.append("")
 
-    append_relative_scoreboard(
-        lines,
-        build_relative_score_summaries(
-            metrics=metrics,
-            progress_metrics_by_fuzzer=progress_metrics_by_fuzzer or {},
-            relative_scores_by_fuzzer=relative_scores_by_fuzzer or {},
-        ),
-        fuzzer_order=[metric.fuzzer for metric in metrics],
-    )
+    # Only rendered when --relative-scores-csv was explicitly provided; without it
+    # there is no commensurable cross-fuzzer score to rank.
+    if relative_scores_by_fuzzer:
+        append_relative_scoreboard(
+            lines,
+            build_relative_score_summaries(
+                metrics=metrics,
+                relative_scores_by_fuzzer=relative_scores_by_fuzzer,
+            ),
+            fuzzer_order=[metric.fuzzer for metric in metrics],
+        )
 
     lines.append("## Bugs found at fixed time budgets (median [IQR])")
     header = ["Fuzzer", "Runs"] + [f"{t:g}h" for t in checkpoints]
@@ -1521,7 +1501,13 @@ def main() -> int:
         "--relative-scores-csv",
         type=Path,
         default=None,
-        help="Optional CSV with fuzzer plus relscore/relscores and relcov columns for the report scoreboard.",
+        help=(
+            "Optional CSV enabling the report scoreboard (omitted = no scoreboard). "
+            "Schema: one row per fuzzer with columns 'fuzzer' (or 'tool'/'name'), "
+            "'relscore' (or 'relscores') and/or 'relcov' (or 'relative_coverage'/"
+            "'coverage_score'); values are ratios in [0, 1] relative to the best "
+            "fuzzer, computed by the caller from commensurable data."
+        ),
     )
     parser.add_argument(
         "--additional-metrics-summary-csv",

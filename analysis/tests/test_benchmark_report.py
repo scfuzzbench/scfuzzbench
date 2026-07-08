@@ -192,7 +192,7 @@ class BenchmarkReportTests(unittest.TestCase):
             self.assertNotIn("Favored", report)
             self.assertNotIn("Failure-rate", report)
 
-    def test_write_report_includes_relative_scoreboard_from_metrics(self):
+    def test_write_report_omits_scoreboard_without_relative_scores_csv(self):
         metrics = [
             _make_metrics("echidna", [8, 10], final_p50=9),
             _make_metrics("medusa", [3, 5], final_p50=4),
@@ -260,12 +260,14 @@ class BenchmarkReportTests(unittest.TestCase):
             )
             report = outpath.read_text(encoding="utf-8")
 
-            self.assertIn("## Fuzzer scoreboard (higher is better)", report)
-            self.assertIn("`relscore` is the relative bug-finding score", report)
-            self.assertIn("| 1 | echidna | 1.000 | 1.000 | best overall |", report)
-            self.assertIn("| 2 | medusa | 0.444 | 0.500 | compare both scores |", report)
+            # Without an explicit --relative-scores-csv there is no commensurable
+            # cross-fuzzer score: per-fuzzer coverage proxies use different units,
+            # so the scoreboard must not render at all.
+            self.assertNotIn("## Fuzzer scoreboard (higher is better)", report)
+            self.assertNotIn("relscore", report)
+            self.assertNotIn("relcov", report)
 
-    def test_relative_scores_csv_overrides_scoreboard_values(self):
+    def test_relative_scores_csv_renders_scoreboard(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
             rel_csv = tmp_dir / "relative.csv"
