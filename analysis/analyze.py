@@ -22,6 +22,20 @@ FOUNDATION_JSON_RE = re.compile(r"^\s*\{.*\}\s*$")
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 FALSIFIED_RE = re.compile(r"Test\s+([^\s]+)\s+falsified!")
 ECHIDNA_FAILED_RE = re.compile(r"^([A-Za-z0-9_]+)\([^)]*\):\s+failed!")
+FOUNDRY_FAIL_LINE_RE = re.compile(r"\[FAIL(?:[^\]]*)\]\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+FOUNDRY_TEST_RESULT_RE = re.compile(
+    r"(?:\[[^\]]+\]\s+)?(?:test|invariant)[A-Za-z0-9_]*\s*\(\)\s*:\s*(?:FAIL|failed)\b",
+    re.IGNORECASE,
+)
+FOUNDRY_RESULT_NAME_RE = re.compile(r"(?:\[[^\]]+\]\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+# End-of-run handler-failure summary entries, printed on graceful exit (the runner passes
+# --show-progress so SIGINT at the benchmark timeout triggers this path):
+#   [FAIL: assertion failed] src/path.sol:Contract::function
+# Note the artifact prefix, the double colon, and the absence of trailing parentheses —
+# FOUNDRY_FAIL_LINE_RE cannot match these.
+FOUNDRY_HANDLER_SUMMARY_RE = re.compile(
+    r"\[FAIL[^\]]*\]\s+\S+:([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)"
+)
 TX_RATE_PATTERNS = [
     re.compile(r"(?i)(?:tx|txn|transactions?|calls?)\s*(?:/|per)\s*s(?:ec(?:ond)?)?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)"),
     re.compile(r"(?i)([0-9]+(?:\.[0-9]+)?)\s*(?:tx|txn|transactions?|calls?)\s*/\s*s(?:ec(?:ond)?)?\b"),
@@ -434,13 +448,26 @@ def normalize_foundry_failure_name(value: Any) -> Optional[str]:
     name = str(value).strip()
     if not name:
         return None
-    # Foundry fail_on_assert failures use "Contract:function"; keep only function
+    # Foundry handler assertion failures use "Contract:function"; keep only function
     # name for cross-fuzzer normalization. Ignore unexpected multi-colon values.
     if name.count(":") == 1:
         contract_name, function_name = name.split(":", 1)
         if contract_name and function_name:
             name = function_name.strip()
     return name or None
+
+
+def extract_foundry_text_failure(line: str) -> Optional[str]:
+    fail_match = FOUNDRY_FAIL_LINE_RE.search(line)
+    if fail_match:
+        return normalize_foundry_failure_name(fail_match.group(1))
+
+    if FOUNDRY_TEST_RESULT_RE.search(line):
+        name_match = FOUNDRY_RESULT_NAME_RE.search(line)
+        if name_match:
+            return normalize_foundry_failure_name(name_match.group(1))
+
+    return None
 
 
 def extract_foundry_failure(payload: Dict[str, Any]) -> Tuple[Optional[str], Optional[float], Optional[str]]:
@@ -450,9 +477,17 @@ def extract_foundry_failure(payload: Dict[str, Any]) -> Tuple[Optional[str], Opt
         return None, None, None
 
     if str(payload.get("event") or "").strip() == "failure":
-        target_name = normalize_foundry_failure_name(payload.get("target"))
-        if target_name:
-            return target_name, ts_value, "foundry-failure-event"
+        # Prefer the per-invariant identity so distinct invariant failures are
+        # counted as distinct bugs. The `target` field is the harness contract
+        # (e.g. "CryticToFoundry"), which is identical across every invariant and
+        # would otherwise collapse all failures into a single bug. Fall back to
+        # `target` only when no invariant name is present.
+        failure_name = (
+            normalize_foundry_failure_name(payload.get("invariant"))
+            or normalize_foundry_failure_name(payload.get("target"))
+        )
+        if failure_name:
+            return failure_name, ts_value, "foundry-failure-event"
 
     if str(payload.get("type") or "").strip() == "invariant_failure":
         invariant_name = normalize_foundry_failure_name(payload.get("invariant"))
@@ -462,15 +497,56 @@ def extract_foundry_failure(payload: Dict[str, Any]) -> Tuple[Optional[str], Opt
     return None, ts_value, None
 
 
+def extract_foundry_failure_totals(payload: Dict[str, Any]) -> Tuple[Optional[float], Optional[int], Optional[int]]:
+    ts_value = parse_optional_float(payload.get("timestamp"))
+    metrics = payload.get("metrics")
+    if not isinstance(metrics, dict):
+        return ts_value, None, None
+
+    unique_failures = parse_optional_float(metrics.get("unique_failures"))
+    if unique_failures is None:
+        unique_failures = parse_optional_float(metrics.get("broken_invariants"))
+    broken_handlers = parse_optional_float(metrics.get("broken_assertions"))
+    if broken_handlers is None:
+        broken_handlers = parse_optional_float(metrics.get("broken_handlers"))
+    return (
+        ts_value,
+        None if unique_failures is None else int(unique_failures),
+        None if broken_handlers is None else int(broken_handlers),
+    )
+
+
 def parse_foundry_log(
     path: Path, run_id: str, instance_id: str, fuzzer_label: str
 ) -> List[Event]:
     events: List[Event] = []
     seen = set()
+    synthetic_handler_count = 0
+    # Indices (into `events`) of synthetic handler-bug events not yet matched to a
+    # name from the end-of-run summary, oldest first. Replaced in place when a named
+    # summary entry arrives so the discovery-time elapsed from the pulse delta is
+    # preserved.
+    unnamed_synthetic_indices: List[int] = []
     first_ts: Optional[float] = None
+    last_json_ts: Optional[float] = None
+    last_elapsed: Optional[float] = None
+
+    def current_elapsed() -> float:
+        # Best-known elapsed time for events that carry no timestamp of their own
+        # (text lines): prefer the JSON pulse clock, fall back to text elapsed.
+        if last_json_ts is not None and first_ts is not None:
+            return last_json_ts - first_ts
+        return last_elapsed or 0.0
+
     with path.open("r", errors="ignore") as handle:
         for line in handle:
             clean_line = ANSI_ESCAPE_RE.sub("", line)
+            elapsed_match = MEDUSA_ELAPSED_RE.search(clean_line)
+            if elapsed_match:
+                parsed_elapsed = parse_duration(elapsed_match.group(1))
+                if parsed_elapsed is not None:
+                    last_elapsed = float(parsed_elapsed)
+
             if FOUNDATION_JSON_RE.match(clean_line):
                 try:
                     payload = json.loads(clean_line)
@@ -478,11 +554,13 @@ def parse_foundry_log(
                     payload = None
                 if payload is not None:
                     payload_ts = parse_optional_float(payload.get("timestamp"))
-                    if payload_ts is not None and first_ts is None:
-                        # Foundry emits epoch timestamps. Anchor elapsed time to the
-                        # first JSON event so failures are measured since the run
-                        # began, not since the first failure.
-                        first_ts = payload_ts
+                    if payload_ts is not None:
+                        if first_ts is None:
+                            # Foundry emits epoch timestamps. Anchor elapsed time to the
+                            # first JSON event so failures are measured since the run
+                            # began, not since the first failure.
+                            first_ts = payload_ts
+                        last_json_ts = payload_ts
 
                     event_name, ts_value, source = extract_foundry_failure(payload)
                     if event_name and ts_value is not None and source:
@@ -500,7 +578,81 @@ def parse_foundry_log(
                                     log_path=str(path),
                                 )
                             )
+                    totals_ts, unique_failures, broken_handlers = extract_foundry_failure_totals(payload)
+                    if (
+                        totals_ts is not None
+                        and unique_failures is not None
+                        and broken_handlers is not None
+                    ):
+                        expected_events = unique_failures + broken_handlers
+                        missing_events = expected_events - len(seen)
+                        for _ in range(max(0, missing_events)):
+                            synthetic_handler_count += 1
+                            synthetic_name = f"foundry_handler_bug_{synthetic_handler_count}"
+                            if synthetic_name in seen:
+                                continue
+                            seen.add(synthetic_name)
+                            events.append(
+                                Event(
+                                    run_id=run_id,
+                                    instance_id=instance_id,
+                                    fuzzer=normalize_fuzzer(fuzzer_label),
+                                    fuzzer_label=fuzzer_label,
+                                    event=synthetic_name,
+                                    elapsed_seconds=totals_ts - (first_ts or totals_ts),
+                                    source="foundry-broken-handler-metric",
+                                    log_path=str(path),
+                                )
+                            )
+                            unnamed_synthetic_indices.append(len(events) - 1)
                     continue
+
+            handler_match = FOUNDRY_HANDLER_SUMMARY_RE.search(clean_line)
+            if handler_match:
+                handler_name = handler_match.group(2)
+                if handler_name and handler_name not in seen:
+                    seen.add(handler_name)
+                    if unnamed_synthetic_indices:
+                        # A pulse-count delta already produced an anonymous event for
+                        # this bug with the right discovery time — give it its name.
+                        # Summary order may differ from discovery order when several
+                        # handler bugs exist; names and times both stay exact as sets.
+                        idx = unnamed_synthetic_indices.pop(0)
+                        events[idx] = replace(
+                            events[idx],
+                            event=handler_name,
+                            source="foundry-handler-summary",
+                        )
+                    else:
+                        events.append(
+                            Event(
+                                run_id=run_id,
+                                instance_id=instance_id,
+                                fuzzer=normalize_fuzzer(fuzzer_label),
+                                fuzzer_label=fuzzer_label,
+                                event=handler_name,
+                                elapsed_seconds=current_elapsed(),
+                                source="foundry-handler-summary",
+                                log_path=str(path),
+                            )
+                        )
+                continue
+
+            event_name = extract_foundry_text_failure(clean_line)
+            if event_name and event_name not in seen:
+                seen.add(event_name)
+                events.append(
+                    Event(
+                        run_id=run_id,
+                        instance_id=instance_id,
+                        fuzzer=normalize_fuzzer(fuzzer_label),
+                        fuzzer_label=fuzzer_label,
+                        event=event_name,
+                        elapsed_seconds=current_elapsed(),
+                        source="foundry-text-failure",
+                        log_path=str(path),
+                    )
+                )
     return events
 
 

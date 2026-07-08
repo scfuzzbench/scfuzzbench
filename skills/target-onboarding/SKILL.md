@@ -118,8 +118,6 @@ include_storage = true
 show_solidity = true
 show_metrics = true
 fail_on_revert = false
-fail_on_assert = true
-continuous_run = true
 corpus_dir = "corpus/foundry"
 ```
 
@@ -127,20 +125,25 @@ corpus_dir = "corpus/foundry"
 
 Use Foundry assertion mode directly. Compatibility-shim modes are not supported.
 
+Upstream Foundry (the commit pinned in `infrastructure/variables.tf`) reports handler-side
+assertion failures during invariant campaigns by default and keeps the campaign running
+(foundry-rs/foundry#14275 + #14482) — no fork-specific `foundry.toml` keys are needed.
+Do not add `fail_on_assert` or `continuous_run` to `foundry.toml`; those were custom-fork
+keys and no longer exist upstream.
+
 Required:
 1. keep all assertion reason strings in `Properties.sol` as `string constant ASSERTION_* = "!!! ...";`
 2. set `assertions_revert = false` under `[profile.default]` in `foundry.toml`
-3. set `fail_on_assert = true` under `[invariant]` in `foundry.toml`
-4. name assertion handlers as `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>(...)`
+3. name assertion handlers as `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>(...)`
    - `ASSERTION_CONSTANT_SUFFIX` must exactly match the referenced `ASSERTION_*` constant suffix
    - examples: `iHub_mintFeeShares_ASSERTION_MINT_FEE_SHARES_PPS_CHANGE`, `iSpoke_withdraw_ASSERTION_WITHDRAW_DOS`, `assert_canary_ASSERTION_CANARY`
    - each assertion handler must reference exactly one `ASSERTION_*` constant
    - if multiple checks are required in one handler, reuse the same single `ASSERTION_*` constant across those checks
-5. do not add Foundry-only wrapper invariants (`invariant_assertion_failure_*`)
-6. do not add `_isAssertion`, `assertionFailures`, or overridden assert helpers in `CryticToFoundry.sol`
-7. `setUp()` must include handler routing (`targetContract`, multiple `targetSender` values)
-8. include `invariant_noop() public returns (bool)` in `CryticToFoundry.sol` for assertion-focused smoke checks
-9. local review must confirm canonical identifier compatibility:
+4. do not add Foundry-only wrapper invariants (`invariant_assertion_failure_*`)
+5. do not add `_isAssertion`, `assertionFailures`, or overridden assert helpers in `CryticToFoundry.sol`
+6. `setUp()` must include handler routing (`targetContract`, multiple `targetSender` values)
+7. include `invariant_noop() public returns (bool)` in `CryticToFoundry.sol` for assertion-focused smoke checks
+8. local review must confirm canonical identifier compatibility:
    - Echidna/Medusa report handler name (`targetFunctionName(...)`)
    - Foundry failure traces include handler name (`targetFunctionName_ASSERTION_*`)
    - canonical dedup key is `targetFunctionName`
@@ -185,7 +188,7 @@ function setUp() public override {
     targetSender(address(0x30000));
 }
 
-// In fail_on_assert mode:
+// Upstream Foundry reports handler assertion failures natively:
 // - do not add _isAssertion(...)
 // - do not add assertionFailures mapping
 // - do not add invariant_assertion_failure_* wrappers
@@ -239,8 +242,8 @@ Run all:
 5. 2-minute canary trial for each fuzzer
 6. Ensure `CryticToFoundry.sol` has no `test_*` repro/unit tests
 7. Canary smoke checks must fail within the smoke trial window:
-   - `FOUNDRY_INVARIANT_CONTINUOUS_RUN=false forge test --match-contract CryticToFoundry --match-test invariant_canary -vv`
-   - `FOUNDRY_INVARIANT_CONTINUOUS_RUN=false FOUNDRY_INVARIANT_RUNS=20000 FOUNDRY_INVARIANT_DEPTH=1 forge test --match-contract CryticToFoundry --match-test invariant_noop -vv`
+   - `FOUNDRY_INVARIANT_RUNS=1 forge test --match-contract CryticToFoundry --match-test invariant_canary -vv`
+   - `FOUNDRY_INVARIANT_RUNS=20000 FOUNDRY_INVARIANT_DEPTH=1 forge test --match-contract CryticToFoundry --match-test invariant_noop -vv`
 8. Acceptance gate: each fuzzer must report at least 2 bugs within 2 minutes:
    - one bug for `invariant_canary` (`Canary invariant`)
    - one bug for the assertion canary (`!!! canary assertion` via `assert_canary_ASSERTION_CANARY`), with canonical id `assert_canary`
@@ -263,7 +266,7 @@ Completion is tied to the 2-minute 2-canary acceptance gate above.
 Debug-only fallback for Foundry output inspection:
 
 ```bash
-FOUNDRY_INVARIANT_CONTINUOUS_RUN=false forge test --match-contract CryticToFoundry --match-test 'invariant_' -vv
+FOUNDRY_INVARIANT_RUNS=100 forge test --match-contract CryticToFoundry --match-test 'invariant_' -vv
 ```
 
 ### 8) Open PR from harness branch to main
@@ -292,9 +295,8 @@ Typical fields:
 6. `timeout_hours`
 7. `fuzzers`: `["echidna","medusa","foundry","recon-fuzzer"]`
 8. optional `fuzzer_env_json` only when target-specific override is necessary
-9. optional Foundry source fields:
-   - `foundry_git_repo`: `https://github.com/aviggiano/foundry`
-   - `foundry_git_ref`: `fail_on_assert`
+9. leave `foundry_version`, `foundry_git_repo`, and `foundry_git_ref` empty — the infrastructure
+   defaults build upstream `foundry-rs/foundry` at the commit pinned in `infrastructure/variables.tf`
 
 ## Common failures and fixes
 
@@ -305,7 +307,8 @@ Typical fields:
 3. Medusa: `insufficient gas for floor data gas cost`
    - raise `transactionGasLimit` and `blockGasLimit`
 4. Foundry failures not surfaced
-   - verify `foundry.toml` sets `assertions_revert = false` and `[invariant].fail_on_assert = true`
+   - verify `foundry.toml` sets `assertions_revert = false` under `[profile.default]`
+   - verify the Foundry build is at least the pinned upstream commit (needs foundry-rs/foundry#14275 + #14482)
    - verify assertion reasons are constants in `Properties.sol` (recommended `!!!` prefix)
    - remove leftover compatibility shim code (`_isAssertion`, `assertionFailures`, `invariant_assertion_failure_*`)
 5. Foundry unrealistically fast/all bugs immediate

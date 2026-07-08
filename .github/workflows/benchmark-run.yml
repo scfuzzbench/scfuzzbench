@@ -40,13 +40,13 @@ on:
         required: false
         default: ""
       foundry_git_repo:
-        description: "Optional Foundry git repo (build from source)."
+        description: "Optional Foundry git repo override (build from source; defaults to upstream foundry-rs/foundry via Terraform)."
         required: false
-        default: "https://github.com/aviggiano/foundry"
+        default: ""
       foundry_git_ref:
-        description: "Optional Foundry git ref (branch/tag/commit)."
+        description: "Optional Foundry git ref override (branch/tag/commit; defaults to the pinned upstream commit via Terraform)."
         required: false
-        default: "fail_on_assert"
+        default: ""
       echidna_version:
         description: "Override Echidna version (optional)."
         required: false
@@ -117,15 +117,15 @@ on:
         type: string
         default: ""
       foundry_git_repo:
-        description: "Optional Foundry git repo (build from source)."
+        description: "Optional Foundry git repo override (build from source; defaults to upstream foundry-rs/foundry via Terraform)."
         required: false
         type: string
-        default: "https://github.com/aviggiano/foundry"
+        default: ""
       foundry_git_ref:
-        description: "Optional Foundry git ref (branch/tag/commit)."
+        description: "Optional Foundry git ref override (branch/tag/commit; defaults to the pinned upstream commit via Terraform)."
         required: false
         type: string
-        default: "fail_on_assert"
+        default: ""
       echidna_version:
         description: "Override Echidna version (optional)."
         required: false

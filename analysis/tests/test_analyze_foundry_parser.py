@@ -85,6 +85,194 @@ class FoundryParserTests(unittest.TestCase):
         self.assertAlmostEqual(events[0].elapsed_seconds, 0.0)
         self.assertAlmostEqual(events[1].elapsed_seconds, 3.0)
 
+    def test_promotes_broken_handler_metrics_to_bug_events(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","metrics":{"unique_failures":0,"broken_handlers":0}}',
+                '{"timestamp":101,"event":"failure","invariant":"invariant_a","target":"CryticToFoundry","reason":"broken"}',
+                '{"timestamp":102,"event":"pulse","metrics":{"unique_failures":1,"broken_handlers":2}}',
+                '{"timestamp":103,"event":"failure","invariant":"invariant_b","target":"CryticToFoundry","reason":"broken"}',
+                '{"timestamp":104,"event":"pulse","metrics":{"unique_failures":2,"broken_handlers":3}}',
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(
+            [event.event for event in events],
+            [
+                "invariant_a",
+                "foundry_handler_bug_1",
+                "foundry_handler_bug_2",
+                "invariant_b",
+                "foundry_handler_bug_3",
+            ],
+        )
+        self.assertEqual(
+            [event.source for event in events],
+            [
+                "foundry-failure-event",
+                "foundry-broken-handler-metric",
+                "foundry-broken-handler-metric",
+                "foundry-failure-event",
+                "foundry-broken-handler-metric",
+            ],
+        )
+        self.assertAlmostEqual(events[1].elapsed_seconds, 2.0)
+        self.assertAlmostEqual(events[4].elapsed_seconds, 4.0)
+
+    def test_promotes_broken_handler_metrics_from_oss333_pulse_events(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":0,"broken_assertions":0},"tps":10,"gps":100,"worker":{"id":0,"count":1}}',
+                '{"timestamp":101,"event":"failure","invariant":"invariant_a","target":"CryticToFoundry","reason":"broken"}',
+                '{"timestamp":102,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":1,"broken_assertions":2},"tps":12,"gps":120,"worker":{"id":0,"count":1}}',
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(
+            [event.event for event in events],
+            [
+                "invariant_a",
+                "foundry_handler_bug_1",
+                "foundry_handler_bug_2",
+            ],
+        )
+        self.assertEqual(
+            [event.source for event in events],
+            [
+                "foundry-failure-event",
+                "foundry-broken-handler-metric",
+                "foundry-broken-handler-metric",
+            ],
+        )
+        self.assertAlmostEqual(events[1].elapsed_seconds, 2.0)
+        self.assertAlmostEqual(events[2].elapsed_seconds, 2.0)
+
+    def test_names_synthetic_handler_bugs_from_end_of_run_summary(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":0,"broken_assertions":0}}',
+                '{"timestamp":130,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":0,"broken_assertions":1}}',
+                '{"timestamp":200,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":0,"broken_assertions":2}}',
+                "Assertion Tests: 2 assertion bug(s) found",
+                "[FAIL: assertion failed] test/recon/CryticToFoundry.sol:CryticToFoundry::assert_canary_ASSERTION_CANARY",
+                "[FAIL: panic: assertion failed (0x01)] test/recon/CryticToFoundry.sol:CryticToFoundry::doomsday_probe_STATELESS",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(
+            [event.event for event in events],
+            ["assert_canary_ASSERTION_CANARY", "doomsday_probe_STATELESS"],
+        )
+        self.assertEqual(
+            [event.source for event in events],
+            ["foundry-handler-summary", "foundry-handler-summary"],
+        )
+        # Discovery times from the pulse deltas are preserved through the rename.
+        self.assertAlmostEqual(events[0].elapsed_seconds, 30.0)
+        self.assertAlmostEqual(events[1].elapsed_seconds, 100.0)
+
+    def test_handler_summary_without_pulse_synthetics_emits_named_event(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"cumulative_edges_seen":1}}',
+                '{"timestamp":160,"event":"pulse","contract":"CryticToFoundry","metrics":{"cumulative_edges_seen":2}}',
+                "[FAIL: assertion failed] test/recon/CryticToFoundry.sol:CryticToFoundry::assert_canary_ASSERTION_CANARY",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "assert_canary_ASSERTION_CANARY")
+        self.assertEqual(events[0].source, "foundry-handler-summary")
+        # Anchored to the last JSON pulse timestamp rather than 0.0.
+        self.assertAlmostEqual(events[0].elapsed_seconds, 60.0)
+
+    def test_handler_summary_dedupes_repeated_entries(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":0,"broken_assertions":1}}',
+                "[FAIL: assertion failed] test/recon/CryticToFoundry.sol:CryticToFoundry::assert_canary_ASSERTION_CANARY",
+                "[FAIL: assertion failed] test/recon/CryticToFoundry.sol:CryticToFoundry::assert_canary_ASSERTION_CANARY",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "assert_canary_ASSERTION_CANARY")
+
+    def test_parses_foundry_text_failure_summary_lines(self):
+        log_path = self.write_log(
+            [
+                "fuzz: elapsed: 6s, calls: 61658 (20486/sec), seq/s: 211, branches hit: 537, corpus: 137, failures: 15/762, gas/s: 4500638777",
+                "Failing tests:",
+                "[FAIL: invariant broken] invariant_poolBalance() (runs: 256, calls: 3840, reverts: 0)",
+                "[FAIL: assertion failed] assert_healthFactor_ASSERTION_CANARY() (gas: 12345)",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-master")
+        self.assertEqual(
+            [event.event for event in events],
+            ["invariant_poolBalance", "assert_healthFactor_ASSERTION_CANARY"],
+        )
+        self.assertEqual(
+            [event.source for event in events],
+            ["foundry-text-failure", "foundry-text-failure"],
+        )
+        self.assertAlmostEqual(events[0].elapsed_seconds, 6.0)
+        self.assertAlmostEqual(events[1].elapsed_seconds, 6.0)
+
+    def test_parses_prefixed_foundry_text_failure_summary_lines(self):
+        log_path = self.write_log(
+            [
+                "fuzz: elapsed: 6s, calls: 61658 (20486/sec), failures: 15/762",
+                "│ [FAIL: invariant broken] invariant_poolBalance() (runs: 256, calls: 3840, reverts: 0)",
+                "2026-06-09T00:00:00Z [FAIL: assertion failed] assert_healthFactor_ASSERTION_CANARY() (gas: 12345)",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-master")
+        self.assertEqual(
+            [event.event for event in events],
+            ["invariant_poolBalance", "assert_healthFactor_ASSERTION_CANARY"],
+        )
+        self.assertEqual(
+            [event.source for event in events],
+            ["foundry-text-failure", "foundry-text-failure"],
+        )
+        self.assertAlmostEqual(events[0].elapsed_seconds, 6.0)
+        self.assertAlmostEqual(events[1].elapsed_seconds, 6.0)
+
+    def test_parses_foundry_text_test_result_lines_without_elapsed(self):
+        log_path = self.write_log(
+            [
+                "[FAIL. Reason: invariant broken] invariant_debtAccounting(): FAIL",
+                "Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 5.00s",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-new")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "invariant_debtAccounting")
+        self.assertEqual(events[0].source, "foundry-text-failure")
+        self.assertAlmostEqual(events[0].elapsed_seconds, 0.0)
+
+    def test_dedupes_foundry_text_failures_against_json_failures(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"failure","target":"CryticToFoundry:invariant_a","type":"invariant"}',
+                "[FAIL: invariant broken] invariant_a() (runs: 256, calls: 3840, reverts: 0)",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "invariant_a")
+        self.assertEqual(events[0].source, "foundry-failure-event")
+
     def test_parses_throughput_from_json_cumulative_metrics(self):
         log_path = self.write_log(
             [
