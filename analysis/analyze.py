@@ -434,7 +434,7 @@ def normalize_foundry_failure_name(value: Any) -> Optional[str]:
     name = str(value).strip()
     if not name:
         return None
-    # Foundry fail_on_assert failures use "Contract:function"; keep only function
+    # Foundry handler assertion failures use "Contract:function"; keep only function
     # name for cross-fuzzer normalization. Ignore unexpected multi-colon values.
     if name.count(":") == 1:
         contract_name, function_name = name.split(":", 1)
