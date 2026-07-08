@@ -498,7 +498,7 @@ install_foundry() {
     if ! is_local_mode; then
       export HOME=/root
     fi
-    local foundry_build_profile="${FOUNDRY_BUILD_PROFILE:-maxperf}"
+    local foundry_build_profile="${FOUNDRY_BUILD_PROFILE:-dist}"
     local foundry_rust_toolchain="${FOUNDRY_RUST_TOOLCHAIN:-1.91.0}"
     if ! command -v rustup >/dev/null 2>&1; then
       log "Installing Rust toolchain manager"
