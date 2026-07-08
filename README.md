@@ -40,10 +40,14 @@ A fuzzer is currently considered in-scope when it is:
 
 ## Benchmark Targets
 
-- [Aave v4](https://github.com/Recon-Fuzz/aave-v4-scfuzzbench)
-- [Superform v2-periphery](https://github.com/Recon-Fuzz/superform-v2-periphery-scfuzzbench)
-- [Liquity v2 Governance](https://github.com/Recon-Fuzz/liquity-V2-gov-scfuzzbench)
-- [Nerite](https://github.com/Recon-Fuzz/nerite-scfuzzbench)
+Every target is a fork under the scfuzzbench org. The benchmark always consumes the
+target's `main` branch (upstream code plus harness); `pre-target` holds the pristine
+upstream baseline, so `compare pre-target...main` shows exactly what the harness adds.
+
+- [Aave v4](https://github.com/scfuzzbench/aave-v4-scfuzzbench)
+- [Superform v2-periphery](https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench)
+- [Liquity v2 Governance](https://github.com/scfuzzbench/liquity-V2-gov-scfuzzbench)
+- [Nerite](https://github.com/scfuzzbench/nerite-scfuzzbench)
 
 Use the target onboarding skill for new targets:
 

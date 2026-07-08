@@ -11,37 +11,36 @@ type PreconfiguredTarget = {
   commit: string;
 };
 
-const REPO_OWNER = "Recon-Fuzz";
+const REPO_OWNER = "scfuzzbench";
 const REPO_NAME = "scfuzzbench";
 const NEW_ISSUE_URL = `https://github.com/${REPO_OWNER}/${REPO_NAME}/issues/new`;
-const DEFAULT_FUZZER_ENV_OVERRIDE = JSON.stringify({
-  ECHIDNA_TARGET: "tests/recon/CryticTester.sol",
-});
-const TARGET_REPO_OVERRIDE_KEY = "github.com/recon-fuzz/aave-v4-scfuzzbench";
+// Convention: every target is a fork under the scfuzzbench org; `main` holds the
+// harnessed code the benchmark consumes and `pre-target` the pristine upstream
+// baseline (compare pre-target...main to see the harness).
 const PRECONFIGURED_TARGETS: PreconfiguredTarget[] = [
   {
     id: "aave-v4",
     label: "Aave v4",
-    repoUrl: "https://github.com/Recon-Fuzz/aave-v4-scfuzzbench",
-    commit: "v0.5.6-recon",
+    repoUrl: "https://github.com/scfuzzbench/aave-v4-scfuzzbench",
+    commit: "main",
   },
   {
     id: "superform-v2-periphery",
     label: "Superform v2-periphery",
-    repoUrl: "https://github.com/Recon-Fuzz/superform-v2-periphery-scfuzzbench",
-    commit: "dev-recon",
+    repoUrl: "https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench",
+    commit: "main",
   },
   {
     id: "liquity-v2-governance",
     label: "Liquity v2 Governance",
-    repoUrl: "https://github.com/Recon-Fuzz/liquity-V2-gov-scfuzzbench",
-    commit: "recon",
+    repoUrl: "https://github.com/scfuzzbench/liquity-V2-gov-scfuzzbench",
+    commit: "main",
   },
   {
     id: "nerite",
     label: "Nerite",
-    repoUrl: "https://github.com/Recon-Fuzz/nerite-scfuzzbench",
-    commit: "dev-recon",
+    repoUrl: "https://github.com/scfuzzbench/nerite-scfuzzbench",
+    commit: "main",
   },
 ];
 const CUSTOM_TARGET_ID = "custom";
@@ -103,8 +102,7 @@ const reconVersion = ref("");
 const gitTokenSsmParameterName = ref("/scfuzzbench/recon/github_token");
 
 const propertiesPath = ref("");
-const fuzzerEnvJson = ref(DEFAULT_FUZZER_ENV_OVERRIDE);
-const autoOverrideApplied = ref(true);
+const fuzzerEnvJson = ref("");
 
 function normalizeRepoUrl(raw: string): string {
   return raw
@@ -117,10 +115,6 @@ function normalizeRepoUrl(raw: string): string {
 
 function normalizeCommitRef(raw: string): string {
   return raw.trim();
-}
-
-function isDefaultOverrideRepo(url: string): boolean {
-  return normalizeRepoUrl(url) === TARGET_REPO_OVERRIDE_KEY;
 }
 
 function findPreconfiguredTarget(repoUrl: string, commit: string): PreconfiguredTarget | null {
@@ -155,27 +149,6 @@ watch([targetRepoUrl, targetCommit], ([nextRepo, nextCommit]) => {
   }
   const matched = findPreconfiguredTarget(nextRepo, nextCommit);
   selectedPreconfiguredTargetId.value = matched ? matched.id : CUSTOM_TARGET_ID;
-});
-
-watch(targetRepoUrl, (next) => {
-  if (!isDefaultOverrideRepo(next) && autoOverrideApplied.value) {
-    fuzzerEnvJson.value = "";
-    autoOverrideApplied.value = false;
-  }
-  if (isDefaultOverrideRepo(next) && !fuzzerEnvJson.value.trim()) {
-    fuzzerEnvJson.value = DEFAULT_FUZZER_ENV_OVERRIDE;
-    autoOverrideApplied.value = true;
-  }
-});
-
-watch(fuzzerEnvJson, (next) => {
-  if (!autoOverrideApplied.value) {
-    return;
-  }
-  const normalized = next.trim();
-  if (!isDefaultOverrideRepo(targetRepoUrl.value) || normalized !== DEFAULT_FUZZER_ENV_OVERRIDE.trim()) {
-    autoOverrideApplied.value = false;
-  }
 });
 
 const pricesUsdPerHour = computed<Ec2PricingTable>(() => {

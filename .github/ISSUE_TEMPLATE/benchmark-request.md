@@ -18,8 +18,8 @@ Notes:
 
 ```json
 {
-  "target_repo_url": "https://github.com/Recon-Fuzz/aave-v4-scfuzzbench",
-  "target_commit": "v0.5.6-recon",
+  "target_repo_url": "https://github.com/scfuzzbench/aave-v4-scfuzzbench",
+  "target_commit": "main",
   "benchmark_type": "property",
   "instance_type": "c6a.4xlarge",
   "instances_per_fuzzer": 4,

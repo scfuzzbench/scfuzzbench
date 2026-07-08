@@ -42,7 +42,7 @@ export default defineConfig({
       { text: "Methodology", link: "/methodology" },
       { text: "Operations", link: "/operations" },
       { text: "Run Errors", link: "/run-errors" },
-      { text: "GitHub", link: "https://github.com/Recon-Fuzz/scfuzzbench" },
+      { text: "GitHub", link: "https://github.com/scfuzzbench/scfuzzbench" },
     ],
 
     sidebar: [
@@ -70,7 +70,7 @@ export default defineConfig({
       },
     },
 
-    socialLinks: [{ icon: "github", link: "https://github.com/Recon-Fuzz/scfuzzbench" }],
+    socialLinks: [{ icon: "github", link: "https://github.com/scfuzzbench/scfuzzbench" }],
 
     footer: {
       message: "Fully static. Generated in CI from S3 run artifacts.",
