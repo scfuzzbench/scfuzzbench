@@ -318,6 +318,15 @@ Typical fields:
    - ensure assertion handler is named `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>`
    - ensure `ASSERTION_CONSTANT_SUFFIX` exactly matches the referenced `ASSERTION_*` constant suffix
    - ensure each handler references exactly one `ASSERTION_*` constant; split legacy multi-assert handlers when needed
+8. Recon: `Invalid hex address` / `Odd number of digits` at config load
+   - Recon rejects Echidna-style short hex addresses (`"0x10000"`) in `echidna.yaml`
+   - always write zero-padded 20-byte addresses (`"0x0000000000000000000000000000000000010000"`); Echidna accepts both
+9. Onboarding a pre-existing suite whose handlers are named `test*` (or `invariant*` without underscore)
+   - Foundry would run `test*` functions as standalone unit tests and treat `invariant*` as predicates
+   - do NOT rename the upstream handlers; instead make `CryticToFoundry` a `Test`-only contract that deploys `CryticTester` and calls `targetContract(address(tester))` — handlers stay stateful-fuzz-only and failures still dedup to the same handler names across all fuzzers
+10. Stateful suites that depend on time passing between calls (streams, vesting, cycles)
+   - Echidna/Medusa advance time natively (`maxTimeDelay` / `blockTimestampDelayMax`)
+   - mirror them for Foundry with `[invariant] max_time_delay` and `max_block_delay` in `foundry.toml`
 
 ## Completion checklist
 
