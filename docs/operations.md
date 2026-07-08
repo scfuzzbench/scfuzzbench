@@ -46,6 +46,28 @@ v1.7.1 predate #14482, so keep the commit pin until a stable release ships both.
 consumes upstream's `event: failure` JSON pulse events. Override `TF_VAR_foundry_git_repo` /
 `TF_VAR_foundry_git_ref` only for experiments.
 
+## One Run At A Time
+
+All benchmark dispatches share a single Terraform state and the same
+`aws_instance.fuzzer["<fuzzer>-<index>"]` resource addresses with
+`user_data_replace_on_change = true`. Applying a new run while a previous run's
+instances are still fuzzing plans a destroy/recreate of those instances and
+kills the in-flight run. **Dispatch runs strictly sequentially**: wait until a
+run's instances have self-terminated (timeout + upload, plus the Foundry source
+build before the fuzz window) before approving or dispatching the next one.
+
+## Foundry Log Visibility
+
+The foundry runner passes `--show-progress` to `forge test`. This is not
+cosmetic: it installs forge's SIGINT handler (progress bars stay hidden on
+non-TTY output), so the benchmark timeout's SIGINT produces a graceful exit
+that prints the end-of-run summary. That summary is the only place handler
+assertion bugs appear **with their names**
+(`[FAIL: ...] <artifact>:<Contract>::<function>`); mid-campaign they are visible
+only as `broken_assertions` counts in pulse metrics, which the analysis converts
+into correctly-timed events and then names from the summary. Broken invariants
+emit named `event: failure` JSON records mid-campaign either way.
+
 ## Re-run A Benchmark
 
 Runners are one-shot. To execute again with a fresh run prefix:
