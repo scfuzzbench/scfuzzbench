@@ -39,10 +39,15 @@ and should be added together with its mitigation.
   (liquity) lost 1 of 4 Echidna instances. Nothing from those instances exists in S3.
 - **Cause:** unknown — launch failure, crash before upload, or upload failure. The
   install/clone phase produced no artifacts, so there was nothing to diagnose with.
-- **Status: partially mitigated.** Runners now upload the bootstrap (user-data) log to
-  `logs/<run_id>/<benchmark_uuid>/<instance>-<fuzzer>-bootstrap.log` on exit, covering
-  install/clone/build failures. A true EC2 launch failure still leaves no artifact; if a
-  fuzzer column comes up short in a future run, check the bootstrap logs first.
+- **Status: partially mitigated.** Instances now upload the bootstrap (user-data) log to
+  `logs/<run_id>/<benchmark_uuid>/<instance>-<fuzzer>-bootstrap.log` twice: once right
+  after `install.sh` succeeds (guaranteed to land, without racing shutdown), and again
+  from the user-data EXIT trap as a failure-path backstop. The EXIT-trap upload can race
+  the instance poweroff started by `run.sh`'s own shutdown trap, so bootstrap logs are
+  guaranteed only for install-phase failures and the post-install snapshot — run-phase
+  output in the bootstrap log is best-effort (a follow-up improves this). A true EC2
+  launch failure still leaves no artifact; if a fuzzer column comes up short in a future
+  run, check the bootstrap logs first.
 
 ## Degraded errors (fuzzing ran with reduced capability)
 
@@ -53,8 +58,13 @@ and should be added together with its mitigation.
 - **Cause:** recon shells out to `npx -y recon-generate@latest` for slither-equivalent target
   info, and Node.js was not installed on the instances. Value mining degraded to bytecode
   constants only, plus a wasted full `--build-info` recompile per instance.
-- **Status: mitigated.** `fuzzers/recon-fuzzer/install.sh` now installs Node.js and
-  prefetches `recon-generate`.
+- **Status: mitigated.** `recon-generate@latest` requires Node.js >= 20 (its `commander`
+  dependency is ESM-only, failing with `ERR_REQUIRE_ESM` on Node 18, and `better-sqlite3`
+  ships no Node 18 prebuilds), so Ubuntu 24.04's apt `nodejs` (18) does not work.
+  `fuzzers/recon-fuzzer/install.sh` now installs Node.js 22 from NodeSource, prefetches
+  `recon-generate`, and logs the node/npx versions. The prefetch is non-fatal; if it
+  fails, the install log contains `WARNING: recon-generate unavailable` for run triage
+  to grep.
 
 ### E-5 — Medusa: slither run fails on the superform target (`exit status 1`)
 

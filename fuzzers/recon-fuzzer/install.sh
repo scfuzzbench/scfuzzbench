@@ -11,19 +11,30 @@ install_slither_analyzer
 
 # recon shells out to `npx -y recon-generate@latest` for slither-equivalent
 # target info; without Node.js every run degrades to bytecode constants only
-# and wastes a full --build-info recompile.
+# and wastes a full --build-info recompile. recon-generate@latest needs
+# Node.js >= 20 (its commander dependency is ESM-only and better-sqlite3 ships
+# no Node 18 prebuilds), so Ubuntu's apt nodejs (18) is not enough: install
+# Node 22 from NodeSource instead.
 if ! command -v npx >/dev/null 2>&1; then
   if is_local_mode; then
-    log "npx not found; install Node.js so recon-generate is available."
+    log "npx not found; install Node.js >= 20 so recon-generate is available."
   else
-    log "Installing Node.js (required for recon-generate)"
+    log "Installing Node.js 22 from NodeSource (recon-generate needs Node >= 20)"
     export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y nodejs npm
+    nodesource_setup=$(mktemp)
+    retry_cmd 5 10 curl -fsSL https://deb.nodesource.com/setup_22.x -o "${nodesource_setup}"
+    bash "${nodesource_setup}"
+    rm -f "${nodesource_setup}"
+    retry_cmd 5 10 apt-get install -y nodejs
   fi
 fi
 if command -v npx >/dev/null 2>&1; then
   log "Prefetching recon-generate"
-  npx -y recon-generate@latest --version || log "recon-generate prefetch failed; recon will retry at runtime."
+  npx -y recon-generate@latest --version || log "WARNING: recon-generate unavailable (prefetch failed); recon will retry at runtime."
+  log "node version: $(node --version 2>/dev/null || echo missing)"
+  log "npx version: $(npx --version 2>/dev/null || echo missing)"
+else
+  log "WARNING: recon-generate unavailable (npx not installed); value mining degrades to bytecode constants."
 fi
 
 require_env RECON_VERSION

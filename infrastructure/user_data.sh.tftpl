@@ -69,6 +69,13 @@ upload_bootstrap_log() {
 trap 'upload_bootstrap_log; shutdown_instance' EXIT
 
 bash /opt/scfuzzbench/fuzzers/${fuzzer_key}/install.sh
+
+# Upload the bootstrap log once right after a successful install: the EXIT-trap
+# upload below can race the instance poweroff started by run.sh's own shutdown
+# trap, so this is the upload guaranteed to land for instances that reach
+# run.sh. Runs in a subshell so the function's set +e does not leak here.
+( upload_bootstrap_log )
+
 bash /opt/scfuzzbench/fuzzers/${fuzzer_key}/run.sh || true
 
 touch /opt/scfuzzbench/.bootstrapped
