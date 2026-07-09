@@ -566,6 +566,34 @@ class BenchmarkReportTests(unittest.TestCase):
             self.assertTrue((out_dir / "differential_coverage_statistics.png").exists())
 
 
+class LoadRelativeScoresTests(unittest.TestCase):
+    def test_header_only_csv_returns_empty(self):
+        # The analysis pipeline always writes differential_coverage_relscores.csv,
+        # header-only when the run has no showmap campaigns; the report must not die.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "differential_coverage_relscores.csv"
+            path.write_text("campaign,approach,relscore,trials,covered_edges\n", encoding="utf-8")
+            self.assertEqual({}, benchmark_report.load_relative_scores(path))
+
+    def test_empty_file_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "relscores.csv"
+            path.write_text("", encoding="utf-8")
+            self.assertEqual({}, benchmark_report.load_relative_scores(path))
+
+    def test_approach_column_is_accepted_as_fuzzer_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "relscores.csv"
+            path.write_text(
+                "campaign,approach,relscore,trials,covered_edges\n"
+                "combined,echidna,0.9,4,120\n",
+                encoding="utf-8",
+            )
+            scores = benchmark_report.load_relative_scores(path)
+            self.assertIn("echidna", scores)
+            self.assertAlmostEqual(0.9, scores["echidna"].relscore)
+
+
 class RunHealthTests(unittest.TestCase):
     @staticmethod
     def _bugs_df(rows):

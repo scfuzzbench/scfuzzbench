@@ -304,7 +304,13 @@ def load_relative_scores(path: Path) -> Dict[str, RelativeScoreSummary]:
     with path.open("r", newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         fieldnames = reader.fieldnames or []
-        fuzzer_col = _find_column(fieldnames, ["fuzzer", "fuzzer_label", "tool", "name"])
+        data_rows = list(reader)
+        # The analysis pipeline always writes differential_coverage_relscores.csv,
+        # header-only when the run has no showmap campaigns. An empty CSV means
+        # "no scoreboard", not a malformed input — skip instead of dying.
+        if not fieldnames or not data_rows:
+            return {}
+        fuzzer_col = _find_column(fieldnames, ["fuzzer", "fuzzer_label", "tool", "name", "approach"])
         relscore_col = _find_column(fieldnames, ["relscore", "relscores", "relative_score"])
         relcov_col = _find_column(fieldnames, ["relcov", "relative_coverage", "coverage_score"])
         if fuzzer_col is None:
@@ -312,7 +318,7 @@ def load_relative_scores(path: Path) -> Dict[str, RelativeScoreSummary]:
         if relscore_col is None and relcov_col is None:
             die(f"missing relscore/relscores or relcov column in relative score CSV {path}")
 
-        for row in reader:
+        for row in data_rows:
             fuzzer = str(row.get(fuzzer_col, "")).strip()
             if not fuzzer:
                 continue
