@@ -467,6 +467,29 @@ finalize_run() {
   return ${exit_code}
 }
 
+# Dead-man switch: if the runner script never reaches finalize (unkillable
+# fuzzer process, OOM-killed shell, kernel hang), the instance would otherwise
+# run — and bill — forever, since self-termination happens in the EXIT trap.
+# Observed on run 1783621460: three foundry instances died mid-run without
+# finalize and kept running until the next terraform apply replaced them.
+# `shutdown -h` is honored by the kernel independently of the wedged script,
+# and instance_initiated_shutdown_behavior=terminate turns it into termination.
+schedule_hard_deadline() {
+  if is_local_mode; then
+    return 0
+  fi
+  local timeout_seconds="${SCFUZZBENCH_TIMEOUT_SECONDS:-86400}"
+  if ! [[ "${timeout_seconds}" =~ ^[0-9]+$ ]]; then
+    timeout_seconds=86400
+  fi
+  # Fuzzing budget + SIGKILL grace + generous margin for build/upload phases.
+  local deadline_minutes=$(( timeout_seconds / 60 + 90 ))
+  if command -v shutdown >/dev/null 2>&1; then
+    log "Scheduling hard shutdown deadline in ${deadline_minutes} minutes"
+    shutdown -h "+${deadline_minutes}" "scfuzzbench hard deadline" || true
+  fi
+}
+
 register_shutdown_trap() {
   install_shutdown_script
   cache_instance_id || true
@@ -474,6 +497,7 @@ register_shutdown_trap() {
     cache_aws_creds_from_imds || true
     start_aws_creds_refresher || true
   fi
+  schedule_hard_deadline || true
   start_runner_metrics
   trap finalize_run EXIT
 }
