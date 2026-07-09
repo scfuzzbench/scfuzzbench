@@ -294,6 +294,15 @@ Suggested manifest fields per target:
 
 ## Caveats and Reproducibility Notes
 
+- **Recon ignores time-delay caps from echidna-format configs.** Recon-fuzzer (as of v0.4.x)
+  has no `maxTimeDelay`/`maxBlockDelay` fields in its echidna.yaml parser and no CLI
+  equivalent; it runs with a default max time delay of 604800s and auto-adjusts it upward
+  from mined timestamp constants. On targets calibrated to bounded time advances (e.g. Drips:
+  echidna `maxTimeDelay: 100`, medusa `blockTimestampDelayMax: 100`, foundry
+  `max_time_delay = 100`), recon explores a vastly larger time-delay space than the other
+  three legs, so recon-exclusive findings on time-calibrated targets may be time-delay
+  artifacts and are not directly comparable. Tracked in scfuzzbench#177; upstream support
+  requested in Recon-Fuzz/recon-fuzzer.
 - `timeout_hours` applies to fuzzer execution; clone/build/setup occur before timed fuzzing starts.
 - Re-running Terraform without changing state can reuse `time_static` `run_id`; set explicit `run_id` for distinct runs.
 - Bucket defaults allow public object read (`bucket_public_read=true`) so docs/releases can link directly to S3 artifacts.
