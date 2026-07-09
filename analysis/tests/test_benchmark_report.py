@@ -566,6 +566,108 @@ class BenchmarkReportTests(unittest.TestCase):
             self.assertTrue((out_dir / "differential_coverage_statistics.png").exists())
 
 
+class RunHealthTests(unittest.TestCase):
+    @staticmethod
+    def _bugs_df(rows):
+        import pandas as pd
+
+        return pd.DataFrame(rows, columns=["fuzzer", "run_id", "time_hours", "bugs_found"])
+
+    @staticmethod
+    def _samples_df(rows):
+        import pandas as pd
+
+        return pd.DataFrame(rows, columns=["fuzzer", "series_id", "time_hours"])
+
+    def test_flags_leg_with_no_bugs_and_no_samples(self):
+        bugs = self._bugs_df(
+            [
+                ("echidna", "r1", 0.0, 0),
+                ("echidna", "r1", 2.0, 0),
+                ("foundry", "r1", 0.0, 0),
+                ("foundry", "r1", 2.0, 5),
+            ]
+        )
+        samples = self._samples_df([("foundry", "r1:i1", 1.9)])
+
+        warnings = benchmark_report.build_run_health_warnings(bugs, [samples], budget=2.0)
+
+        self.assertEqual(1, len(warnings))
+        self.assertIn("echidna", warnings[0])
+        self.assertIn("never executed", warnings[0])
+
+    def test_flags_leg_whose_activity_stops_early(self):
+        bugs = self._bugs_df(
+            [
+                ("medusa", "r1", 0.0, 0),
+                ("medusa", "r1", 2.0, 3),
+            ]
+        )
+        samples = self._samples_df([("medusa", "r1:i1", 0.3)])
+
+        warnings = benchmark_report.build_run_health_warnings(bugs, [samples], budget=2.0)
+
+        self.assertEqual(1, len(warnings))
+        self.assertIn("medusa", warnings[0])
+        self.assertIn("terminated early", warnings[0])
+
+    def test_healthy_leg_produces_no_warning(self):
+        bugs = self._bugs_df(
+            [
+                ("foundry", "r1", 0.0, 0),
+                ("foundry", "r1", 2.0, 5),
+            ]
+        )
+        samples = self._samples_df([("foundry", "r1:i1", 1.8)])
+
+        warnings = benchmark_report.build_run_health_warnings(bugs, [samples], budget=2.0)
+
+        self.assertEqual([], warnings)
+
+    def test_zero_bug_leg_with_full_length_activity_is_not_flagged(self):
+        bugs = self._bugs_df(
+            [
+                ("recon", "r1", 0.0, 0),
+                ("recon", "r1", 2.0, 0),
+            ]
+        )
+        samples = self._samples_df([("recon", "r1:i1", 1.95)])
+
+        warnings = benchmark_report.build_run_health_warnings(bugs, [samples], budget=2.0)
+
+        self.assertEqual([], warnings)
+
+    def test_bug_finding_leg_without_samples_is_not_flagged(self):
+        bugs = self._bugs_df(
+            [
+                ("recon", "r1", 0.0, 0),
+                ("recon", "r1", 2.0, 4),
+            ]
+        )
+
+        warnings = benchmark_report.build_run_health_warnings(bugs, [], budget=2.0)
+
+        self.assertEqual([], warnings)
+
+    def test_report_renders_run_health_section(self):
+        metrics = [_make_metrics("echidna", [0, 0])]
+        with tempfile.TemporaryDirectory() as tmp:
+            outpath = Path(tmp) / "REPORT.md"
+            benchmark_report.write_report(
+                metrics,
+                budget=1.0,
+                checkpoints=[1.0],
+                ks=[1],
+                outpath=outpath,
+                run_health_warnings=["**echidna**: no bugs and no runtime activity samples"],
+            )
+            content = outpath.read_text(encoding="utf-8")
+
+        self.assertIn("## ⚠️ Run health", content)
+        self.assertIn("not comparable", content)
+        self.assertIn("echidna", content)
+
+
 class StatisticalTestsTests(unittest.TestCase):
     def test_significant_difference(self):
         m_a = _make_metrics("echidna", [7, 8, 7, 8, 7, 8, 7, 8, 7, 8])
