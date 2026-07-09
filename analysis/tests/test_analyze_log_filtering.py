@@ -16,7 +16,8 @@ class AnalyzeLogFilteringTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            events = analyze.parse_logs(logs_dir, "run-1")
+            log_files = analyze.discover_log_files(logs_dir)
+            events = analyze.parse_logs(logs_dir, "run-1", log_files)
             self.assertEqual(events, [])
 
     def test_parse_throughput_logs_ignores_runner_commands_log(self):
@@ -29,7 +30,8 @@ class AnalyzeLogFilteringTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            samples = analyze.parse_throughput_logs(logs_dir, "run-1")
+            log_files = analyze.discover_log_files(logs_dir)
+            samples = analyze.parse_throughput_logs(logs_dir, "run-1", log_files)
             self.assertEqual(samples, [])
 
     def test_parse_progress_metrics_logs_ignores_runner_commands_log(self):
@@ -42,7 +44,8 @@ class AnalyzeLogFilteringTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            samples = analyze.parse_progress_metrics_logs(logs_dir, "run-1")
+            log_files = analyze.discover_log_files(logs_dir)
+            samples = analyze.parse_progress_metrics_logs(logs_dir, "run-1", log_files)
             self.assertEqual(samples, [])
 
 

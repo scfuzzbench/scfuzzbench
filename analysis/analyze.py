@@ -4,14 +4,27 @@ import csv
 import json
 import math
 import os
+import random
 import re
+import shutil
 import statistics
 import sys
-from collections import defaultdict
+import time
+from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+
+from differential_coverage import ApproachData, DifferentialCoverage
+from scipy import stats
+
+
+@dataclass(frozen=True)
+class LogFile:
+    path: Path
+    instance_id: str
+    fuzzer_label: str
 
 LOG_FILE_RE = re.compile(r".+\.log$")
 INSTANCE_PREFIX_RE = re.compile(r"^(i-[0-9a-f]+)-(.*)$")
@@ -51,6 +64,21 @@ TEXT_TX_COUNT_PATTERNS = [
 TEXT_GAS_COUNT_PATTERNS = [
     re.compile(r"(?i)\bgas\s*:\s*([0-9]+(?:\.[0-9]+)?)"),
 ]
+
+DEFAULT_SHOWMAP_MAX_WORK_ITEMS = 50_000_000
+DEFAULT_MIN_VERDICT_SAMPLES = 6
+# Per-test (`by_test/...`) campaigns are emitted for human drill-down only: their
+# verdicts feed neither the aggregate verdict (see `_is_target_family_campaign`)
+# nor any downstream report consumer. Running the full per-campaign statistics
+# (BCa bootstrap CIs + non-inferiority tests) for every invariant across every
+# target/round/arm dominates analysis time, so the verdict/bootstrap is skipped
+# for `by_test` campaigns by default. Their point relscore/relcov values are still
+# emitted in the relscores/relcov CSVs and as cheap inconclusive summary rows.
+DEFAULT_DIFFCOV_VERDICT_BY_TEST = False
+DEFAULT_AUTOTUNE_VALIDATION = "leave-one-target-out"
+DEFAULT_RELCOV_NONINFERIORITY_DELTA = 0.05
+A12_MEANINGFUL_HIGH = 0.56
+A12_MEANINGFUL_LOW = 0.44
 
 TX_RATE_KEYS = (
     "tx_per_second",
@@ -184,6 +212,20 @@ class ProgressMetricsSample:
     failure_rate: Optional[float]
     source: str
     log_path: str
+
+
+@dataclass(frozen=True)
+class ShowmapTrial:
+    instance_label: str
+    instance_id: str
+    fuzzer_label: str
+    target_label: Optional[str]
+    seed_label: Optional[str]
+    approach: str
+    suite_test: Optional[str]
+    trial_id: str
+    raw_path: str
+    edges: Set[str]
 
 
 def parse_duration(text: str) -> Optional[int]:
@@ -432,14 +474,14 @@ def extract_bang_event(line: str) -> Optional[str]:
     if "!!!" not in line:
         return None
     _, after = line.split("!!!", 1)
-    candidate = after.strip()
+    feature = after.strip()
     for sep in ("»", "\"", ")"):
-        if sep in candidate:
-            candidate = candidate.split(sep, 1)[0].strip()
-    candidate = candidate.strip()
-    if not candidate:
+        if sep in feature:
+            feature = feature.split(sep, 1)[0].strip()
+    feature = feature.strip()
+    if not feature:
         return None
-    return candidate
+    return feature
 
 
 def normalize_foundry_failure_name(value: Any) -> Optional[str]:
@@ -927,9 +969,8 @@ def parse_throughput_log(
     return samples
 
 
-def parse_logs(logs_dir: Path, run_id: Optional[str]) -> List[Event]:
-    events: List[Event] = []
-    run_id_value = run_id or infer_run_id(logs_dir) or "unknown"
+def discover_log_files(logs_dir: Path) -> Tuple[LogFile, ...]:
+    files: List[LogFile] = []
     for path in logs_dir.rglob("*"):
         if not path.is_file():
             continue
@@ -940,6 +981,21 @@ def parse_logs(logs_dir: Path, run_id: Optional[str]) -> List[Event]:
             continue
         instance_label = rel.parts[0]
         instance_id, fuzzer_label = split_instance_label(instance_label)
+        files.append(LogFile(path, instance_id, fuzzer_label))
+    return tuple(files)
+
+
+def parse_logs(
+    logs_dir: Path,
+    run_id: Optional[str],
+    log_files: Sequence[LogFile],
+) -> List[Event]:
+    events: List[Event] = []
+    run_id_value = run_id or infer_run_id(logs_dir) or "unknown"
+    for log_file in log_files:
+        path = log_file.path
+        instance_id = log_file.instance_id
+        fuzzer_label = log_file.fuzzer_label
         fuzzer = normalize_fuzzer(fuzzer_label)
         if fuzzer == "foundry":
             events.extend(parse_foundry_log(path, run_id_value, instance_id, fuzzer_label))
@@ -974,20 +1030,22 @@ def parse_logs(logs_dir: Path, run_id: Optional[str]) -> List[Event]:
     return events
 
 
-def parse_throughput_logs(logs_dir: Path, run_id: Optional[str]) -> List[ThroughputSample]:
+def parse_throughput_logs(
+    logs_dir: Path,
+    run_id: Optional[str],
+    log_files: Sequence[LogFile],
+) -> List[ThroughputSample]:
     samples: List[ThroughputSample] = []
     run_id_value = run_id or infer_run_id(logs_dir) or "unknown"
-    for path in logs_dir.rglob("*"):
-        if not path.is_file():
-            continue
-        if not should_parse_log_file(path):
-            continue
-        rel = path.relative_to(logs_dir)
-        if len(rel.parts) < 2:
-            continue
-        instance_label = rel.parts[0]
-        instance_id, fuzzer_label = split_instance_label(instance_label)
-        samples.extend(parse_throughput_log(path, run_id_value, instance_id, fuzzer_label))
+    for log_file in log_files:
+        samples.extend(
+            parse_throughput_log(
+                log_file.path,
+                run_id_value,
+                log_file.instance_id,
+                log_file.fuzzer_label,
+            )
+        )
     return samples
 
 
@@ -1113,22 +1171,20 @@ def parse_progress_metrics_log(
 
 
 def parse_progress_metrics_logs(
-    logs_dir: Path, run_id: Optional[str]
+    logs_dir: Path,
+    run_id: Optional[str],
+    log_files: Sequence[LogFile],
 ) -> List[ProgressMetricsSample]:
     samples: List[ProgressMetricsSample] = []
     run_id_value = run_id or infer_run_id(logs_dir) or "unknown"
-    for path in logs_dir.rglob("*"):
-        if not path.is_file():
-            continue
-        if not should_parse_log_file(path):
-            continue
-        rel = path.relative_to(logs_dir)
-        if len(rel.parts) < 2:
-            continue
-        instance_label = rel.parts[0]
-        instance_id, fuzzer_label = split_instance_label(instance_label)
+    for log_file in log_files:
         samples.extend(
-            parse_progress_metrics_log(path, run_id_value, instance_id, fuzzer_label)
+            parse_progress_metrics_log(
+                log_file.path,
+                run_id_value,
+                log_file.instance_id,
+                log_file.fuzzer_label,
+            )
         )
     return samples
 
@@ -1605,6 +1661,1200 @@ def write_exclusive_csv(events: Iterable[Event], out_path: Path) -> None:
                 writer.writerow([fuzzer, event])
 
 
+def sanitize_showmap_component(value: str) -> str:
+    value = value.strip()
+    if not value:
+        return "unknown"
+    sanitized = re.sub(r"[^A-Za-z0-9_.=-]+", "_", value)
+    if sanitized in {".", ".."}:
+        return "unknown"
+    return sanitized
+
+
+def parse_showmap_approach_dir(name: str) -> Tuple[str, Optional[str]]:
+    parts = [part for part in name.split("__") if part]
+    if len(parts) >= 2:
+        return parts[0], "__".join(parts[1:])
+    return name, None
+
+
+def parse_showmap_instance_label(
+    instance_label: str,
+) -> Tuple[str, str, Optional[str], Optional[str]]:
+    marker = re.search(r"__(?:target|seed)-", instance_label)
+    base_label = instance_label[: marker.start()] if marker else instance_label
+    target_label = None
+    seed_label = None
+
+    if marker:
+        for part in instance_label[marker.start() + 2 :].split("__"):
+            if part.startswith("target-"):
+                target_label = sanitize_showmap_component(part.removeprefix("target-"))
+            elif part.startswith("seed-"):
+                seed_label = sanitize_showmap_component(part.removeprefix("seed-"))
+
+    instance_id, fuzzer_label = split_instance_label(base_label)
+    return instance_id, fuzzer_label, target_label, seed_label
+
+
+def read_afl_showmap(path: Path) -> Set[str]:
+    edges: Set[str] = set()
+    for line_number, raw_line in enumerate(
+        path.read_text(errors="ignore").splitlines(), 1
+    ):
+        line = raw_line.strip()
+        if not line:
+            continue
+        edge_id, sep, count_text = line.partition(":")
+        if not sep:
+            raise ValueError(f"invalid AFL showmap line {path}:{line_number}: {line}")
+        try:
+            count = int(count_text.strip())
+        except ValueError as exc:
+            raise ValueError(f"invalid AFL showmap count {path}:{line_number}: {line}") from exc
+        if count > 0:
+            edges.add(edge_id.strip())
+    return edges
+
+
+def load_showmap_trials(
+    logs_dir: Path,
+    excluded_fuzzers: Optional[Set[str]] = None,
+) -> Tuple[List[ShowmapTrial], List[Dict[str, str]]]:
+    trials: List[ShowmapTrial] = []
+    skipped: List[Dict[str, str]] = []
+    excluded_fuzzers = excluded_fuzzers or set()
+
+    for showmap_dir in sorted(path for path in logs_dir.rglob("showmap") if path.is_dir()):
+        rel_showmap_dir = showmap_dir.relative_to(logs_dir)
+        if not rel_showmap_dir.parts:
+            continue
+        instance_label = rel_showmap_dir.parts[0]
+        instance_id, fuzzer_label, target_label, seed_label = parse_showmap_instance_label(
+            instance_label
+        )
+
+        for trial_file in sorted(showmap_dir.rglob("*.txt")):
+            rel_trial = trial_file.relative_to(showmap_dir)
+            if len(rel_trial.parts) < 2:
+                skipped.append({"path": str(trial_file), "reason": "missing approach directory"})
+                continue
+
+            approach, suite_test = parse_showmap_approach_dir(rel_trial.parts[0])
+            if (
+                approach.lower() in excluded_fuzzers
+                or normalize_fuzzer(approach).lower() in excluded_fuzzers
+                or fuzzer_label.lower() in excluded_fuzzers
+                or normalize_fuzzer(fuzzer_label).lower() in excluded_fuzzers
+            ):
+                continue
+
+            try:
+                edges = read_afl_showmap(trial_file)
+            except ValueError as exc:
+                skipped.append({"path": str(trial_file), "reason": str(exc)})
+                continue
+            if not edges:
+                skipped.append({"path": str(trial_file), "reason": "empty coverage"})
+                continue
+
+            trial_rel = Path(*rel_trial.parts[1:]).with_suffix("")
+            trial_name = "__".join(trial_rel.parts)
+            trial_id = (
+                sanitize_showmap_component(f"seed-{seed_label}")
+                if seed_label is not None
+                else sanitize_showmap_component(f"{instance_label}__{trial_name}")
+            )
+            trials.append(
+                ShowmapTrial(
+                    instance_label=instance_label,
+                    instance_id=instance_id,
+                    fuzzer_label=fuzzer_label,
+                    target_label=target_label,
+                    seed_label=seed_label,
+                    approach=sanitize_showmap_component(approach),
+                    suite_test=(
+                        sanitize_showmap_component(suite_test)
+                        if suite_test is not None
+                        else None
+                    ),
+                    trial_id=trial_id,
+                    raw_path=str(trial_file),
+                    edges=edges,
+                )
+            )
+    return trials, skipped
+
+
+def merge_edges(
+    target: Dict[str, Dict[str, Set[str]]],
+    approach: str,
+    trial_id: str,
+    edges: Set[str],
+) -> None:
+    target.setdefault(approach, {}).setdefault(trial_id, set()).update(edges)
+
+
+def build_showmap_campaigns(
+    trials: Iterable[ShowmapTrial],
+) -> Dict[str, Dict[str, Dict[str, Set[str]]]]:
+    campaigns: Dict[str, Dict[str, Dict[str, Set[str]]]] = {"combined": {}}
+    for trial in trials:
+        merge_edges(campaigns["combined"], trial.approach, trial.trial_id, trial.edges)
+        if trial.target_label is not None:
+            target_campaign = f"by_target/{trial.target_label}"
+            merge_edges(
+                campaigns.setdefault(target_campaign, {}),
+                trial.approach,
+                trial.trial_id,
+                trial.edges,
+            )
+        if trial.suite_test is not None:
+            campaign_name = f"by_test/{trial.suite_test}"
+            merge_edges(
+                campaigns.setdefault(campaign_name, {}),
+                trial.approach,
+                trial.trial_id,
+                trial.edges,
+            )
+            if trial.target_label is not None:
+                target_test_campaign = f"by_target/{trial.target_label}/by_test/{trial.suite_test}"
+                merge_edges(
+                    campaigns.setdefault(target_test_campaign, {}),
+                    trial.approach,
+                    trial.trial_id,
+                    trial.edges,
+                )
+    return campaigns
+
+
+def write_showmap_campaign_dir(
+    campaign: Dict[str, Dict[str, Set[str]]],
+    out_dir: Path,
+) -> None:
+    for approach, trials in sorted(campaign.items()):
+        approach_dir = out_dir / approach
+        approach_dir.mkdir(parents=True, exist_ok=True)
+        for trial_id, edges in sorted(trials.items()):
+            trial_path = approach_dir / f"{trial_id}.txt"
+            with trial_path.open("w", encoding="utf-8") as handle:
+                for edge in sorted(edges):
+                    handle.write(f"{edge}:1\n")
+
+
+def showmap_campaign_work_items(campaign: Dict[str, Dict[str, Set[str]]]) -> int:
+    unique_edges: Set[str] = set()
+    trial_count = 0
+    for trials in campaign.values():
+        trial_count += len(trials)
+        for edges in trials.values():
+            unique_edges.update(edges)
+    return len(unique_edges) * max(trial_count, 1)
+
+
+def calculate_relscores(
+    campaign: Dict[str, Dict[str, Set[str]]],
+) -> Dict[str, float]:
+    """Compute relscores for a campaign.
+
+    Fast, allocation-light reimplementation of
+    ``differential_coverage.DifferentialCoverage.relscores``. For valid
+    scfuzzbench campaigns it computes the same mathematical relscore (see
+    ``test_differential_coverage`` for parity checks against the upstream
+    library). It may differ from the library by ordinary floating-point
+    roundoff: the library divides and accumulates a float per edge, while this
+    sums exact integer products and divides once.
+
+    The upstream implementation is ``O(|all_edges| * |trials|^2)`` per approach
+    because ``ApproachData.edges_by_trial`` rebuilds every trial's frozenset on
+    each property access, and that access happens once per edge inside
+    ``_calculate_relscore``. For the ``combined`` and ``by_target`` campaigns
+    (hundreds of trials, tens of thousands of edges) this dominated the entire
+    analysis step, taking >300s for ``combined`` alone. The implementation
+    below is ``O(sum of trial sizes)`` per approach.
+    """
+    # Per-approach edge union, plus a count of how many approaches' unions
+    # contain each edge (used to derive how many approaches never hit an edge).
+    unions: Dict[str, Set[str]] = {}
+    approaches_containing_edge: Dict[str, int] = defaultdict(int)
+    for approach, trials in campaign.items():
+        union: Set[str] = set()
+        for edges in trials.values():
+            union.update(edges)
+        unions[approach] = union
+        for edge in union:
+            approaches_containing_edge[edge] += 1
+
+    num_approaches = len(campaign)
+    scores: Dict[str, float] = {}
+    for approach, trials in campaign.items():
+        trials_with_non_empty_cov = sum(1 for edges in trials.values() if edges)
+        if trials_with_non_empty_cov == 0:
+            scores[approach] = 0.0
+            continue
+        # hit_count[edge] = number of this approach's trials that hit `edge`.
+        hit_count: Dict[str, int] = defaultdict(int)
+        for edges in trials.values():
+            for edge in edges:
+                hit_count[edge] += 1
+        # score = sum over edges of (#approaches that never hit edge) *
+        #         (#trials of this approach that hit edge) / trials_non_empty.
+        # Edges this approach never hits contribute 0, so iterating its own
+        # hit_count is equivalent to iterating all_edges.
+        total = 0
+        for edge, count in hit_count.items():
+            never_hit = num_approaches - approaches_containing_edge[edge]
+            total += never_hit * count
+        scores[approach] = float(total) / trials_with_non_empty_cov
+    return scores
+
+
+def calculate_relcovs(
+    campaign: Dict[str, Dict[str, Set[str]]],
+) -> Dict[str, Dict[str, float]]:
+    """Compute pairwise relcov for a campaign.
+
+    Equivalent to calling ``ApproachData.relcov`` (median value reducer, union
+    collection reducer) for every (approach, reference) pair, but without
+    rebuilding the upstream ``edges_by_trial`` frozensets.
+    """
+    unions: Dict[str, Set[str]] = {
+        approach: set().union(*trials.values()) if trials else set()
+        for approach, trials in campaign.items()
+    }
+    result: Dict[str, Dict[str, float]] = {}
+    for approach, trials in campaign.items():
+        trial_edge_sets = list(trials.values())
+        row: Dict[str, float] = {}
+        for reference in campaign:
+            reference_union = unions[reference]
+            reference_size = len(reference_union)
+            if reference_size == 0:
+                row[reference] = 0.0
+                continue
+            ratios = [
+                len(edges & reference_union) / reference_size
+                for edges in trial_edge_sets
+            ]
+            row[reference] = float(statistics.median(ratios)) if ratios else 0.0
+        result[approach] = row
+    return result
+
+
+def find_baseline_feature(approaches: Iterable[str]) -> Optional[Tuple[str, str]]:
+    approaches = sorted(approaches)
+    if len(approaches) != 2:
+        return None
+
+    baseline_names = {"master", "main", "stable"}
+
+    def is_baseline(name: str) -> bool:
+        lower = name.lower()
+        return lower in baseline_names or lower.endswith("-master") or lower.endswith("-main")
+
+    baselines = [approach for approach in approaches if is_baseline(approach)]
+    if len(baselines) != 1:
+        return None
+
+    baseline = baselines[0]
+    feature = next(approach for approach in approaches if approach != baseline)
+    return baseline, feature
+
+
+def _mean(values: Sequence[float]) -> float:
+    return statistics.mean(values) if values else 0.0
+
+
+def _sample_variance(values: Sequence[float]) -> float:
+    return statistics.variance(values) if len(values) >= 2 else 0.0
+
+
+def _percentile(sorted_values: Sequence[float], q: float) -> float:
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    pos = min(max(q, 0.0), 1.0) * (len(sorted_values) - 1)
+    lower = math.floor(pos)
+    upper = math.ceil(pos)
+    if lower == upper:
+        return sorted_values[int(pos)]
+    weight = pos - lower
+    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
+
+
+def _bca_mean_ci(
+    values: Sequence[float],
+    confidence_level: float,
+    min_samples: int,
+    iterations: int = 2000,
+) -> Tuple[Optional[float], Optional[float], str]:
+    finite_values = [float(value) for value in values if math.isfinite(float(value))]
+    if len(finite_values) < min_samples:
+        return None, None, "insufficient n"
+    theta_hat = _mean(finite_values)
+    if len(set(finite_values)) == 1:
+        return theta_hat, theta_hat, "ok"
+
+    rng = random.Random(8675309)
+    n = len(finite_values)
+    boot = sorted(
+        _mean([finite_values[rng.randrange(n)] for _ in range(n)])
+        for _ in range(iterations)
+    )
+
+    less = sum(1 for value in boot if value < theta_hat)
+    equal = sum(1 for value in boot if value == theta_hat)
+    prop_less = min(max((less + 0.5 * equal) / iterations, 1e-9), 1.0 - 1e-9)
+    z0 = float(stats.norm.ppf(prop_less))
+
+    jack = [
+        _mean([value for idx, value in enumerate(finite_values) if idx != leave_out])
+        for leave_out in range(n)
+    ]
+    jack_mean = _mean(jack)
+    numerator = sum((jack_mean - value) ** 3 for value in jack)
+    denominator = 6.0 * (
+        sum((jack_mean - value) ** 2 for value in jack) ** 1.5
+    )
+    acceleration = numerator / denominator if denominator else 0.0
+
+    alpha = (1.0 - confidence_level) / 2.0
+
+    def adjusted_quantile(raw_alpha: float) -> float:
+        z_alpha = float(stats.norm.ppf(raw_alpha))
+        denom = 1.0 - acceleration * (z0 + z_alpha)
+        if denom == 0.0:
+            return raw_alpha
+        return float(stats.norm.cdf(z0 + (z0 + z_alpha) / denom))
+
+    low_q = adjusted_quantile(alpha)
+    high_q = adjusted_quantile(1.0 - alpha)
+    return _percentile(boot, low_q), _percentile(boot, high_q), "ok"
+
+
+def _a12(xs: Sequence[float], ys: Sequence[float]) -> float:
+    if not xs or not ys:
+        return 0.5
+    wins = 0.0
+    for x in xs:
+        for y in ys:
+            if x > y:
+                wins += 1.0
+            elif x == y:
+                wins += 0.5
+    return wins / (len(xs) * len(ys))
+
+
+def _mann_whitney_u(xs: Sequence[float], ys: Sequence[float]) -> Tuple[float, float]:
+    if not xs or not ys:
+        return 0.0, 1.0
+    if _mean(xs) > _mean(ys):
+        alternative = "greater"
+    elif _mean(xs) < _mean(ys):
+        alternative = "less"
+    else:
+        return 0.0, 1.0
+    result = stats.mannwhitneyu(xs, ys, alternative=alternative, method="auto")
+    return float(result.statistic), float(result.pvalue)
+
+
+def _wilcoxon_signed_rank(xs: Sequence[float], ys: Sequence[float]) -> Tuple[float, float]:
+    if not xs or not ys:
+        return 0.0, 1.0
+    pairs = [(x, y) for x, y in zip(xs, ys) if x != y]
+    if not pairs:
+        return 0.0, 1.0
+    x_values = [x for x, _ in pairs]
+    y_values = [y for _, y in pairs]
+    if _mean(x_values) > _mean(y_values):
+        alternative = "greater"
+    elif _mean(x_values) < _mean(y_values):
+        alternative = "less"
+    else:
+        return 0.0, 1.0
+    result = stats.wilcoxon(
+        x_values,
+        y_values,
+        alternative=alternative,
+        zero_method="wilcox",
+        method="auto",
+    )
+    return float(result.statistic), float(result.pvalue)
+
+
+def _wilcoxon_noninferiority(
+    deltas: Sequence[float],
+    noninferiority_delta: float,
+) -> Tuple[float, float]:
+    shifted = [float(delta) + noninferiority_delta for delta in deltas]
+    shifted = [value for value in shifted if value != 0.0]
+    if not shifted:
+        return 0.0, 1.0
+    result = stats.wilcoxon(
+        shifted,
+        alternative="greater",
+        zero_method="wilcox",
+        method="auto",
+    )
+    return float(result.statistic), float(result.pvalue)
+
+
+def _mann_whitney_noninferiority(
+    xs: Sequence[float],
+    ys: Sequence[float],
+    noninferiority_delta: float,
+) -> Tuple[float, float]:
+    if not xs or not ys:
+        return 0.0, 1.0
+    shifted_xs = [float(value) + noninferiority_delta for value in xs]
+    result = stats.mannwhitneyu(
+        shifted_xs,
+        [float(value) for value in ys],
+        alternative="greater",
+        method="auto",
+    )
+    return float(result.statistic), float(result.pvalue)
+
+
+def _holm_adjust(p_values: Sequence[float]) -> List[float]:
+    indexed = sorted(enumerate(p_values), key=lambda item: item[1])
+    adjusted = [1.0] * len(p_values)
+    running = 0.0
+    m = len(p_values)
+    for rank, (idx, p_value) in enumerate(indexed):
+        running = max(running, min(1.0, (m - rank) * p_value))
+        adjusted[idx] = running
+    return adjusted
+
+
+def _is_target_family_campaign(campaign_name: str) -> bool:
+    return campaign_name.startswith("by_target/") and "/by_test/" not in campaign_name
+
+
+def _is_by_test_campaign(campaign_name: str) -> bool:
+    return campaign_name.startswith("by_test/") or "/by_test/" in campaign_name
+
+
+def per_sample_relscores(
+    campaign: Dict[str, Dict[str, Set[str]]],
+) -> Dict[str, Dict[str, float]]:
+    approach_count = len(campaign)
+    union_by_approach = {
+        approach: set().union(*trials.values()) if trials else set()
+        for approach, trials in campaign.items()
+    }
+    approaches_hitting_edge: "Counter[str]" = Counter()
+    for union in union_by_approach.values():
+        approaches_hitting_edge.update(union)
+    scores: Dict[str, Dict[str, float]] = {}
+    for approach, trials in campaign.items():
+        scores[approach] = {
+            trial_id: float(
+                sum(approach_count - approaches_hitting_edge[edge] for edge in edges)
+            )
+            for trial_id, edges in trials.items()
+        }
+    return scores
+
+
+def trial_scores(
+    campaign: Dict[str, Dict[str, Set[str]]],
+) -> Dict[str, Dict[str, float]]:
+    return per_sample_relscores(campaign)
+
+
+def _relcov_samples(
+    dc: DifferentialCoverage[str, str, str],
+    approach: str,
+    reference: str,
+    sample_ids: Optional[Sequence[str]] = None,
+) -> List[float]:
+    if approach not in dc.approaches or reference not in dc.approaches:
+        return []
+    reference_data = dc.approaches[reference]
+    if not reference_data.edges_union:
+        return []
+    trials = dc.approaches[approach].edges_by_trial
+    ids = list(sample_ids) if sample_ids is not None else list(trials.keys())
+
+    samples: List[float] = []
+    for trial_id in ids:
+        if trial_id not in trials:
+            continue
+        edges = set(trials[trial_id])
+        if not edges:
+            samples.append(0.0)
+            continue
+        samples.append(float(ApproachData({trial_id: edges}).relcov(reference_data)))
+    return samples
+
+
+def _paired_deltas(xs: Sequence[float], ys: Sequence[float]) -> List[float]:
+    return [float(x) - float(y) for x, y in zip(xs, ys)]
+
+
+def _bca_unpaired_mean_diff_ci(
+    xs: Sequence[float],
+    ys: Sequence[float],
+    confidence_level: float,
+    min_samples: int,
+    iterations: int = 2000,
+) -> Tuple[Optional[float], Optional[float], str]:
+    finite_xs = [float(value) for value in xs if math.isfinite(float(value))]
+    finite_ys = [float(value) for value in ys if math.isfinite(float(value))]
+    if len(finite_xs) < min_samples or len(finite_ys) < min_samples:
+        return None, None, "insufficient n"
+    theta_hat = _mean(finite_xs) - _mean(finite_ys)
+    if len(set(finite_xs)) == 1 and len(set(finite_ys)) == 1:
+        return theta_hat, theta_hat, "ok"
+
+    rng = random.Random(8675309)
+    nx = len(finite_xs)
+    ny = len(finite_ys)
+    boot = sorted(
+        _mean([finite_xs[rng.randrange(nx)] for _ in range(nx)])
+        - _mean([finite_ys[rng.randrange(ny)] for _ in range(ny)])
+        for _ in range(iterations)
+    )
+
+    less = sum(1 for value in boot if value < theta_hat)
+    equal = sum(1 for value in boot if value == theta_hat)
+    prop_less = min(max((less + 0.5 * equal) / iterations, 1e-9), 1.0 - 1e-9)
+    z0 = float(stats.norm.ppf(prop_less))
+
+    jack: List[float] = []
+    if nx > 1:
+        jack.extend(
+            _mean([value for idx, value in enumerate(finite_xs) if idx != leave_out])
+            - _mean(finite_ys)
+            for leave_out in range(nx)
+        )
+    if ny > 1:
+        jack.extend(
+            _mean(finite_xs)
+            - _mean([value for idx, value in enumerate(finite_ys) if idx != leave_out])
+            for leave_out in range(ny)
+        )
+    jack_mean = _mean(jack)
+    numerator = sum((jack_mean - value) ** 3 for value in jack)
+    denominator = 6.0 * (
+        sum((jack_mean - value) ** 2 for value in jack) ** 1.5
+    )
+    acceleration = numerator / denominator if denominator else 0.0
+
+    alpha = (1.0 - confidence_level) / 2.0
+
+    def adjusted_quantile(raw_alpha: float) -> float:
+        z_alpha = float(stats.norm.ppf(raw_alpha))
+        denom = 1.0 - acceleration * (z0 + z_alpha)
+        if denom == 0.0:
+            return raw_alpha
+        return float(stats.norm.cdf(z0 + (z0 + z_alpha) / denom))
+
+    return (
+        _percentile(boot, adjusted_quantile(alpha)),
+        _percentile(boot, adjusted_quantile(1.0 - alpha)),
+        "ok",
+    )
+
+
+def _statistical_verdict(row: Dict[str, Any], confidence_level: float) -> str:
+    if row["too_few_samples"]:
+        return "inconclusive"
+    if row["pairing_mode"] == "paired" and not row["paired"]:
+        return "inconclusive"
+
+    alpha = 1.0 - confidence_level
+    p_adjusted = float(row["p_value_adjusted"])
+    feature_mean = float(row["feature_sample_mean"])
+    baseline_mean = float(row["baseline_sample_mean"])
+    a12 = float(row["effect_size_a12"])
+
+    significant = p_adjusted <= alpha
+    relscore_up = significant and feature_mean > baseline_mean and a12 >= A12_MEANINGFUL_HIGH
+    relscore_down = significant and feature_mean < baseline_mean and a12 <= A12_MEANINGFUL_LOW
+    relcov_status = row.get("relcov_status", "inconclusive")
+
+    if relscore_down or relcov_status == "failed":
+        return "regression"
+    if relscore_up and relcov_status == "held":
+        return "improvement"
+    if relscore_up:
+        return "needs-review"
+    return "inconclusive"
+
+
+def _verdict_reason(row: Dict[str, Any]) -> str:
+    if row["pairing_mode"] == "paired" and not row["paired"]:
+        return "paired mode requires matched seed labels; unpaired fallback disabled"
+    if row["too_few_samples"]:
+        return "too few runs"
+    relcov_status = row.get("relcov_status", "inconclusive")
+    relcov_ci_status = row.get("relcov_delta_ci_status", "ok")
+    verdict = row["verdict"]
+    if verdict == "improvement":
+        return "significant relscore improvement and relcov non-inferiority held"
+    if verdict == "regression":
+        if relcov_status == "failed":
+            return "relcov non-inferiority failed"
+        return "significant relscore regression"
+    if verdict == "needs-review":
+        if relcov_ci_status != "ok":
+            return f"significant relscore improvement with relcov {relcov_ci_status}"
+        return "significant relscore improvement with relcov non-inferiority inconclusive"
+    return "not significant after correction"
+
+
+def build_differential_coverage_verdict_rows(
+    summary_rows: List[Tuple[str, str, str, float, float]],
+    campaigns: Dict[str, Dict[str, Dict[str, Set[str]]]],
+    confidence_level: float = 0.95,
+    noninferiority_delta: float = DEFAULT_RELCOV_NONINFERIORITY_DELTA,
+    pairing_mode: str = "unpaired",
+    min_samples: int = DEFAULT_MIN_VERDICT_SAMPLES,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if pairing_mode not in {"unpaired", "paired"}:
+        raise ValueError(f"unsupported differential coverage pairing mode: {pairing_mode}")
+    rows: List[Dict[str, Any]] = []
+    for (
+        campaign_name,
+        baseline,
+        feature,
+        baseline_relscore,
+        feature_relscore,
+    ) in summary_rows:
+        campaign = campaigns.get(campaign_name, {})
+        if not campaign or baseline not in campaign or feature not in campaign:
+            continue
+        dc = DifferentialCoverage(campaign)
+        feature_performance = float(dc.approaches[feature].relcov(dc.approaches[baseline]))
+        baseline_reliability = float(dc.approaches[baseline].relcov(dc.approaches[baseline]))
+        relscores_by_sample = per_sample_relscores(campaign)
+        baseline_scores_by_sample = relscores_by_sample.get(baseline, {})
+        feature_scores_by_sample = relscores_by_sample.get(feature, {})
+        shared_ids = sorted(set(baseline_scores_by_sample) & set(feature_scores_by_sample))
+        baseline_seed_ids = {
+            sample_id for sample_id in baseline_scores_by_sample if sample_id.startswith("seed-")
+        }
+        feature_seed_ids = {
+            sample_id for sample_id in feature_scores_by_sample if sample_id.startswith("seed-")
+        }
+        seed_pairing_expected = pairing_mode == "paired"
+        expected_pairs = (
+            min(len(baseline_seed_ids), len(feature_seed_ids))
+            if seed_pairing_expected
+            else 0
+        )
+        pairing_rate = len(shared_ids) / expected_pairs if expected_pairs else 0.0
+        paired = seed_pairing_expected and expected_pairs > 0 and bool(shared_ids)
+        if paired:
+            sample_ids = shared_ids
+            baseline_scores = [baseline_scores_by_sample[sample_id] for sample_id in sample_ids]
+            feature_scores = [feature_scores_by_sample[sample_id] for sample_id in sample_ids]
+        elif seed_pairing_expected:
+            sample_ids = []
+            baseline_scores = []
+            feature_scores = []
+        else:
+            sample_ids = sorted(feature_scores_by_sample)
+            baseline_scores = list(baseline_scores_by_sample.values())
+            feature_scores = list(feature_scores_by_sample.values())
+        statistic, p_value = (
+            _wilcoxon_signed_rank(feature_scores, baseline_scores)
+            if paired
+            else (0.0, 1.0)
+            if seed_pairing_expected
+            else _mann_whitney_u(feature_scores, baseline_scores)
+        )
+        feature_retention_samples = _relcov_samples(
+            dc,
+            feature,
+            baseline,
+            sample_ids if paired else None,
+        )
+        baseline_reliability_samples = _relcov_samples(
+            dc,
+            baseline,
+            baseline,
+            sample_ids if paired else None,
+        )
+        if paired:
+            relcov_deltas = _paired_deltas(
+                feature_retention_samples,
+                baseline_reliability_samples,
+            )
+            relcov_statistic, relcov_p_value = _wilcoxon_noninferiority(
+                relcov_deltas,
+                noninferiority_delta,
+            )
+            relcov_delta_ci = _bca_mean_ci(
+                relcov_deltas,
+                confidence_level,
+                min_samples,
+            )
+        elif seed_pairing_expected:
+            relcov_deltas = []
+            relcov_statistic, relcov_p_value = 0.0, 1.0
+            relcov_delta_ci = (None, None, "insufficient n")
+        else:
+            relcov_deltas = []
+            relcov_statistic, relcov_p_value = _mann_whitney_noninferiority(
+                feature_retention_samples,
+                baseline_reliability_samples,
+                noninferiority_delta,
+            )
+            relcov_delta_ci = _bca_unpaired_mean_diff_ci(
+                feature_retention_samples,
+                baseline_reliability_samples,
+                confidence_level,
+                min_samples,
+            )
+        n_samples = (
+            len(shared_ids)
+            if paired
+            else 0
+            if seed_pairing_expected
+            else min(len(feature_scores), len(baseline_scores))
+        )
+        seed_ids = baseline_seed_ids | feature_seed_ids
+        n_seeds = len(shared_ids) if paired else len(seed_ids)
+        too_few_samples = n_samples < min_samples
+        if (
+            seed_pairing_expected and not paired
+        ) or too_few_samples or relcov_delta_ci[2] != "ok":
+            relcov_status = "inconclusive"
+        elif relcov_delta_ci[1] is not None and relcov_delta_ci[1] < -noninferiority_delta:
+            relcov_status = "failed"
+        elif relcov_delta_ci[0] is not None and relcov_delta_ci[0] >= -noninferiority_delta:
+            relcov_status = "held"
+        else:
+            relcov_status = "inconclusive"
+        if seed_pairing_expected and not paired:
+            reason = "paired mode requires matched seed labels; unpaired fallback disabled"
+        elif seed_pairing_expected and pairing_rate < 0.8:
+            reason = f"low matched seed rate {len(shared_ids)}/{expected_pairs}; use verdict with caution"
+        elif too_few_samples:
+            reason = "too few runs"
+        else:
+            reason = "not significant after correction"
+        test_name = (
+            "wilcoxon-signed-rank"
+            if paired
+            else "paired-required"
+            if seed_pairing_expected
+            else "mann-whitney-u"
+        )
+        base_row = {
+            "campaign": campaign_name,
+            "baseline": baseline,
+            "feature": feature,
+            "baseline_relscore": baseline_relscore,
+            "feature_relscore": feature_relscore,
+            "pairing_mode": pairing_mode,
+            "n_trials": n_samples,
+            "n_samples": n_samples,
+            "n_seeds": n_seeds,
+            "paired": paired,
+            "pairing_rate": pairing_rate,
+            "too_few_samples": too_few_samples,
+            "test_name": test_name,
+            "statistic": statistic,
+            "p_value": p_value,
+            "effect_size_a12": _a12(feature_scores, baseline_scores),
+            "baseline_sample_mean": _mean(baseline_scores),
+            "feature_sample_mean": _mean(feature_scores),
+            "baseline_reliability": baseline_reliability,
+            "feature_performance": feature_performance,
+            "noninferiority_delta": noninferiority_delta,
+            "relcov_delta_ci_low": relcov_delta_ci[0],
+            "relcov_delta_ci_high": relcov_delta_ci[1],
+            "relcov_delta_ci_status": relcov_delta_ci[2],
+            "relcov_status": relcov_status,
+            "missing_count": 0,
+            "reason": reason,
+        }
+        rows.append({**base_row, "metric": "relscore"})
+        rows.append(
+            {
+                **base_row,
+                "metric": "relcov",
+                "test_name": (
+                    "wilcoxon-noninferiority"
+                    if paired
+                    else "paired-required"
+                    if seed_pairing_expected
+                    else "mann-whitney-u-noninferiority"
+                ),
+                "statistic": relcov_statistic,
+                "p_value": relcov_p_value,
+                "effect_size_a12": _a12(
+                    feature_retention_samples,
+                    baseline_reliability_samples,
+                ),
+                "baseline_sample_mean": _mean(baseline_reliability_samples),
+                "feature_sample_mean": _mean(feature_retention_samples),
+            }
+        )
+    for row in rows:
+        row["p_value_adjusted"] = row["p_value"]
+    target_indices = [
+        idx
+        for idx, row in enumerate(rows)
+        if row["metric"] == "relscore"
+        and _is_target_family_campaign(str(row["campaign"]))
+    ]
+    target_adjusted = _holm_adjust([float(rows[idx]["p_value"]) for idx in target_indices])
+    for idx, p_adjusted in zip(target_indices, target_adjusted):
+        rows[idx]["p_value_adjusted"] = p_adjusted
+    target_relcov_indices = [
+        idx
+        for idx, row in enumerate(rows)
+        if row["metric"] == "relcov"
+        and _is_target_family_campaign(str(row["campaign"]))
+    ]
+    target_relcov_adjusted = _holm_adjust(
+        [float(rows[idx]["p_value"]) for idx in target_relcov_indices]
+    )
+    for idx, p_adjusted in zip(target_relcov_indices, target_relcov_adjusted):
+        rows[idx]["p_value_adjusted"] = p_adjusted
+
+    verdict_by_campaign: Dict[Tuple[str, str], str] = {}
+    reason_by_campaign: Dict[Tuple[str, str], str] = {}
+    for row in rows:
+        if row["metric"] != "relscore":
+            continue
+        key = (str(row["campaign"]), str(row["feature"]))
+        verdict = _statistical_verdict(row, confidence_level)
+        row["verdict"] = verdict
+        row["reason"] = _verdict_reason(row)
+        verdict_by_campaign[key] = verdict
+        reason_by_campaign[key] = row["reason"]
+    for row in rows:
+        key = (str(row["campaign"]), str(row["feature"]))
+        row["verdict"] = verdict_by_campaign.get(key, "inconclusive")
+        row["reason"] = reason_by_campaign.get(key, row["reason"])
+
+    target_verdict_rows = [
+        row
+        for row in rows
+        if row["metric"] == "relscore" and _is_target_family_campaign(str(row["campaign"]))
+    ]
+    target_count = len(target_verdict_rows)
+    improvement_count = sum(1 for row in target_verdict_rows if row["verdict"] == "improvement")
+    relcov_held_for_all_targets = target_count > 0 and all(
+        row["relcov_status"] == "held"
+        for row in target_verdict_rows
+    )
+    aggregate_verdict = "inconclusive"
+    if any(row["verdict"] == "regression" for row in target_verdict_rows):
+        aggregate_verdict = "regression"
+    elif any(row["verdict"] == "needs-review" for row in target_verdict_rows):
+        aggregate_verdict = "needs-review"
+    elif (
+        target_count > 0
+        and improvement_count > target_count / 2
+        and relcov_held_for_all_targets
+    ):
+        aggregate_verdict = "improvement"
+    campaign_rows = [row for row in rows if row["metric"] == "relscore"]
+
+    verdict_state = {
+        "version": 1,
+        "confidence_level": confidence_level,
+        "relcov_noninferiority_delta": noninferiority_delta,
+        "min_samples": min_samples,
+        "aggregate": {
+            "winner": "",
+            "verdict": aggregate_verdict,
+            "eligible_count": len(campaign_rows),
+            "total_samples": sum(int(row["n_samples"]) for row in campaign_rows),
+        },
+    }
+    return rows, verdict_state
+
+
+def build_differential_coverage_summary_rows(
+    campaign_name: str,
+    relscores: Dict[str, float],
+    relcovs: Dict[str, Dict[str, float]],
+) -> List[Tuple[str, str, str, float, float]]:
+    pair = find_baseline_feature(relcovs.keys())
+    if pair is None:
+        return []
+    baseline, feature = pair
+    if baseline not in relscores or feature not in relscores:
+        return []
+
+    baseline_relscore = relscores[baseline]
+    feature_relscore = relscores[feature]
+    return [
+        (
+            campaign_name,
+            baseline,
+            feature,
+            baseline_relscore,
+            feature_relscore,
+        )
+    ]
+
+
+def showmap_campaign_summary(
+    campaign: Dict[str, Dict[str, Set[str]]],
+) -> Dict[str, Dict[str, int]]:
+    summary: Dict[str, Dict[str, int]] = {}
+    for approach, trials in campaign.items():
+        covered_edges: Set[str] = set()
+        for edges in trials.values():
+            covered_edges.update(edges)
+        summary[approach] = {
+            "trials": len(trials),
+            "covered_edges": len(covered_edges),
+        }
+    return summary
+
+
+def showmap_max_work_items_from_env() -> int:
+    raw = os.environ.get("SCFUZZBENCH_DIFFCOV_MAX_WORK_ITEMS")
+    if raw is None or raw == "":
+        return DEFAULT_SHOWMAP_MAX_WORK_ITEMS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_SHOWMAP_MAX_WORK_ITEMS
+    return max(value, 0)
+
+
+def diffcov_verdict_by_test_from_env() -> bool:
+    raw = os.environ.get("SCFUZZBENCH_DIFFCOV_VERDICT_BY_TEST")
+    if raw is None or raw == "":
+        return DEFAULT_DIFFCOV_VERDICT_BY_TEST
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _format_csv_float(value: Any) -> str:
+    if value is None:
+        return "insufficient n"
+    return f"{float(value):.6f}"
+
+
+def write_differential_coverage_outputs(
+    logs_dir: Path,
+    out_dir: Path,
+    excluded_fuzzers: Optional[Set[str]] = None,
+    max_work_items: Optional[int] = None,
+    pairing_mode: str = "unpaired",
+    confidence_level: float = 0.95,
+    min_samples: int = DEFAULT_MIN_VERDICT_SAMPLES,
+    noninferiority_delta: float = DEFAULT_RELCOV_NONINFERIORITY_DELTA,
+    verdict_by_test: Optional[bool] = None,
+) -> None:
+    if verdict_by_test is None:
+        verdict_by_test = diffcov_verdict_by_test_from_env()
+    trials, skipped = load_showmap_trials(logs_dir, excluded_fuzzers)
+    campaigns = build_showmap_campaigns(trials)
+    campaign_root = out_dir / "showmap_campaigns"
+    if campaign_root.exists():
+        shutil.rmtree(campaign_root)
+
+    relscore_rows: List[Tuple[str, str, float, int, int]] = []
+    relcov_rows: List[Tuple[str, str, str, float]] = []
+    summary_rows: List[Tuple[str, str, str, float, float]] = []
+    manifest: Dict[str, Any] = {
+        "raw_trials": len(trials),
+        "skipped": skipped,
+        "campaigns": {},
+    }
+    if max_work_items is None:
+        max_work_items = showmap_max_work_items_from_env()
+    manifest["max_work_items"] = max_work_items
+    manifest["verdict_by_test"] = verdict_by_test
+
+    for campaign_name, campaign in sorted(campaigns.items()):
+        if not campaign:
+            continue
+        start = time.perf_counter()
+        campaign_dir = campaign_root / campaign_name
+        write_showmap_campaign_dir(campaign, campaign_dir)
+        summary = showmap_campaign_summary(campaign)
+        work_items = showmap_campaign_work_items(campaign)
+        manifest["campaigns"][campaign_name] = {
+            "approaches": summary,
+            "work_items": work_items,
+        }
+        if campaign_name != "combined" and max_work_items and work_items > max_work_items:
+            manifest["campaigns"][campaign_name]["skipped_analysis"] = (
+                f"work_items {work_items} exceeds max_work_items {max_work_items}"
+            )
+            continue
+        relscores = calculate_relscores(campaign)
+        for approach, score in sorted(
+            relscores.items(), key=lambda item: (-item[1], item[0])
+        ):
+            relscore_rows.append(
+                (
+                    campaign_name,
+                    approach,
+                    score,
+                    summary[approach]["trials"],
+                    summary[approach]["covered_edges"],
+                )
+            )
+        relcovs = calculate_relcovs(campaign)
+        for approach, references in sorted(relcovs.items()):
+            for reference, relcov in sorted(references.items()):
+                if approach == reference:
+                    continue
+                relcov_rows.append((campaign_name, approach, reference, relcov))
+        summary_rows.extend(
+            build_differential_coverage_summary_rows(campaign_name, relscores, relcovs)
+        )
+        manifest["campaigns"][campaign_name]["analysis_seconds"] = round(
+            time.perf_counter() - start, 6
+        )
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    relscore_csv = out_dir / "differential_coverage_relscores.csv"
+    with relscore_csv.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["campaign", "approach", "relscore", "trials", "covered_edges"])
+        for campaign_name, approach, score, trials_count, covered_edges in relscore_rows:
+            writer.writerow(
+                [campaign_name, approach, f"{score:.6f}", trials_count, covered_edges]
+            )
+
+    relcov_csv = out_dir / "differential_coverage_relcov.csv"
+    with relcov_csv.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["campaign", "approach", "reference_approach", "relcov"])
+        for campaign_name, approach, reference, relcov in relcov_rows:
+            writer.writerow([campaign_name, approach, reference, f"{relcov:.6f}"])
+
+    summary_csv = out_dir / "differential_coverage_summary.csv"
+    # Only the per-target and combined campaigns drive verdicts; `by_test`
+    # campaigns are drill-down only. Running the bootstrap statistics for each
+    # invariant across every target/round/arm is the dominant analysis cost, so
+    # exclude them from the verdict path by default. Their point relscore/relcov
+    # values still land in the dedicated CSVs and as cheap inconclusive summary
+    # rows below (verdict_by_key has no entry, so they default to inconclusive).
+    verdict_summary_rows = (
+        summary_rows
+        if verdict_by_test
+        else [row for row in summary_rows if not _is_by_test_campaign(row[0])]
+    )
+    verdict_rows, verdict_state = build_differential_coverage_verdict_rows(
+        verdict_summary_rows,
+        campaigns,
+        confidence_level=confidence_level,
+        pairing_mode=pairing_mode,
+        min_samples=min_samples,
+        noninferiority_delta=noninferiority_delta,
+    )
+    verdict_by_key = {
+        (row["campaign"], row["feature"], row["metric"]): row for row in verdict_rows
+    }
+    with summary_csv.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "campaign",
+                "metric",
+                "baseline",
+                "feature",
+                "verdict",
+                "verdict_reason",
+                "baseline_relscore",
+                "feature_relscore",
+                "pairing_mode",
+                "n_trials",
+                "n_samples",
+                "n_seeds",
+                "paired",
+                "pairing_rate",
+                "too_few_samples",
+                "test_name",
+                "statistic",
+                "p_value",
+                "p_value_adjusted",
+                "effect_size_a12",
+                "baseline_sample_mean",
+                "feature_sample_mean",
+                "baseline_reliability",
+                "feature_performance",
+                "noninferiority_delta",
+                "relcov_delta_ci_low",
+                "relcov_delta_ci_high",
+                "relcov_delta_ci_status",
+                "relcov_status",
+                "missing_count",
+            ]
+        )
+        for source_row in summary_rows:
+            (
+                campaign_name,
+                baseline,
+                feature,
+                baseline_relscore,
+                feature_relscore,
+            ) = source_row
+            for metric in ("relscore", "relcov"):
+                verdict_row = verdict_by_key.get((campaign_name, feature, metric), {})
+                writer.writerow(
+                    [
+                        campaign_name,
+                        metric,
+                        baseline,
+                        feature,
+                        verdict_row.get("verdict", "inconclusive"),
+                        verdict_row.get("reason", ""),
+                        f"{baseline_relscore:.6f}",
+                        f"{feature_relscore:.6f}",
+                        verdict_row.get("pairing_mode", pairing_mode),
+                        verdict_row.get("n_trials", ""),
+                        verdict_row.get("n_samples", ""),
+                        verdict_row.get("n_seeds", ""),
+                        str(verdict_row.get("paired", "")).lower(),
+                        f"{float(verdict_row.get('pairing_rate', 0.0)):.6f}" if verdict_row else "",
+                        str(verdict_row.get("too_few_samples", "")).lower(),
+                        verdict_row.get("test_name", ""),
+                        _format_csv_float(verdict_row.get("statistic", 0.0)) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("p_value", 1.0)) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("p_value_adjusted", 1.0)) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("effect_size_a12", 0.5)) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("baseline_sample_mean", 0.0)) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("feature_sample_mean", 0.0)) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("baseline_reliability")) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("feature_performance")) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("noninferiority_delta")) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("relcov_delta_ci_low")) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("relcov_delta_ci_high")) if verdict_row else "",
+                        verdict_row.get("relcov_delta_ci_status", ""),
+                        verdict_row.get("relcov_status", ""),
+                        verdict_row.get("missing_count", ""),
+                    ]
+                )
+
+    statistics_path = out_dir / "differential_coverage_statistics.json"
+    with statistics_path.open("w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "schema": "scfuzzbench.differential_coverage.statistics.v1",
+                "pairing_mode": pairing_mode,
+                "rows": verdict_rows,
+                "state": verdict_state,
+            },
+            handle,
+            indent=2,
+            sort_keys=True,
+        )
+        handle.write("\n")
+
+    manifest_path = out_dir / "showmap_campaign_manifest.json"
+    with manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Analyze scfuzzbench logs.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1628,7 +2878,41 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use raw directory names as fuzzer labels instead of normalizing.",
     )
-
+    run_parser.add_argument(
+        "--pairing-mode",
+        choices=["unpaired", "paired"],
+        default="unpaired",
+        help="Differential coverage test mode: independent rounds or explicit paired runs.",
+    )
+    run_parser.add_argument(
+        "--confidence-level",
+        type=float,
+        default=0.95,
+        help="Confidence level for differential coverage intervals and tests.",
+    )
+    run_parser.add_argument(
+        "--min-samples",
+        type=int,
+        default=DEFAULT_MIN_VERDICT_SAMPLES,
+        help="Minimum per-arm samples required before a statistical verdict can be conclusive.",
+    )
+    run_parser.add_argument(
+        "--noninferiority-delta",
+        type=float,
+        default=DEFAULT_RELCOV_NONINFERIORITY_DELTA,
+        help="Allowed absolute relcov loss versus baseline reliability before coverage is a regression.",
+    )
+    run_parser.add_argument(
+        "--verdict-by-test",
+        dest="verdict_by_test",
+        action="store_true",
+        default=None,
+        help=(
+            "Compute full bootstrap verdicts for per-test (by_test/...) campaigns. "
+            "Off by default (drill-down only); these verdicts feed no consumer and "
+            "dominate analysis time. Overrides SCFUZZBENCH_DIFFCOV_VERDICT_BY_TEST."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1653,17 +2937,21 @@ def main() -> int:
     args = parse_args()
     raw_labels = getattr(args, "raw_labels", False)
     if args.command == "parse":
-        events = parse_logs(args.logs_dir, args.run_id)
+        log_files = discover_log_files(args.logs_dir)
+        events = parse_logs(args.logs_dir, args.run_id, log_files)
         if raw_labels:
             events = _apply_raw_labels_events(events)
         write_events_csv(events, args.out_csv)
         return 0
     if args.command == "run":
         out_dir: Path = args.out_dir
-        events = parse_logs(args.logs_dir, args.run_id)
-        throughput_samples = parse_throughput_logs(args.logs_dir, args.run_id)
+        log_files = discover_log_files(args.logs_dir)
+        events = parse_logs(args.logs_dir, args.run_id, log_files)
+        throughput_samples = parse_throughput_logs(
+            args.logs_dir, args.run_id, log_files
+        )
         progress_metrics_samples = parse_progress_metrics_logs(
-            args.logs_dir, args.run_id
+            args.logs_dir, args.run_id, log_files
         )
         if raw_labels:
             events = _apply_raw_labels_events(events)
@@ -1690,6 +2978,15 @@ def main() -> int:
         )
         write_progress_metrics_summary_csv(
             progress_metrics_samples, progress_metrics_summary_csv
+        )
+        write_differential_coverage_outputs(
+            args.logs_dir,
+            out_dir,
+            pairing_mode=args.pairing_mode,
+            confidence_level=args.confidence_level,
+            min_samples=args.min_samples,
+            noninferiority_delta=args.noninferiority_delta,
+            verdict_by_test=args.verdict_by_test,
         )
         return 0
     return 1

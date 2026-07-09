@@ -330,6 +330,22 @@ jobs:
           if [[ -f "${dest_root}/data/progress_metrics_summary.csv" ]]; then
             cp "${dest_root}/data/progress_metrics_summary.csv" "${analysis_dir}/progress_metrics_summary.csv"
           fi
+          for differential_csv in \
+            differential_coverage_summary.csv \
+            differential_coverage_relscores.csv \
+            differential_coverage_relcov.csv
+          do
+            if [[ -f "${dest_root}/data/${differential_csv}" ]]; then
+              cp "${dest_root}/data/${differential_csv}" "${analysis_dir}/${differential_csv}"
+            fi
+          done
+          if [[ -f "${dest_root}/data/showmap_campaign_manifest.json" ]]; then
+            cp "${dest_root}/data/showmap_campaign_manifest.json" "${analysis_dir}/showmap_campaign_manifest.json"
+          fi
+          if [[ -d "${dest_root}/data/showmap_campaigns" ]]; then
+            rm -rf "${analysis_dir}/showmap_campaigns"
+            cp -R "${dest_root}/data/showmap_campaigns" "${analysis_dir}/showmap_campaigns"
+          fi
 
           # Optional: include raw CSV outputs in the analysis bundle for debugging.
           mkdir -p "${analysis_dir}/data"
@@ -405,6 +421,21 @@ jobs:
           if [[ -f "${analysis_dir}/progress_metrics_summary.csv" ]]; then
             aws s3 cp "${analysis_dir}/progress_metrics_summary.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/progress_metrics_summary.csv" --content-type text/csv
           fi
+          for differential_csv in \
+            differential_coverage_summary.csv \
+            differential_coverage_relscores.csv \
+            differential_coverage_relcov.csv
+          do
+            if [[ -f "${analysis_dir}/${differential_csv}" ]]; then
+              aws s3 cp "${analysis_dir}/${differential_csv}" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/${differential_csv}" --content-type text/csv
+            fi
+          done
+          if [[ -f "${analysis_dir}/showmap_campaign_manifest.json" ]]; then
+            aws s3 cp "${analysis_dir}/showmap_campaign_manifest.json" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/showmap_campaign_manifest.json" --content-type application/json
+          fi
+          if [[ -d "${analysis_dir}/showmap_campaigns" ]]; then
+            aws s3 cp "${analysis_dir}/showmap_campaigns" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/showmap_campaigns" --recursive
+          fi
           aws s3 cp "${analysis_dir}/manifest.json" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/manifest.json" --content-type application/json
 
           aws s3 cp "${release_dir}/analysis.zip" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/bundles/analysis.zip" --content-type application/zip
@@ -470,6 +501,21 @@ jobs:
             fi
             if [[ -f "${analysis_dir}/progress_metrics_summary.csv" ]]; then
               echo "- Progress metrics summary (CSV): ${analysis_base}/progress_metrics_summary.csv"
+            fi
+            if [[ -f "${analysis_dir}/differential_coverage_summary.csv" ]]; then
+              echo "- Differential coverage summary (CSV): ${analysis_base}/differential_coverage_summary.csv"
+            fi
+            if [[ -f "${analysis_dir}/differential_coverage_relscores.csv" ]]; then
+              echo "- Differential coverage relscores (CSV): ${analysis_base}/differential_coverage_relscores.csv"
+            fi
+            if [[ -f "${analysis_dir}/differential_coverage_relcov.csv" ]]; then
+              echo "- Differential coverage relcov (CSV): ${analysis_base}/differential_coverage_relcov.csv"
+            fi
+            if [[ -f "${analysis_dir}/showmap_campaign_manifest.json" ]]; then
+              echo "- Showmap campaign manifest: ${analysis_base}/showmap_campaign_manifest.json"
+            fi
+            if [[ -d "${analysis_dir}/showmap_campaigns" ]]; then
+              echo "- Showmap campaigns prefix: ${analysis_base}/showmap_campaigns/"
             fi
             echo "- Runner resource usage (Markdown): ${analysis_base}/runner_resource_usage.md"
             echo "- Runner resource summary (CSV): ${analysis_base}/runner_resource_summary.csv"
