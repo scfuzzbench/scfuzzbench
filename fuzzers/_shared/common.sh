@@ -35,6 +35,14 @@ SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS=${SCFUZZBENCH_RUNNER_METRICS_INTERVA
 SCFUZZBENCH_AWS_CREDS_ENV_FILE=${SCFUZZBENCH_AWS_CREDS_ENV_FILE:-${SCFUZZBENCH_ROOT}/aws_creds.env}
 SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS=${SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS:-300}
 
+# The pinned Foundry build defaults `dynamic_test_linking` to true, which injects
+# virtual `foundry-pp/DeployHelper*.sol` sources into build-info output.
+# crytic-compile (the echidna/medusa compile path) does not recognize those files
+# and aborts with `Unknown file: foundry-pp/DeployHelper114.sol` (observed on
+# every echidna/medusa instance of run 1783547385). Force the classic static
+# linking pipeline so every leg compiles the target identically.
+export FOUNDRY_DYNAMIC_TEST_LINKING=${FOUNDRY_DYNAMIC_TEST_LINKING:-false}
+
 log() {
   # Use stderr so command substitutions can safely capture stdout.
   echo "[$(date -Is)] $*" >&2
@@ -1020,6 +1028,31 @@ run_with_timeout() {
   return ${exit_code}
 }
 
+# Git-pinned Foundry builds bake an empty `foundry_version` into the manifest,
+# so the docs site had no version to show for the foundry leg. Patch the
+# decoded manifest with the version forge itself reports (e.g. "1.3.6-dev")
+# before upload; `foundry_git_ref` stays in the manifest as the exact pin.
+# Every instance of a run resolves the same pin, so uploads stay identical.
+resolve_manifest_foundry_version() {
+  local manifest_path=$1
+  command -v jq >/dev/null 2>&1 || return 0
+  command -v forge >/dev/null 2>&1 || return 0
+  [[ -f "${manifest_path}" ]] || return 0
+  local manifest_version
+  manifest_version=$(jq -r '.foundry_version // ""' "${manifest_path}" 2>/dev/null) || return 0
+  if [[ -n "${manifest_version}" ]]; then
+    return 0
+  fi
+  # `forge --version` first line is either "forge Version: 1.3.6-dev" (new)
+  # or "forge 0.2.0 (abc1234 2024-01-01)" (old); keep just the version token.
+  local resolved
+  resolved=$(forge --version 2>/dev/null | head -n1 | sed -E 's/^forge[[:space:]]+(Version:[[:space:]]*)?//; s/[[:space:]]*\(.*$//')
+  [[ -n "${resolved}" ]] || return 0
+  log "Recording resolved foundry version in manifest: ${resolved}"
+  jq --arg v "${resolved}" '.foundry_version = $v' "${manifest_path}" > "${manifest_path}.tmp" \
+    && mv "${manifest_path}.tmp" "${manifest_path}"
+}
+
 upload_results() {
   local upload_start
   upload_start=$(now_epoch_seconds)
@@ -1045,6 +1078,7 @@ upload_results() {
   if [[ -n "${SCFUZZBENCH_BENCHMARK_MANIFEST_B64}" ]]; then
     local manifest_path="${upload_dir}/benchmark_manifest.json"
     echo "${SCFUZZBENCH_BENCHMARK_MANIFEST_B64}" | base64 -d > "${manifest_path}"
+    resolve_manifest_foundry_version "${manifest_path}" || true
     retry_cmd 5 60 aws_cli s3 cp "${manifest_path}" "s3://${SCFUZZBENCH_S3_BUCKET}/logs/${prefix}/manifest.json" --no-progress
 
     # Timestamp-first discovery index for the docs site:

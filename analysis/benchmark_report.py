@@ -379,6 +379,80 @@ def resample_metric_samples_to_grid(
     return pd.concat(out, ignore_index=True)
 
 
+# A leg whose last parsed activity ends this early (as a fraction of the time
+# budget) almost certainly crashed rather than ran quietly to the end.
+RUN_HEALTH_EARLY_EXIT_FRACTION = 0.5
+
+
+def build_run_health_warnings(
+    bugs_df: pd.DataFrame,
+    sample_dfs: List[pd.DataFrame],
+    budget: float,
+    early_exit_fraction: float = RUN_HEALTH_EARLY_EXIT_FRACTION,
+) -> List[str]:
+    """Flag fuzzer legs that most likely never ran or terminated early.
+
+    Without this, a leg that crashed at startup renders as "N instances,
+    0 bugs" — indistinguishable from a clean run that found nothing (observed
+    on the echidna/medusa/recon legs of run 1783547385, which all died within
+    ~20 minutes of a 2h budget yet reported as zero-bug legs).
+    """
+    warnings: List[str] = []
+    if budget <= 0 or bugs_df.empty:
+        return warnings
+    for fuzzer in sorted(bugs_df["fuzzer"].astype(str).unique()):
+        fuzzer_bugs = bugs_df[bugs_df["fuzzer"].astype(str) == fuzzer]
+        final_bugs = 0
+        if not fuzzer_bugs.empty:
+            final_bugs = int(fuzzer_bugs.groupby("run_id")["bugs_found"].max().max())
+
+        last_activity_by_series: Dict[str, float] = {}
+        for sample_df in sample_dfs:
+            if sample_df is None or sample_df.empty:
+                continue
+            subset = sample_df[sample_df["fuzzer"].astype(str) == fuzzer]
+            if subset.empty:
+                continue
+            for series_id, last_hours in subset.groupby("series_id")["time_hours"].max().items():
+                key = str(series_id)
+                last_activity_by_series[key] = max(
+                    last_activity_by_series.get(key, 0.0), float(last_hours)
+                )
+
+        if not last_activity_by_series:
+            if final_bugs == 0:
+                warnings.append(
+                    f"**{fuzzer}**: no bugs and no runtime activity samples were parsed from any "
+                    "instance — the fuzzer most likely never executed (startup/compile failure). "
+                    "Inspect the instance bootstrap logs before drawing conclusions from this leg."
+                )
+            continue
+
+        last_activity = max(last_activity_by_series.values())
+        if last_activity < early_exit_fraction * budget:
+            warnings.append(
+                f"**{fuzzer}**: last parsed activity at {last_activity:.2f}h of a "
+                f"{budget:.2f}h budget across {len(last_activity_by_series)} instance(s) — "
+                "the leg likely terminated early. Inspect the instance logs."
+            )
+    return warnings
+
+
+def append_run_health_section(lines: List[str], warnings: List[str]) -> None:
+    if not warnings:
+        return
+    lines.append("## ⚠️ Run health")
+    lines.append("")
+    lines.append(
+        "The following fuzzer legs show signs of not having run for the full time budget. "
+        "Their results below are **not comparable** to healthy legs."
+    )
+    lines.append("")
+    for warning in warnings:
+        lines.append(f"- ⚠️ {warning}")
+    lines.append("")
+
+
 def fmt_triplet(p50: Optional[float], p25: Optional[float], p75: Optional[float]) -> str:
     if p50 is None or p25 is None or p75 is None:
         return "n/a"
@@ -1320,6 +1394,7 @@ def write_report(
     stat_results: Optional[List[PairwiseResult]] = None,
     stat_warnings: Optional[List[str]] = None,
     alpha: float = 0.05,
+    run_health_warnings: Optional[List[str]] = None,
 ) -> None:
     lines: List[str] = []
     lines.append("# Fuzzer Benchmark Report (from bug-count CSV)")
@@ -1329,6 +1404,7 @@ def write_report(
     if is_trial_run(budget, [m.runs for m in metrics]):
         lines.append("> " + format_trial_run_warning())
         lines.append("")
+    append_run_health_section(lines, run_health_warnings or [])
     lines.append("## Executive summary")
     lines.append(
         "This report is derived solely from cumulative bugs-found over time across repeated runs per fuzzer. "
@@ -1861,6 +1937,11 @@ def main() -> int:
     differential_plot = plot_differential_coverage_statistics(
         args.differential_coverage_statistics_json, images_outdir
     )
+    run_health_warnings = build_run_health_warnings(
+        df,
+        [throughput_samples_df, progress_metrics_samples_df],
+        budget=budget,
+    )
     write_report(
         metrics,
         budget=budget,
@@ -1872,6 +1953,7 @@ def main() -> int:
         relative_scores_by_fuzzer=relative_scores_by_fuzzer,
         stat_results=stat_results,
         stat_warnings=stat_warnings,
+        run_health_warnings=run_health_warnings,
     )
 
     print(f"wrote: {report_outdir / 'REPORT.md'}")

@@ -381,6 +381,11 @@ def fetch_ec2_pricing_table(instance_types: set[str], *, profile: str | None, re
     return results
 
 
+# Manifest version keys don't always match fuzzer_keys entries verbatim:
+# the manifest carries `recon_version` while the fuzzer key is `recon-fuzzer`.
+FUZZER_VERSION_KEY_ALIASES = {"recon-fuzzer": "recon"}
+
+
 def format_fuzzer_lines(manifest: dict) -> list[str]:
     ordered_fuzzers: list[str] = []
     if isinstance(manifest.get("fuzzer_keys"), list):
@@ -401,9 +406,21 @@ def format_fuzzer_lines(manifest: dict) -> list[str]:
         if fuzzer_name:
             versions[fuzzer_name] = version
 
+    # Git-pinned foundry runs have an empty foundry_version; older manifests
+    # predate the runner-side `forge --version` resolution, so fall back to the
+    # short git ref rather than showing no version at all.
+    if "foundry" not in versions:
+        git_ref = str(manifest.get("foundry_git_ref", "") or "").strip()
+        if git_ref:
+            versions["foundry"] = f"git:{git_ref[:7]}"
+
     lines: list[str] = []
     for fuzzer in ordered_fuzzers:
         version = versions.get(fuzzer, "").strip()
+        if not version:
+            alias = FUZZER_VERSION_KEY_ALIASES.get(fuzzer)
+            if alias:
+                version = versions.get(alias, "").strip()
         line = f"{fuzzer} ({version})" if version else fuzzer
         lines.append(f"`{line}`")
     return lines

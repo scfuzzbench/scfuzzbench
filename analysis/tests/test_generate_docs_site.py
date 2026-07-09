@@ -66,6 +66,47 @@ class GenerateDocsSiteTests(unittest.TestCase):
         self.assertIn("name: twitter:description", joined)
         self.assertIn("name: twitter:image", joined)
 
+    def test_format_fuzzer_lines_maps_recon_version_to_recon_fuzzer_key(self):
+        module = load_generate_docs_site()
+        manifest = {
+            "fuzzer_keys": ["echidna", "foundry", "medusa", "recon-fuzzer"],
+            "echidna_version": "2.3.1",
+            "medusa_version": "1.4.1",
+            "recon_version": "0.4.6",
+            "foundry_version": "",
+            "foundry_git_ref": "907ba081ce9270e6a4a01ee0e77dfdb9a375ff77",
+        }
+
+        lines = module.format_fuzzer_lines(manifest)
+
+        self.assertIn("`recon-fuzzer (0.4.6)`", lines)
+        self.assertIn("`echidna (2.3.1)`", lines)
+        self.assertIn("`medusa (1.4.1)`", lines)
+
+    def test_format_fuzzer_lines_falls_back_to_foundry_git_ref(self):
+        module = load_generate_docs_site()
+        manifest = {
+            "fuzzer_keys": ["foundry"],
+            "foundry_version": "",
+            "foundry_git_ref": "907ba081ce9270e6a4a01ee0e77dfdb9a375ff77",
+        }
+
+        lines = module.format_fuzzer_lines(manifest)
+
+        self.assertEqual(["`foundry (git:907ba08)`"], lines)
+
+    def test_format_fuzzer_lines_prefers_resolved_foundry_version(self):
+        module = load_generate_docs_site()
+        manifest = {
+            "fuzzer_keys": ["foundry"],
+            "foundry_version": "1.3.6-dev",
+            "foundry_git_ref": "907ba081ce9270e6a4a01ee0e77dfdb9a375ff77",
+        }
+
+        lines = module.format_fuzzer_lines(manifest)
+
+        self.assertEqual(["`foundry (1.3.6-dev)`"], lines)
+
     def test_run_social_description_is_url_specific(self):
         module = load_generate_docs_site()
         run = module.Run(
