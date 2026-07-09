@@ -49,6 +49,14 @@ FOUNDRY_RESULT_NAME_RE = re.compile(r"(?:\[[^\]]+\]\s+)?([A-Za-z_][A-Za-z0-9_]*)
 FOUNDRY_HANDLER_SUMMARY_RE = re.compile(
     r"\[FAIL[^\]]*\]\s+\S+:([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)"
 )
+# Invariant entries in the end-of-run summary are bare names with no parens or
+# path prefix: "[FAIL: ] invariant_canary", "[FAIL: panic: ... (0x12)] invariant_x".
+# FOUNDRY_FAIL_LINE_RE requires a "(" and the handler regex requires "::", so
+# without this pattern those failures are silently dropped (observed on the
+# superform leg of run 1783612049).
+FOUNDRY_INVARIANT_SUMMARY_RE = re.compile(
+    r"\[FAIL[^\]]*\]\s+([A-Za-z_][A-Za-z0-9_]*)\s*$"
+)
 TX_RATE_PATTERNS = [
     re.compile(r"(?i)(?:tx|txn|transactions?|calls?)\s*(?:/|per)\s*s(?:ec(?:ond)?)?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)"),
     re.compile(r"(?i)([0-9]+(?:\.[0-9]+)?)\s*(?:tx|txn|transactions?|calls?)\s*/\s*s(?:ec(?:ond)?)?\b"),
@@ -503,6 +511,10 @@ def extract_foundry_text_failure(line: str) -> Optional[str]:
     fail_match = FOUNDRY_FAIL_LINE_RE.search(line)
     if fail_match:
         return normalize_foundry_failure_name(fail_match.group(1))
+
+    invariant_match = FOUNDRY_INVARIANT_SUMMARY_RE.search(line)
+    if invariant_match:
+        return normalize_foundry_failure_name(invariant_match.group(1))
 
     if FOUNDRY_TEST_RESULT_RE.search(line):
         name_match = FOUNDRY_RESULT_NAME_RE.search(line)
