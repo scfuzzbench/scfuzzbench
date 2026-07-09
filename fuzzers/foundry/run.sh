@@ -49,6 +49,15 @@ if [[ -n "${FOUNDRY_TEST_ARGS:-}" ]]; then
   read -r -a extra_args <<< "${FOUNDRY_TEST_ARGS}"
 fi
 
+# At the pin every newly found failure is shrunk inline (single-threaded, default
+# 5000 sequence replays) before the campaign continues, and SIGINT is not observed
+# mid-shrink: on the superform leg of run 1783612049 three of four instances got
+# stuck shrinking, ignored SIGINT through the grace period, and were SIGKILLed
+# without printing the end-of-run summary (losing every finding). The benchmark
+# measures time-to-discovery, not reproducer minimality — skip shrinking unless
+# explicitly overridden.
+export FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=${FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT:-0}
+
 # --show-progress installs forge's SIGINT handler (bars stay hidden on non-TTY), so the
 # benchmark timeout's SIGINT triggers a graceful exit that prints the end-of-run summary —
 # the only place handler assertion bugs appear with their names.

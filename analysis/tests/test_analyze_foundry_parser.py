@@ -246,6 +246,31 @@ class FoundryParserTests(unittest.TestCase):
         self.assertAlmostEqual(events[0].elapsed_seconds, 6.0)
         self.assertAlmostEqual(events[1].elapsed_seconds, 6.0)
 
+    def test_parses_bare_invariant_summary_lines(self):
+        # Pinned-foundry end-of-run summaries list invariants as bare names with
+        # no parens: "[FAIL: ] invariant_canary" (observed on run 1783612049's
+        # superform foundry leg, where these were silently dropped).
+        log_path = self.write_log(
+            [
+                "Ran 1 test for test/recon/CryticToFoundry.sol:CryticToFoundry",
+                "[FAIL: ] invariant_canary",
+                "[FAIL: panic: division or modulo by zero (0x12)] invariant_maxRedeemMaxWithdrawSymmetry",
+                "[FAIL: assertion failed] test/recon/CryticToFoundry.sol:CryticToFoundry::assert_canary_ASSERTION_CANARY",
+                "[PASS] invariant_noop",
+                " CryticToFoundry invariants (runs: 45847, calls: 4584700, reverts: 2115499)",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-907ba08")
+        self.assertEqual(
+            sorted(event.event for event in events),
+            [
+                "assert_canary_ASSERTION_CANARY",
+                "invariant_canary",
+                "invariant_maxRedeemMaxWithdrawSymmetry",
+            ],
+        )
+
     def test_parses_foundry_text_test_result_lines_without_elapsed(self):
         log_path = self.write_log(
             [
