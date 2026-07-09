@@ -38,7 +38,6 @@ baseline — `compare pre-target...main` shows exactly what the harness adds.
 - [Aave v4](https://github.com/scfuzzbench/aave-v4-scfuzzbench)
 - [Superform v2-periphery](https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench)
 - [Liquity v2 Governance](https://github.com/scfuzzbench/liquity-V2-gov-scfuzzbench)
-- [Nerite](https://github.com/scfuzzbench/nerite-scfuzzbench)
 - [Origin Dollar (OUSD)](https://github.com/scfuzzbench/origin-dollar-scfuzzbench)
 - [Drips](https://github.com/scfuzzbench/drips-fuzzing-scfuzzbench)
 

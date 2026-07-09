@@ -37,12 +37,6 @@ const PRECONFIGURED_TARGETS: PreconfiguredTarget[] = [
     commit: "main",
   },
   {
-    id: "nerite",
-    label: "Nerite",
-    repoUrl: "https://github.com/scfuzzbench/nerite-scfuzzbench",
-    commit: "main",
-  },
-  {
     id: "origin-dollar",
     label: "Origin Dollar (OUSD)",
     repoUrl: "https://github.com/scfuzzbench/origin-dollar-scfuzzbench",
