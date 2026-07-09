@@ -2,6 +2,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -33,6 +34,27 @@ def _make_metrics(fuzzer, final_values, runs=None, **kwargs):
 
 
 class BenchmarkReportTests(unittest.TestCase):
+    def test_shorten_series_label(self):
+        # Matrix labels collapse to "<arm> · <target>", staying distinct.
+        self.assertEqual(
+            "master · aave-v4",
+            benchmark_report.shorten_series_label("foundry-master__target-aave-v4"),
+        )
+        self.assertEqual(
+            "pr-15316 · superform-v2-periphery",
+            benchmark_report.shorten_series_label(
+                "foundry-pr-15316__target-superform-v2-periphery"
+            ),
+        )
+        # Same arm, different targets stay distinguishable (no collision).
+        self.assertNotEqual(
+            benchmark_report.shorten_series_label("foundry-master__target-aave-v4"),
+            benchmark_report.shorten_series_label("foundry-master__target-liquity"),
+        )
+        # Anonymized and non-matrix labels pass through unchanged.
+        self.assertEqual("Fuzzer A", benchmark_report.shorten_series_label("Fuzzer A"))
+        self.assertEqual("foundry", benchmark_report.shorten_series_label("foundry"))
+
     def test_build_fuzzer_color_map_is_alphabetical_and_stable(self):
         colors_a = plot_palette.build_fuzzer_color_map(
             ["medusa", "foundry", "echidna", "medusa"]
@@ -469,6 +491,79 @@ class BenchmarkReportTests(unittest.TestCase):
             self.assertTrue((out_dir / "corpus_size_over_time.png").exists())
             self.assertFalse((out_dir / "favored_items_over_time.png").exists())
             self.assertFalse((out_dir / "failure_rate_over_time.png").exists())
+
+    def test_cli_generates_differential_coverage_statistics_chart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            csv_path = tmp_dir / "cumulative.csv"
+            csv_path.write_text(
+                "\n".join(
+                    [
+                        "fuzzer,run_id,time_hours,bugs_found",
+                        "baseline,run-1,0,0",
+                        "baseline,run-1,1,1",
+                        "feature,run-1,0,0",
+                        "feature,run-1,1,2",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            stats_path = tmp_dir / "differential_coverage_statistics.json"
+            stats_path.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "campaign": "by_target/aave-v4",
+                                "metric": "relscore",
+                                "baseline": "baseline",
+                                "feature": "feature",
+                                "verdict": "improvement",
+                                "baseline_sample_mean": 1.0,
+                                "feature_sample_mean": 1.4,
+                                "p_value_adjusted": 0.01,
+                                "effect_size_a12": 0.82,
+                            },
+                            {
+                                "campaign": "by_target/aave-v4",
+                                "metric": "relcov",
+                                "baseline": "baseline",
+                                "feature": "feature",
+                                "relcov_delta_ci_low": -0.01,
+                                "relcov_delta_ci_high": 0.08,
+                                "noninferiority_delta": 0.05,
+                                "relcov_status": "held",
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            out_dir = tmp_dir / "out"
+            script = Path(__file__).resolve().parents[1] / "benchmark_report.py"
+            subprocess.check_call(
+                [
+                    sys.executable,
+                    str(script),
+                    "--csv",
+                    str(csv_path),
+                    "--outdir",
+                    str(out_dir),
+                    "--budget",
+                    "1",
+                    "--checkpoints",
+                    "1",
+                    "--ks",
+                    "1",
+                    "--differential-coverage-statistics-json",
+                    str(stats_path),
+                ]
+            )
+
+            self.assertTrue((out_dir / "differential_coverage_statistics.png").exists())
 
 
 class StatisticalTestsTests(unittest.TestCase):

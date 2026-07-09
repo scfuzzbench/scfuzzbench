@@ -2,6 +2,7 @@
 import argparse
 import csv
 import itertools
+import json
 import math
 import sys
 from dataclasses import dataclass
@@ -36,6 +37,14 @@ PROGRESS_SAMPLE_VALUE_COLS = [
     "coverage_proxy",
     "corpus_size",
 ]
+
+
+VERDICT_COLORS = {
+    "improvement": "#1b9e77",
+    "regression": "#d95f02",
+    "needs-review": "#7570b3",
+    "inconclusive": "#666666",
+}
 
 
 def die(msg: str) -> None:
@@ -653,6 +662,26 @@ def nan_percentile_rows(arr: np.ndarray, percentile_value: float) -> np.ndarray:
     return out
 
 
+def shorten_series_label(label: str) -> str:
+    """Make a chart legend / tick label readable.
+
+    Matrix analysis labels look like ``<engine>-<arm>__target-<target>`` (e.g.
+    ``foundry-master__target-aave-v4``). The raw string is long and, on combined
+    charts with several arms/targets, makes the legend overflow the plot. Render
+    it as ``<arm> · <target>`` and drop the redundant engine prefix so series
+    stay distinct but compact. Anonymized labels (``Fuzzer A``) and labels
+    without the matrix shape are returned unchanged.
+    """
+    arm, sep, target = label.partition("__target-")
+    for prefix in ("foundry-", "medusa-", "echidna-", "recon-"):
+        if arm.startswith(prefix):
+            arm = arm[len(prefix) :]
+            break
+    if sep:
+        return f"{arm} · {target}"
+    return arm or label
+
+
 def plot_metric_over_time(
     *,
     metric_df: pd.DataFrame,
@@ -673,6 +702,7 @@ def plot_metric_over_time(
 
     for fuzzer, group in metric_df.groupby("fuzzer", sort=False):
         label = label_map.get(str(fuzzer), str(fuzzer)) if label_map else str(fuzzer)
+        label = shorten_series_label(label)
         color = fuzzer_colors.get(str(fuzzer)) if fuzzer_colors else None
         if color is None:
             color = ax._get_lines.get_next_color()
@@ -711,9 +741,9 @@ def plot_metric_over_time(
     plt.title(title)
     plt.xlabel("Elapsed time (hours)")
     plt.ylabel(ylabel)
-    plt.legend()
+    plt.legend(loc="best", fontsize=8)
     plt.tight_layout()
-    plt.savefig(outpath, dpi=200)
+    plt.savefig(outpath, dpi=200, bbox_inches="tight")
     plt.close()
     return True
 
@@ -896,6 +926,7 @@ def plot_bugs_over_time(
     ax = plt.gca()
     for fuzzer, group in df_grid.groupby("fuzzer", sort=False):
         fuzzer_label = label_map.get(str(fuzzer), str(fuzzer)) if label_map else str(fuzzer)
+        fuzzer_label = shorten_series_label(fuzzer_label)
         pivot = (
             group.pivot_table(
                 index="time_hours", columns="run_id", values="bugs_found", aggfunc="max"
@@ -913,9 +944,11 @@ def plot_bugs_over_time(
         if color is None:
             color = ax._get_lines.get_next_color()
 
-        # Individual runs (faint dotted lines)
-        run_labels = [str(run_id).split(":", 1)[-1] for run_id in pivot.columns]
-        for col, run_label in enumerate(run_labels):
+        # Individual runs (faint dotted lines). These are not labeled
+        # individually: one entry per run would flood the legend (and, for
+        # matrix runs, repeat an uninformative instance id). The median line
+        # below carries the legend entry for the series.
+        for col in range(arr.shape[1]):
             plt.step(
                 time,
                 np.rint(arr[:, col]),
@@ -924,7 +957,7 @@ def plot_bugs_over_time(
                 alpha=0.35,
                 color=color,
                 linestyle=":",
-                label=f"{fuzzer_label} {run_label}",
+                label="_nolegend_",
             )
 
         # IQR shading
@@ -945,9 +978,9 @@ def plot_bugs_over_time(
     plt.xlabel("Elapsed time (hours)")
     plt.ylabel("Bugs found (cumulative count)")
     plt.yticks(range(0, int(df_grid["bugs_found"].max()) + 2))
-    plt.legend()
+    plt.legend(loc="best", fontsize=8)
     plt.tight_layout()
-    plt.savefig(outpath, dpi=200)
+    plt.savefig(outpath, dpi=200, bbox_inches="tight")
     plt.close()
 
 
@@ -958,7 +991,10 @@ def plot_time_to_k(
     label_map: dict[str, str] | None,
 ) -> None:
     plt.figure(figsize=(9, 5))
-    fuzzers = [label_map.get(m.fuzzer, m.fuzzer) if label_map else m.fuzzer for m in metrics]
+    fuzzers = [
+        shorten_series_label(label_map.get(m.fuzzer, m.fuzzer) if label_map else m.fuzzer)
+        for m in metrics
+    ]
     x = np.arange(len(fuzzers))
     width = 0.8 / max(1, len(ks))
     sorted_ks = sorted(ks)
@@ -977,12 +1013,12 @@ def plot_time_to_k(
             color=k_colors[k],
         )
 
-    plt.xticks(x, fuzzers)
+    plt.xticks(x, fuzzers, rotation=20, ha="right", fontsize=8)
     plt.ylabel("Median time-to-k (hours)")
     plt.title("Median time-to-k (lower is better; NaN means never reached)")
-    plt.legend()
+    plt.legend(loc="best", fontsize=8)
     plt.tight_layout()
-    plt.savefig(outpath, dpi=200)
+    plt.savefig(outpath, dpi=200, bbox_inches="tight")
     plt.close()
 
 
@@ -1005,7 +1041,11 @@ def plot_final_distribution(
             .astype(float)
         )
         data.append(pivot.iloc[-1].to_numpy(dtype=float))
-        labels.append(label_map.get(str(fuzzer), str(fuzzer)) if label_map else str(fuzzer))
+        labels.append(
+            shorten_series_label(
+                label_map.get(str(fuzzer), str(fuzzer)) if label_map else str(fuzzer)
+            )
+        )
         box_colors.append(
             fuzzer_colors.get(str(fuzzer), "#333333")
             if fuzzer_colors
@@ -1024,10 +1064,11 @@ def plot_final_distribution(
             cap.set_color(color)
 
     plt.ylim(bottom=0)
+    plt.xticks(rotation=20, ha="right", fontsize=8)
     plt.ylabel("Bugs found at end of budget")
     plt.title("End-of-budget bug count distribution (per run)")
     plt.tight_layout()
-    plt.savefig(outpath, dpi=200)
+    plt.savefig(outpath, dpi=200, bbox_inches="tight")
     plt.close()
 
 
@@ -1035,7 +1076,10 @@ def plot_plateau_and_late_share(
     metrics: List[FuzzerMetrics], outpath: Path, label_map: dict[str, str] | None
 ) -> None:
     plt.figure(figsize=(9, 5))
-    fuzzers = [label_map.get(m.fuzzer, m.fuzzer) if label_map else m.fuzzer for m in metrics]
+    fuzzers = [
+        shorten_series_label(label_map.get(m.fuzzer, m.fuzzer) if label_map else m.fuzzer)
+        for m in metrics
+    ]
     plateau = [m.plateau_time for m in metrics]
     late = [m.late_share for m in metrics]
 
@@ -1060,10 +1104,11 @@ def plot_plateau_and_late_share(
         color=late_color,
     )
 
-    plt.xticks(x, fuzzers)
+    plt.xticks(x, fuzzers, rotation=20, ha="right", fontsize=8)
     plt.title("Plateau time and late discovery share")
+    plt.legend(loc="best", fontsize=8)
     plt.tight_layout()
-    plt.savefig(outpath, dpi=200)
+    plt.savefig(outpath, dpi=200, bbox_inches="tight")
     plt.close()
 
 
@@ -1460,6 +1505,149 @@ def write_placeholder_plot(title: str, outpath: Path, message: str) -> None:
     plt.close()
 
 
+def _to_float(value: object) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def plot_differential_coverage_statistics(
+    statistics_json: Optional[Path], images_outdir: Path
+) -> Optional[str]:
+    if statistics_json is None or not statistics_json.exists():
+        return None
+    try:
+        payload = json.loads(statistics_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    rows = payload.get("rows") or []
+    relscore_rows = [r for r in rows if r.get("metric") == "relscore"]
+    target_rows = [r for r in relscore_rows if str(r.get("campaign", "")).startswith("by_target/")]
+    relscore_rows = target_rows or [r for r in relscore_rows if r.get("campaign") == "combined"]
+    if not relscore_rows:
+        return None
+
+    labels = [
+        str(row.get("campaign", "")).replace("by_target/", "") or "combined"
+        for row in relscore_rows
+    ]
+    relcov_by_campaign = {
+        row.get("campaign"): row
+        for row in rows
+        if row.get("metric") == "relcov"
+    }
+    y = np.arange(len(labels), dtype=float)
+    height = max(4.0, 1.0 + 0.45 * len(labels))
+    fig, (ax_score, ax_relcov) = plt.subplots(
+        1,
+        2,
+        figsize=(12, height),
+        sharey=True,
+        gridspec_kw={"width_ratios": [1.0, 1.2]},
+    )
+
+    baseline_scores = [_to_float(row.get("baseline_sample_mean")) for row in relscore_rows]
+    feature_scores = [_to_float(row.get("feature_sample_mean")) for row in relscore_rows]
+    verdicts = [str(row.get("verdict") or "inconclusive") for row in relscore_rows]
+
+    for idx, row in enumerate(relscore_rows):
+        base = baseline_scores[idx]
+        feature = feature_scores[idx]
+        color = VERDICT_COLORS.get(verdicts[idx], VERDICT_COLORS["inconclusive"])
+        if base is not None:
+            ax_score.scatter(base, y[idx] - 0.08, color="#4c78a8", label="baseline" if idx == 0 else None)
+        if feature is not None:
+            ax_score.scatter(feature, y[idx] + 0.08, color=color, label="feature" if idx == 0 else None)
+        if base is not None and feature is not None:
+            ax_score.plot([base, feature], [y[idx], y[idx]], color="#b0b0b0", linewidth=1.2, zorder=0)
+        p_adj = _to_float(row.get("p_value_adjusted"))
+        a12 = _to_float(row.get("effect_size_a12"))
+        note_parts = []
+        if p_adj is not None:
+            note_parts.append(f"p={p_adj:.3g}")
+        if a12 is not None:
+            note_parts.append(f"A12={a12:.2f}")
+        if note_parts:
+            right = max([v for v in [base, feature] if v is not None], default=0.0)
+            ax_score.text(right, y[idx] + 0.18, " ".join(note_parts), fontsize=7, va="center")
+
+    relcov_points = []
+    relcov_errors_low = []
+    relcov_errors_high = []
+    relcov_statuses = []
+    noninferiority_delta = None
+    for row in relscore_rows:
+        relcov = relcov_by_campaign.get(row.get("campaign"), {})
+        low = _to_float(relcov.get("relcov_delta_ci_low"))
+        high = _to_float(relcov.get("relcov_delta_ci_high"))
+        delta = _to_float(relcov.get("noninferiority_delta"))
+        if noninferiority_delta is None and delta is not None:
+            noninferiority_delta = delta
+        if low is None or high is None:
+            relcov_points.append(None)
+            relcov_errors_low.append(None)
+            relcov_errors_high.append(None)
+        else:
+            point = (low + high) / 2.0
+            relcov_points.append(point)
+            relcov_errors_low.append(point - low)
+            relcov_errors_high.append(high - point)
+        relcov_statuses.append(str(relcov.get("relcov_status") or "inconclusive"))
+
+    for idx, point in enumerate(relcov_points):
+        color = {
+            "held": VERDICT_COLORS["improvement"],
+            "failed": VERDICT_COLORS["regression"],
+            "inconclusive": VERDICT_COLORS["inconclusive"],
+        }.get(relcov_statuses[idx], VERDICT_COLORS["inconclusive"])
+        if point is None:
+            ax_relcov.text(0.0, y[idx], "insufficient n", fontsize=8, va="center", color=color)
+            continue
+        ax_relcov.errorbar(
+            point,
+            y[idx],
+            xerr=[[relcov_errors_low[idx]], [relcov_errors_high[idx]]],
+            fmt="o",
+            color=color,
+            ecolor=color,
+            capsize=3,
+            linewidth=1.4,
+        )
+        ax_relcov.text(point, y[idx] + 0.18, relcov_statuses[idx], fontsize=7, va="center", color=color)
+
+    ax_score.set_title("RelScore samples")
+    ax_score.set_xlabel("mean per-run relscore")
+    ax_score.set_yticks(y)
+    ax_score.set_yticklabels(labels)
+    ax_score.grid(True, axis="x", alpha=0.25)
+    ax_score.legend(loc="best", fontsize=8)
+
+    ax_relcov.axvline(0.0, color="#808080", linewidth=1.0, linestyle=":", label="parity")
+    if noninferiority_delta is not None:
+        ax_relcov.axvline(
+            -noninferiority_delta,
+            color="#d95f02",
+            linewidth=1.0,
+            linestyle="--",
+            label=f"allowed loss {-noninferiority_delta:.2f}",
+        )
+    ax_relcov.set_title("RelCov non-inferiority")
+    ax_relcov.set_xlabel("feature performance - baseline reliability")
+    ax_relcov.grid(True, axis="x", alpha=0.25)
+    ax_relcov.legend(loc="best", fontsize=8)
+
+    fig.suptitle("Differential coverage verdict inputs", y=0.99)
+    fig.tight_layout()
+    out_png = images_outdir / "differential_coverage_statistics.png"
+    fig.savefig(out_png, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    return out_png.name
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv", type=Path, required=True)
@@ -1515,6 +1703,12 @@ def main() -> int:
         type=Path,
         default=None,
         help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--differential-coverage-statistics-json",
+        type=Path,
+        default=None,
+        help="Optional differential coverage statistics JSON for verdict-input charts.",
     )
     parser.add_argument("--anonymize", action="store_true", help="Use generic fuzzer labels in plots.")
     args = parser.parse_args()
@@ -1622,9 +1816,14 @@ def main() -> int:
             label_map=None,
             fuzzer_colors=fuzzer_colors,
         )
+        differential_plot = plot_differential_coverage_statistics(
+            args.differential_coverage_statistics_json, images_outdir
+        )
         print(f"wrote: {report_outdir / 'REPORT.md'} (no data)")
         if sample_metric_plot_files:
             print("sample metric plots: " + ", ".join(sample_metric_plot_files))
+        if differential_plot:
+            print("differential coverage plot: " + differential_plot)
         return 0
 
     df_grid = resample_to_grid(df, grid)
@@ -1659,6 +1858,9 @@ def main() -> int:
         label_map=label_map,
         fuzzer_colors=fuzzer_colors,
     )
+    differential_plot = plot_differential_coverage_statistics(
+        args.differential_coverage_statistics_json, images_outdir
+    )
     write_report(
         metrics,
         budget=budget,
@@ -1680,6 +1882,8 @@ def main() -> int:
         "plateau_and_late_share.png",
     ]
     plot_files.extend(sample_metric_plot_files)
+    if differential_plot:
+        plot_files.append(differential_plot)
     print("plots: " + ", ".join(plot_files))
     return 0
 

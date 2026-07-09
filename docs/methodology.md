@@ -117,8 +117,8 @@ make results-analyze-all BUCKET=... RUN_ID=... BENCHMARK_UUID=... DEST=...
 This expands to:
 
 1. Download logs/corpus bundles (`scripts/download_run_artifacts.py`)
-2. Collect `*.log` files into analysis layout (`scripts/prepare_analysis_logs.py`)
-3. Parse events + summaries (`scripts/run_analysis_filtered.py` -> `analysis/analyze.py`)
+2. Collect `*.log` files, runner metrics, and Foundry showmap artifacts into analysis layout (`scripts/prepare_analysis_logs.py`)
+3. Parse events, summaries, and differential coverage artifacts (`scripts/run_analysis_filtered.py` -> `analysis/analyze.py`)
 4. Convert event stream to cumulative series (`analysis/events_to_cumulative.py`)
 5. Build report + charts (`analysis/benchmark_report.py`)
 6. Build broken-invariant overlap artifacts (`analysis/invariant_overlap_report.py`)
@@ -143,6 +143,40 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - `throughput_summary.csv` (per-fuzzer tx/s and gas/s distribution summary)
   - `progress_metrics_samples.csv` (raw fuzzer-native progress metrics such as seq/s, coverage proxy, corpus size, favored items, failure rate when available)
   - `progress_metrics_summary.csv` (per-fuzzer distribution summary of those progress metrics)
+  - `differential_coverage_summary.csv` (human-readable baseline/feature verdicts computed from per-sample relscore statistics and relcov non-inferiority against baseline reliability)
+  - `differential_coverage_statistics.json` (machine-readable verdict inputs, per-campaign test results, intervals, sample counts, and aggregate verdict)
+  - `differential_coverage_relscores.csv` (relscore values computed from normalized AFL showmap campaigns)
+  - `differential_coverage_relcov.csv` (pairwise non-self relcov values computed from normalized AFL showmap campaigns)
+  - `showmap_campaign_manifest.json` (raw showmap inputs, skipped inputs, and normalized campaign summaries)
+  - `showmap_campaigns/` (canonical `approach/trial.txt` campaign directories used for relscore scoring)
+
+### Differential coverage from Foundry showmap
+
+- Foundry runs emit AFL `showmap`-style coverage files under the uploaded log artifact when the installed `forge` supports `forge test --showmap-out`.
+- Raw Foundry replay output may use `approach__suite/trial.txt` for invariant replay and `approach__suite__test/trial.txt` for fuzz-test replay.
+- `scripts/prepare_analysis_logs.py` preserves uploaded `showmap/` trees beside each prepared instance log directory.
+- Analysis normalizes raw Foundry showmap output into canonical campaign directories before scoring:
+  - `showmap_campaigns/combined/<approach>/<trial>.txt` unions all showmap files for each trial.
+  - `showmap_campaigns/by_test/<suite-test>/<approach>/<trial>.txt` preserves per-test drill-down campaigns.
+- `by_test/...` campaigns are drill-down only: their point relscore/relcov values are emitted in the relscore/relcov CSVs and as inconclusive summary rows, but the full per-campaign bootstrap verdict is skipped by default because it feeds neither the aggregate verdict nor any report consumer and otherwise dominates analysis time. Set `--verdict-by-test` (or `SCFUZZBENCH_DIFFCOV_VERDICT_BY_TEST=1`) to compute them.
+- Relscore and relcov are computed through the `differential-coverage` package from normalized AFL showmap campaign directories. Only positive AFL showmap counts are treated as covered edges.
+- Relcov gating compares the feature's per-trial retention of `upper(baseline)` against the baseline reliability diagonal, not against an absolute coverage floor. The default non-inferiority margin is 0.05 relcov.
+- When a campaign has one baseline approach (`master`, `main`, `stable`, or a `*-master`/`*-main` label) and one feature approach, `differential_coverage_summary.csv` records separate `relscore` and `relcov` metric rows with the same reported verdict:
+  - `improvement`: relscore is significantly higher after target-family Holm correction, the effect size is meaningful, and relcov non-inferiority is held against the baseline reliability diagonal.
+  - `needs-review`: relscore is significantly higher but relcov non-inferiority is inconclusive.
+  - `regression`: relscore is significantly lower, or relcov non-inferiority fails.
+  - `inconclusive`: the result is not significant after correction, has too few samples, is missing required seed pairs, or has insufficient samples for the confidence intervals.
+- Low-run campaigns still report point relscore, relcov, pairing rate, and sample counts, but the verdict is `inconclusive` with a `verdict_reason` such as `too few runs`.
+- Differential coverage has an explicit pairing mode. `unpaired` treats repeated
+  rounds as independent samples. `paired` requires matching seed-labeled trials
+  across arms and refuses silent fallback to an unpaired test when matches are
+  absent.
+- Multi-target CI tags each trial with its target before differential coverage
+  analysis. `differential_coverage_summary.csv` then includes `by_target/<name>`
+  campaign rows before any Slack status rendering. Aggregate status is only an
+  improvement when a majority of targets improve and no target regresses; any
+  target regression blocks an aggregate improvement.
+- `SCFUZZBENCH_FOUNDRY_SHOWMAP=0` disables Foundry showmap collection. `FOUNDRY_SHOWMAP_DOMAIN`, `FOUNDRY_SHOWMAP_CORPUS_DIR`, and `SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS` tune replay behavior. When no corpus override is set, showmap replay lets `forge` resolve the corpus directories from the target's Foundry config. Replay timeout defaults to the smaller of the campaign timeout and 1800 seconds so showmap collection stays within the benchmark completion grace window unless explicitly overridden.
 
 ### Cumulative conversion (`analysis/events_to_cumulative.py`)
 
@@ -175,6 +209,7 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - `time_to_k.png`
   - `final_distribution.png`
   - `plateau_and_late_share.png`
+  - `differential_coverage_statistics.png`, when differential coverage statistics are available
 
 If input CSV is empty, the report explicitly records the no-data condition and emits placeholder plots.
 
