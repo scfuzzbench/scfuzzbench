@@ -58,6 +58,15 @@ fi
 # explicitly overridden.
 export FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=${FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT:-0}
 
+# On targets whose findings only surface in the end-of-run summary (no mid-run
+# failure events — e.g. preflight-failing canaries and handler assertion bugs),
+# losing the graceful exit loses the whole leg. After long campaigns forge's
+# post-SIGINT wind-down (counterexample persistence, corpus bookkeeping) has
+# been observed to exceed the default 300s grace on superform (run 1783651504:
+# 0 of 4 instances got a summary out before SIGKILL). Give the foundry leg a
+# generous grace; the schedule_hard_deadline watchdog still bounds the instance.
+export SCFUZZBENCH_TIMEOUT_GRACE_SECONDS=${SCFUZZBENCH_TIMEOUT_GRACE_SECONDS:-1800}
+
 # --show-progress installs forge's SIGINT handler (bars stay hidden on non-TTY), so the
 # benchmark timeout's SIGINT triggers a graceful exit that prints the end-of-run summary —
 # the only place handler assertion bugs appear with their names.
