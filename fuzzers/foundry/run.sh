@@ -58,13 +58,29 @@ fi
 # explicitly overridden.
 export FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=${FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT:-0}
 
+# End the campaign from the inside instead of relying on SIGINT: at the pin,
+# forge's Ctrl+C path deadlocks on some targets after long campaigns
+# (superform/liquity: SIGINT — and repeated SIGINTs — ignored indefinitely
+# after ~30+ min of fuzzing; reproduced under WSL with gdb showing the tokio
+# signal task never waking). A timed campaign ([invariant] timeout) ends
+# naturally on the campaign thread, prints the full summary — the only channel
+# naming handler assertion bugs and preflight-failing canaries — and needs no
+# signal at all. Budget minus a small margin so the wind-down finishes before
+# run_with_timeout's SIGINT backstop fires.
+if [[ -z "${FOUNDRY_INVARIANT_TIMEOUT:-}" && "${SCFUZZBENCH_TIMEOUT_SECONDS:-}" =~ ^[0-9]+$ ]]; then
+  if (( SCFUZZBENCH_TIMEOUT_SECONDS > 180 )); then
+    export FOUNDRY_INVARIANT_TIMEOUT=$(( SCFUZZBENCH_TIMEOUT_SECONDS - 60 ))
+  else
+    export FOUNDRY_INVARIANT_TIMEOUT="${SCFUZZBENCH_TIMEOUT_SECONDS}"
+  fi
+fi
+
 # On targets whose findings only surface in the end-of-run summary (no mid-run
 # failure events — e.g. preflight-failing canaries and handler assertion bugs),
-# losing the graceful exit loses the whole leg. After long campaigns forge's
-# post-SIGINT wind-down (counterexample persistence, corpus bookkeeping) has
-# been observed to exceed the default 300s grace on superform (run 1783651504:
-# 0 of 4 instances got a summary out before SIGKILL). Give the foundry leg a
-# generous grace; the schedule_hard_deadline watchdog still bounds the instance.
+# losing the graceful exit loses the whole leg. Forge's post-campaign wind-down
+# (counterexample persistence, corpus bookkeeping) also gets a generous grace
+# window before SIGKILL; the schedule_hard_deadline watchdog still bounds the
+# instance.
 export SCFUZZBENCH_TIMEOUT_GRACE_SECONDS=${SCFUZZBENCH_TIMEOUT_GRACE_SECONDS:-1800}
 
 # --show-progress installs forge's SIGINT handler (bars stay hidden on non-TTY), so the
