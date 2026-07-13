@@ -58,15 +58,25 @@ fi
 # explicitly overridden.
 export FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=${FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT:-0}
 
-# End the campaign from the inside instead of relying on SIGINT: at the pin,
-# forge's Ctrl+C path deadlocks on some targets after long campaigns
-# (superform/liquity: SIGINT — and repeated SIGINTs — ignored indefinitely
-# after ~30+ min of fuzzing; reproduced under WSL with gdb showing the tokio
-# signal task never waking). A timed campaign ([invariant] timeout) ends
-# naturally on the campaign thread, prints the full summary — the only channel
-# naming handler assertion bugs and preflight-failing canaries — and needs no
-# signal at all. Budget minus a small margin so the wind-down finishes before
-# run_with_timeout's SIGINT backstop fires.
+# Bound single-call EVM execution. At the pin, neither the campaign timeout
+# nor SIGINT can preempt a transaction mid-execution — both are only observed
+# between runs. Some targets raise gas_limit to u64::MAX in foundry.toml
+# (superform), so a fuzzed input hitting an unbounded loop executes "forever":
+# reproduced under WSL with one worker thread pinned in the revm interpreter
+# for 3+ hours (backtrace: run_invariant_worker -> execute_tx -> transact ->
+# step) — the real mechanism behind the "SIGINT deadlock" wedges. Cap gas at
+# forge's own default (2^30) so pathological inputs die by out-of-gas revert,
+# as they do on the echidna/medusa legs (medusa caps calls at 30M gas). Env
+# beats foundry.toml in forge's config layering, so this overrides per-target
+# unbounded settings while matching what default-config targets already run.
+export FOUNDRY_GAS_LIMIT=${FOUNDRY_GAS_LIMIT:-1073741824}
+
+# End the campaign from the inside instead of relying on SIGINT: with gas
+# bounded the campaign checks the deadline between runs, and a timed campaign
+# ([invariant] timeout) ends naturally on the campaign thread, prints the full
+# summary — the only channel naming handler assertion bugs and preflight-failing
+# canaries — and needs no signal at all. Budget minus a small margin so the
+# wind-down finishes before run_with_timeout's SIGINT backstop fires.
 if [[ -z "${FOUNDRY_INVARIANT_TIMEOUT:-}" && "${SCFUZZBENCH_TIMEOUT_SECONDS:-}" =~ ^[0-9]+$ ]]; then
   if (( SCFUZZBENCH_TIMEOUT_SECONDS > 180 )); then
     export FOUNDRY_INVARIANT_TIMEOUT=$(( SCFUZZBENCH_TIMEOUT_SECONDS - 60 ))
