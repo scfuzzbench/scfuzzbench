@@ -49,6 +49,26 @@ if [[ -n "${FOUNDRY_TEST_ARGS:-}" ]]; then
   read -r -a extra_args <<< "${FOUNDRY_TEST_ARGS}"
 fi
 
+# Disable forge's corpus persistence unless a showmap/coverage run needs it.
+# At the pin the in-memory corpus grows without bound when [invariant]
+# corpus_dir is set (every benchmark target sets it): ~450MB/min on the
+# liquity leg (run 1783970022: 32GB c6a.4xlarge exhausted 48 min into the
+# campaign, box livelocked, 3 of 4 instances hard-died) and 23GB/2h on the
+# passing superform leg (run 1783961037). A/B under WSL: corpus on = 7.6GB
+# RSS in 4 min; corpus off = flat 126MB. Dropping the corpus_dir line from the
+# working-copy foundry.toml is the only reliable disable — an empty
+# FOUNDRY_INVARIANT_CORPUS_DIR is rejected by forge test's CLI mapping.
+# Showmap replays need the persisted corpus, so keep it when showmap is
+# enabled — those are opt-in foundry-only coverage runs where the memory
+# ceiling is an accepted risk. SCFUZZBENCH_FOUNDRY_KEEP_CORPUS=1 also
+# preserves it.
+showmap_enabled="${SCFUZZBENCH_FOUNDRY_SHOWMAP:-0}"
+showmap_enabled_lc=$(printf '%s' "${showmap_enabled}" | tr '[:upper:]' '[:lower:]')
+keep_corpus="${SCFUZZBENCH_FOUNDRY_KEEP_CORPUS:-0}"
+if [[ "${showmap_enabled}" != "1" && "${showmap_enabled_lc}" != "true" && "${showmap_enabled_lc}" != "yes" && "${keep_corpus}" != "1" ]]; then
+  sed -i -E '/^[[:space:]]*corpus_dir[[:space:]]*=/d' "${repo_dir}/foundry.toml"
+fi
+
 # At the pin every newly found failure is shrunk inline (single-threaded, default
 # 5000 sequence replays) before the campaign continues, and SIGINT is not observed
 # mid-shrink: on the superform leg of run 1783612049 three of four instances got
