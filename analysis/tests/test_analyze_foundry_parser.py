@@ -35,6 +35,35 @@ class FoundryParserTests(unittest.TestCase):
         self.assertAlmostEqual(events[0].elapsed_seconds, 1.0)
         self.assertAlmostEqual(events[1].elapsed_seconds, 3.0)
 
+    def test_handler_assertion_events_do_not_name_bugs_by_address(self):
+        # foundry-rs/foundry#15689 emits mid-run handler-assertion failure
+        # events whose `target` is the harness contract ADDRESS and whose only
+        # function identity is a 4-byte `selector`. Naming by address would
+        # collapse every handler bug into one identity and double-count against
+        # the end-of-run summary, so these events must stay unnamed; identity
+        # comes from the summary lines.
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","metrics":{"cumulative_edges_seen":1}}',
+                '{"timestamp":105,"event":"failure","failure_type":"handler_assertion",'
+                '"target":"0x7fa9385be102ac3eac297483dd6233d62b3e1496","selector":"0xa9cc4718",'
+                '"reason":"assertion failed"}',
+                '{"timestamp":106,"event":"failure","failure_type":"handler_assertion",'
+                '"target":"0x7fa9385be102ac3eac297483dd6233d62b3e1496","selector":"0xdeadbeef",'
+                '"reason":"assertion failed"}',
+                '{"timestamp":110,"event":"failure","invariant":"invariant_canary",'
+                '"target":"test/recon/CryticToFoundry.sol:CryticToFoundry","reason":"x"}',
+                "[FAIL: assertion failed] test/recon/CryticToFoundry.sol:CryticToFoundry::assert_canary_ASSERTION_CANARY() (runs: 1)",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        names = [event.event for event in events]
+        self.assertIn("invariant_canary", names)
+        self.assertIn("assert_canary_ASSERTION_CANARY", names)
+        self.assertNotIn("0x7fa9385be102ac3eac297483dd6233d62b3e1496", names)
+        self.assertEqual(len(names), len(set(names)))
+
     def test_parses_legacy_foundry_failure_records(self):
         log_path = self.write_log(
             [
