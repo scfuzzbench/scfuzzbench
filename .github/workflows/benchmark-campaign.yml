@@ -1,0 +1,279 @@
+name: Benchmark Campaign
+run-name: "Benchmark Campaign (${{ github.run_id }} / ${{ inputs.preset }} / ${{ inputs.target }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: "Benchmark configuration preset."
+        required: true
+        type: choice
+        options:
+          - smoke
+          - full
+          - custom
+        default: smoke
+      target:
+        description: "Target or canonical all-target sequence."
+        required: true
+        type: choice
+        options:
+          - all
+          - aave-v4
+          - origin-dollar
+          - drips-fuzzing
+          - superform-v2-periphery
+          - liquity-V2-gov
+        default: all
+      instances_per_fuzzer:
+        description: "Custom preset only: instances per fuzzer."
+        required: false
+        type: number
+        default: 1
+      timeout_hours:
+        description: "Custom preset only: timeout per fuzzer run."
+        required: false
+        type: number
+        default: 1
+      fuzzers_json:
+        description: "Custom preset only: JSON list of fuzzer keys."
+        required: false
+        default: '["echidna","medusa","foundry","recon-fuzzer"]'
+      benchmark_type:
+        description: "Custom preset only: benchmark type."
+        required: false
+        type: choice
+        options:
+          - property
+          - optimization
+        default: property
+      instance_type:
+        description: "Custom preset only: EC2 instance type."
+        required: false
+        default: c6a.4xlarge
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scfuzzbench-benchmark-campaign
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      benchmark_type: ${{ steps.prepare.outputs.benchmark_type }}
+      fuzzers_json: ${{ steps.prepare.outputs.fuzzers_json }}
+      instance_type: ${{ steps.prepare.outputs.instance_type }}
+      instances_per_fuzzer: ${{ steps.prepare.outputs.instances_per_fuzzer }}
+      targets: ${{ steps.prepare.outputs.targets }}
+      timeout_hours: ${{ steps.prepare.outputs.timeout_hours }}
+      wait_profile: ${{ steps.prepare.outputs.wait_profile }}
+    steps:
+      - name: Prepare targets
+        id: prepare
+        env:
+          BENCHMARK_TYPE_INPUT: ${{ inputs.benchmark_type }}
+          FUZZERS_INPUT: ${{ inputs.fuzzers_json }}
+          INSTANCES_INPUT: ${{ inputs.instances_per_fuzzer }}
+          INSTANCE_TYPE_INPUT: ${{ inputs.instance_type }}
+          PRESET: ${{ inputs.preset }}
+          TARGET_INPUT: ${{ inputs.target }}
+          TIMEOUT_INPUT: ${{ inputs.timeout_hours }}
+        run: |
+          set -euo pipefail
+
+          case "${PRESET}" in
+            smoke)
+              instances=2
+              timeout=4
+              fuzzers='["echidna","medusa","foundry","recon-fuzzer"]'
+              benchmark_type=property
+              instance_type=c6a.4xlarge
+              wait_profile=smoke
+              ;;
+            full)
+              instances=10
+              timeout=24
+              fuzzers='["echidna","medusa","foundry","recon-fuzzer"]'
+              benchmark_type=property
+              instance_type=c6a.4xlarge
+              wait_profile=full
+              ;;
+            custom)
+              if [[ "${TARGET_INPUT}" == "all" ]]; then
+                echo "Custom campaigns require exactly one target." >&2
+                exit 1
+              fi
+              instances="${INSTANCES_INPUT}"
+              timeout="${TIMEOUT_INPUT}"
+              fuzzers="${FUZZERS_INPUT}"
+              benchmark_type="${BENCHMARK_TYPE_INPUT}"
+              instance_type="${INSTANCE_TYPE_INPUT}"
+              wait_profile=none
+              ;;
+            *)
+              echo "Unsupported benchmark preset: ${PRESET}" >&2
+              exit 1
+              ;;
+          esac
+
+          case "${benchmark_type}" in
+            property|optimization) ;;
+            *)
+              echo "benchmark_type must be property or optimization." >&2
+              exit 1
+              ;;
+          esac
+          if [[ ! "${instance_type}" =~ ^[a-z0-9]+\.[a-z0-9]+$ ]]; then
+            echo "instance_type must look like c6a.4xlarge." >&2
+            exit 1
+          fi
+          fuzzers=$(python3 - "${fuzzers}" <<'PY'
+          import json
+          import sys
+
+          allowed = {"echidna", "medusa", "foundry", "recon-fuzzer"}
+          value = json.loads(sys.argv[1])
+          if not isinstance(value, list) or not value:
+              raise SystemExit("fuzzers_json must be a non-empty list")
+          if any(not isinstance(item, str) or item not in allowed for item in value):
+              raise SystemExit("fuzzers_json contains an unsupported fuzzer")
+          if len(set(value)) != len(value):
+              raise SystemExit("fuzzers_json contains duplicate fuzzers")
+          print(json.dumps(value, separators=(",", ":")))
+          PY
+          )
+
+          case "${TARGET_INPUT}" in
+            all)
+              targets=(aave-v4 origin-dollar drips-fuzzing superform-v2-periphery liquity-V2-gov)
+              ;;
+            aave-v4|origin-dollar|drips-fuzzing|superform-v2-periphery|liquity-V2-gov)
+              targets=("${TARGET_INPUT}")
+              ;;
+            *)
+              echo "Unsupported benchmark target: ${TARGET_INPUT}" >&2
+              exit 1
+              ;;
+          esac
+
+          resolved_targets='{}'
+          {
+            echo "### Benchmark campaign"
+            echo ""
+            echo "- scfuzzbench commit: \`${GITHUB_SHA}\`"
+            echo "- Preset: \`${PRESET}\`"
+            echo "- Instances per fuzzer: \`${instances}\`"
+            echo "- Timeout: \`${timeout}h\`"
+            echo ""
+            echo "| Target | Pinned main commit |"
+            echo "| --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          for target in "${targets[@]}"; do
+            target_repo="scfuzzbench/${target}-scfuzzbench"
+            target_repo_url="https://github.com/${target_repo}"
+            target_commit=$(git ls-remote "${target_repo_url}.git" refs/heads/main | awk '{print $1}')
+            if [[ ! "${target_commit}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Could not resolve ${target_repo} main to a full commit SHA." >&2
+              exit 1
+            fi
+            resolved_targets=$(jq -cn \
+              --argjson current "${resolved_targets}" \
+              --arg target "${target}" \
+              --arg target_commit "${target_commit}" \
+              --arg target_repo_url "${target_repo_url}" \
+              '$current + {($target): {target_commit: $target_commit, target_repo_url: $target_repo_url}}')
+            echo "| \`${target}\` | \`${target_commit}\` |" >> "${GITHUB_STEP_SUMMARY}"
+          done
+
+          {
+            echo "benchmark_type=${benchmark_type}"
+            echo "fuzzers_json=${fuzzers}"
+            echo "instance_type=${instance_type}"
+            echo "instances_per_fuzzer=${instances}"
+            echo "targets=${resolved_targets}"
+            echo "timeout_hours=${timeout}"
+            echo "wait_profile=${wait_profile}"
+          } >> "${GITHUB_OUTPUT}"
+
+  aave_v4:
+    name: Benchmark (aave-v4)
+    needs: prepare
+    if: ${{ needs.prepare.result == 'success' && (inputs.target == 'all' || inputs.target == 'aave-v4') }}
+    uses: ./.github/workflows/benchmark-run.yml
+    with:
+      target_repo_url: ${{ fromJSON(needs.prepare.outputs.targets)['aave-v4'].target_repo_url }}
+      target_commit: ${{ fromJSON(needs.prepare.outputs.targets)['aave-v4'].target_commit }}
+      benchmark_type: ${{ needs.prepare.outputs.benchmark_type }}
+      instance_type: ${{ needs.prepare.outputs.instance_type }}
+      instances_per_fuzzer: ${{ fromJSON(needs.prepare.outputs.instances_per_fuzzer) }}
+      timeout_hours: ${{ fromJSON(needs.prepare.outputs.timeout_hours) }}
+      fuzzers_json: ${{ needs.prepare.outputs.fuzzers_json }}
+      wait_profile: ${{ needs.prepare.outputs.wait_profile }}
+    secrets: inherit
+
+  origin_dollar:
+    name: Benchmark (origin-dollar)
+    needs: [prepare, aave_v4]
+    if: ${{ always() && needs.prepare.result == 'success' && (inputs.target == 'origin-dollar' || (inputs.target == 'all' && needs.aave_v4.result == 'success')) }}
+    uses: ./.github/workflows/benchmark-run.yml
+    with:
+      target_repo_url: ${{ fromJSON(needs.prepare.outputs.targets)['origin-dollar'].target_repo_url }}
+      target_commit: ${{ fromJSON(needs.prepare.outputs.targets)['origin-dollar'].target_commit }}
+      benchmark_type: ${{ needs.prepare.outputs.benchmark_type }}
+      instance_type: ${{ needs.prepare.outputs.instance_type }}
+      instances_per_fuzzer: ${{ fromJSON(needs.prepare.outputs.instances_per_fuzzer) }}
+      timeout_hours: ${{ fromJSON(needs.prepare.outputs.timeout_hours) }}
+      fuzzers_json: ${{ needs.prepare.outputs.fuzzers_json }}
+      wait_profile: ${{ needs.prepare.outputs.wait_profile }}
+    secrets: inherit
+
+  drips_fuzzing:
+    name: Benchmark (drips-fuzzing)
+    needs: [prepare, origin_dollar]
+    if: ${{ always() && needs.prepare.result == 'success' && (inputs.target == 'drips-fuzzing' || (inputs.target == 'all' && needs.origin_dollar.result == 'success')) }}
+    uses: ./.github/workflows/benchmark-run.yml
+    with:
+      target_repo_url: ${{ fromJSON(needs.prepare.outputs.targets)['drips-fuzzing'].target_repo_url }}
+      target_commit: ${{ fromJSON(needs.prepare.outputs.targets)['drips-fuzzing'].target_commit }}
+      benchmark_type: ${{ needs.prepare.outputs.benchmark_type }}
+      instance_type: ${{ needs.prepare.outputs.instance_type }}
+      instances_per_fuzzer: ${{ fromJSON(needs.prepare.outputs.instances_per_fuzzer) }}
+      timeout_hours: ${{ fromJSON(needs.prepare.outputs.timeout_hours) }}
+      fuzzers_json: ${{ needs.prepare.outputs.fuzzers_json }}
+      wait_profile: ${{ needs.prepare.outputs.wait_profile }}
+    secrets: inherit
+
+  superform_v2_periphery:
+    name: Benchmark (superform-v2-periphery)
+    needs: [prepare, drips_fuzzing]
+    if: ${{ always() && needs.prepare.result == 'success' && (inputs.target == 'superform-v2-periphery' || (inputs.target == 'all' && needs.drips_fuzzing.result == 'success')) }}
+    uses: ./.github/workflows/benchmark-run.yml
+    with:
+      target_repo_url: ${{ fromJSON(needs.prepare.outputs.targets)['superform-v2-periphery'].target_repo_url }}
+      target_commit: ${{ fromJSON(needs.prepare.outputs.targets)['superform-v2-periphery'].target_commit }}
+      benchmark_type: ${{ needs.prepare.outputs.benchmark_type }}
+      instance_type: ${{ needs.prepare.outputs.instance_type }}
+      instances_per_fuzzer: ${{ fromJSON(needs.prepare.outputs.instances_per_fuzzer) }}
+      timeout_hours: ${{ fromJSON(needs.prepare.outputs.timeout_hours) }}
+      fuzzers_json: ${{ needs.prepare.outputs.fuzzers_json }}
+      wait_profile: ${{ needs.prepare.outputs.wait_profile }}
+    secrets: inherit
+
+  liquity_v2_gov:
+    name: Benchmark (liquity-V2-gov)
+    needs: [prepare, superform_v2_periphery]
+    if: ${{ always() && needs.prepare.result == 'success' && (inputs.target == 'liquity-V2-gov' || (inputs.target == 'all' && needs.superform_v2_periphery.result == 'success')) }}
+    uses: ./.github/workflows/benchmark-run.yml
+    with:
+      target_repo_url: ${{ fromJSON(needs.prepare.outputs.targets)['liquity-V2-gov'].target_repo_url }}
+      target_commit: ${{ fromJSON(needs.prepare.outputs.targets)['liquity-V2-gov'].target_commit }}
+      benchmark_type: ${{ needs.prepare.outputs.benchmark_type }}
+      instance_type: ${{ needs.prepare.outputs.instance_type }}
+      instances_per_fuzzer: ${{ fromJSON(needs.prepare.outputs.instances_per_fuzzer) }}
+      timeout_hours: ${{ fromJSON(needs.prepare.outputs.timeout_hours) }}
+      fuzzers_json: ${{ needs.prepare.outputs.fuzzers_json }}
+      wait_profile: ${{ needs.prepare.outputs.wait_profile }}
+    secrets: inherit
