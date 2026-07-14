@@ -531,6 +531,14 @@ def extract_foundry_failure(payload: Dict[str, Any]) -> Tuple[Optional[str], Opt
         return None, None, None
 
     if str(payload.get("event") or "").strip() == "failure":
+        # Handler-assertion failure events (foundry-rs/foundry#15689) carry no
+        # function name — only the harness contract *address* in `target` and a
+        # 4-byte `selector`. Naming by address would collapse every handler bug
+        # into one identity and double-count against the end-of-run summary
+        # (which names them properly), so leave these unnamed here: identity
+        # still comes from the summary plus the broken_assertions pulse counts.
+        if str(payload.get("failure_type") or "").strip() == "handler_assertion":
+            return None, ts_value, None
         # Prefer the per-invariant identity so distinct invariant failures are
         # counted as distinct bugs. The `target` field is the harness contract
         # (e.g. "CryticToFoundry"), which is identical across every invariant and
