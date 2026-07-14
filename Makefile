@@ -13,6 +13,12 @@ AWS_PROFILE ?=
 BUCKET ?=
 BENCHMARK_UUID ?=
 EXISTING_BUCKET ?=
+BENCHMARK_WORKFLOW_REPO ?= scfuzzbench/scfuzzbench
+BENCHMARK_WORKFLOW_REF ?= main
+BENCHMARK_WORKFLOW ?= benchmark-campaign.yml
+BENCHMARK_TYPE ?= property
+INSTANCE_TYPE ?= c6a.4xlarge
+FUZZERS ?= ["echidna","medusa","foundry","recon-fuzzer"]
 DEST ?= /tmp/scfuzzbench-results-$(RUN_ID)
 ARTIFACT_CATEGORY ?= logs
 UNZIPPED_DIR ?= $(DEST)/logs/unzipped
@@ -102,7 +108,7 @@ RAW_LABELS_ARG := --raw-labels
 endif
 DURATION_ARG :=
 
-.PHONY: terraform-init terraform-init-backend terraform-fmt terraform-validate terraform-plan terraform-deploy terraform-destroy terraform-destroy-infra analysis-venv results-analyze results-download results-prepare results-analyze-filtered results-analyze-all results-inspect s3-purge-versions report-benchmark report-wide-to-long report-events-to-cumulative report-invariant-overlap report-runner-metrics
+.PHONY: terraform-init terraform-init-backend terraform-fmt terraform-validate terraform-plan terraform-deploy terraform-destroy terraform-destroy-infra benchmark-run benchmark-smoke benchmark-full analysis-venv results-analyze results-download results-prepare results-analyze-filtered results-analyze-all results-inspect s3-purge-versions report-benchmark report-wide-to-long report-events-to-cumulative report-invariant-overlap report-runner-metrics
 
 terraform-init:
 	terraform -chdir=$(TF_DIR) init
@@ -127,6 +133,23 @@ terraform-destroy:
 
 terraform-destroy-infra:
 	terraform -chdir=$(TF_DIR) destroy $(TF_ARGS) -target=aws_instance.fuzzer -target=aws_iam_instance_profile.fuzzer -target=aws_iam_role_policy.s3_access -target=aws_iam_role.fuzzer -target=aws_key_pair.ssh -target=local_sensitive_file.ssh_private_key -target=tls_private_key.ssh -target=aws_security_group.ssh -target=aws_route_table_association.public -target=aws_route_table.public -target=aws_subnet.public -target=aws_internet_gateway.main -target=aws_vpc.main $(SCFUZZBENCH_COMMIT_ARG) $(EXISTING_BUCKET_ARG)
+
+# Cloud benchmark presets dispatch the GitHub Actions campaign workflow.
+#   make benchmark-smoke TARGET=all
+#   make benchmark-full TARGET=all
+#   make benchmark-run TARGET=aave-v4 N=4 T=2 FUZZERS='["foundry"]'
+benchmark-run:
+	@test -n "$(strip $(TARGET))" || (echo "TARGET is required" >&2; exit 1)
+	@test "$(TARGET)" != "all" || (echo "Custom runs require one target; use benchmark-smoke or benchmark-full for TARGET=all" >&2; exit 1)
+	@test -n "$(strip $(N))" || (echo "N is required" >&2; exit 1)
+	@test -n "$(strip $(T))" || (echo "T is required" >&2; exit 1)
+	gh workflow run "$(BENCHMARK_WORKFLOW)" --repo "$(BENCHMARK_WORKFLOW_REPO)" --ref "$(BENCHMARK_WORKFLOW_REF)" --raw-field preset=custom --raw-field target="$(TARGET)" --raw-field instances_per_fuzzer="$(N)" --raw-field timeout_hours="$(T)" --raw-field fuzzers_json='$(FUZZERS)' --raw-field benchmark_type="$(BENCHMARK_TYPE)" --raw-field instance_type="$(INSTANCE_TYPE)"
+
+benchmark-smoke:
+	gh workflow run "$(BENCHMARK_WORKFLOW)" --repo "$(BENCHMARK_WORKFLOW_REPO)" --ref "$(BENCHMARK_WORKFLOW_REF)" --raw-field preset=smoke --raw-field target="$(if $(strip $(TARGET)),$(TARGET),all)"
+
+benchmark-full:
+	gh workflow run "$(BENCHMARK_WORKFLOW)" --repo "$(BENCHMARK_WORKFLOW_REPO)" --ref "$(BENCHMARK_WORKFLOW_REF)" --raw-field preset=full --raw-field target="$(if $(strip $(TARGET)),$(TARGET),all)"
 
 analysis-venv:
 	python3 -m venv $(ANALYSIS_VENV)

@@ -24,6 +24,9 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: scfuzzbench-shared-terraform
+
 jobs:
   terraform:
     runs-on: ubuntu-latest
@@ -64,6 +67,24 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Ensure no benchmark instances are active
+        if: ${{ inputs.action == 'apply' }}
+        run: |
+          set -euo pipefail
+          active_instances=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Project,Values=scfuzzbench" \
+              "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output json)
+          if [[ "$(jq 'length' <<<"${active_instances}")" != "0" ]]; then
+            echo "A benchmark still has active instances; refusing Terraform ${INPUT_ACTION}." >&2
+            jq -r '.[]' <<<"${active_instances}" >&2
+            exit 1
+          fi
+        env:
+          INPUT_ACTION: ${{ inputs.action }}
 
       - name: Write backend config from secret
         env:

@@ -56,6 +56,48 @@ kills the in-flight run. **Dispatch runs strictly sequentially**: wait until a
 run's instances have self-terminated (timeout + upload, plus the Foundry source
 build before the fuzz window) before approving or dispatching the next one.
 
+## Staged Benchmark Dispatch
+
+The Make targets dispatch `benchmark-campaign.yml`; AWS credentials remain in
+GitHub Actions. Authenticate `gh`, then start a preset or a one-target custom
+run:
+
+```bash
+# Stage 1: N=2, T=4h, five targets in canonical order.
+make benchmark-smoke TARGET=all
+
+# Stage 2: N=10, T=24h. Run separately, only after reviewing smoke results.
+make benchmark-full TARGET=all
+
+# Ad-hoc run.
+make benchmark-run TARGET=aave-v4 N=4 T=2 FUZZERS='["foundry"]'
+```
+
+For `TARGET=all`, CI runs `aave-v4`, `origin-dollar`, `drips-fuzzing`,
+`superform-v2-periphery`, and `liquity-V2-gov` in that order. Each target's
+current `main` SHA is resolved and recorded by its campaign run before
+provisioning. The scfuzzbench commit that started the campaign is pinned across
+all five targets. A GitHub environment timer covers the requested fuzzing
+budget; CI then polls the exact EC2 instance IDs until all have terminated and
+verifies that every instance uploaded a log archive before starting the next
+target. The `benchmark-wait-smoke` and
+`benchmark-wait-full` environments use 4-hour and 24-hour wait timers
+respectively, so those waits do not occupy a runner.
+
+Custom runs deliberately accept one target only. A shared concurrency group
+serializes Terraform CI operations, and active-instance checks reject a new
+benchmark or Terraform apply while benchmark instances remain. Terraform
+destroy stays available as the explicit recovery path; cancel the campaign
+first so the destroy job can acquire the shared concurrency group.
+
+Do not queue other benchmark or Terraform operations while a staged campaign
+is running. Each target is an explicitly dependency-chained job in the same
+campaign run; unrelated queued work can still run between targets and stop the
+campaign at the active-instance safety check. After the smoke campaign
+completes, review the canary, real-bug, run-health, and summary gates before
+dispatching the full campaign. Investigate failures before using GitHub's
+"Re-run failed jobs" action because it provisions that target again.
+
 ## Foundry Log Visibility
 
 The foundry runner passes `--show-progress` to `forge test`. This is not
