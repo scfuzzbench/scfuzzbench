@@ -161,11 +161,6 @@ on:
         required: false
         type: boolean
         default: false
-      wait_profile:
-        description: "Keep CI active until instances terminate (none, smoke, or full)."
-        required: false
-        type: string
-        default: none
     secrets:
       AWS_ACCESS_KEY_ID:
         required: true
@@ -195,11 +190,8 @@ jobs:
   benchmark-run:
     runs-on: ubuntu-latest
     outputs:
-      aws_account_id: ${{ steps.aws_context.outputs.aws_account_id }}
-      aws_region: ${{ steps.aws_context.outputs.aws_region }}
       run_id: ${{ steps.tf_outputs.outputs.run_id }}
       benchmark_uuid: ${{ steps.tf_outputs.outputs.benchmark_uuid }}
-      instance_ids_json: ${{ steps.tf_outputs.outputs.instance_ids_json }}
     env:
       AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
       SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
@@ -248,21 +240,6 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - name: Record AWS context
-        id: aws_context
-        if: ${{ !inputs.dry_run }}
-        run: |
-          set -euo pipefail
-          aws_account_id=$(aws sts get-caller-identity --query Account --output text)
-          if [[ ! "${aws_account_id}" =~ ^[0-9]{12}$ ]]; then
-            echo "Could not determine the provisioning AWS account." >&2
-            exit 1
-          fi
-          {
-            echo "aws_account_id=${aws_account_id}"
-            echo "aws_region=${AWS_REGION}"
-          } >> "${GITHUB_OUTPUT}"
 
       - name: Ensure no benchmark instances are active
         if: ${{ !inputs.dry_run }}
@@ -577,18 +554,16 @@ jobs:
           terraform -chdir=infrastructure output -json > run_metadata.json
           run_id=$(jq -r '.run_id.value' run_metadata.json)
           benchmark_uuid=$(jq -r '.benchmark_uuid.value' run_metadata.json)
-          instance_ids_json=$(jq -c '[.instance_ids.value[]]' run_metadata.json)
           {
             echo "run_id=${run_id}"
             echo "benchmark_uuid=${benchmark_uuid}"
-            echo "instance_ids_json=${instance_ids_json}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Upload run metadata
         if: ${{ !inputs.dry_run }}
         uses: actions/upload-artifact@v4
         with:
-          name: run-metadata-${{ steps.tf_outputs.outputs.run_id }}
+          name: run-metadata
           path: run_metadata.json
 
       - name: Summary
@@ -608,136 +583,3 @@ jobs:
               echo "- Benchmark UUID: ${{ steps.tf_outputs.outputs.benchmark_uuid }}"
             } >> "${GITHUB_STEP_SUMMARY}"
           fi
-
-  wait-for-termination:
-    needs: benchmark-run
-    if: ${{ !inputs.dry_run && (inputs.wait_profile == 'smoke' || inputs.wait_profile == 'full') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    environment:
-      name: ${{ inputs.wait_profile == 'smoke' && 'benchmark-wait-smoke' || 'benchmark-wait-full' }}
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
-      EXPECTED_AWS_ACCOUNT_ID: ${{ needs.benchmark-run.outputs.aws_account_id }}
-      EXPECTED_AWS_REGION: ${{ needs.benchmark-run.outputs.aws_region }}
-      FUZZERS_JSON: ${{ inputs.fuzzers_json }}
-      INSTANCE_IDS_JSON: ${{ needs.benchmark-run.outputs.instance_ids_json }}
-      INSTANCES_PER_FUZZER: ${{ inputs.instances_per_fuzzer }}
-      RUN_ID: ${{ needs.benchmark-run.outputs.run_id }}
-      BENCHMARK_UUID: ${{ needs.benchmark-run.outputs.benchmark_uuid }}
-      SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
-    steps:
-      - name: Configure AWS credentials (keys)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Verify provisioning AWS context
-        run: |
-          set -euo pipefail
-          actual_account_id=$(aws sts get-caller-identity --query Account --output text)
-          if [[ "${actual_account_id}" != "${EXPECTED_AWS_ACCOUNT_ID}" ]]; then
-            echo "Provisioned in AWS account ${EXPECTED_AWS_ACCOUNT_ID}, but waiter uses ${actual_account_id}." >&2
-            exit 1
-          fi
-          if [[ "${AWS_REGION}" != "${EXPECTED_AWS_REGION}" ]]; then
-            echo "Provisioned in ${EXPECTED_AWS_REGION}, but waiter uses ${AWS_REGION}." >&2
-            exit 1
-          fi
-
-      - name: Wait for exact benchmark instances to terminate
-        run: |
-          set -euo pipefail
-          mapfile -t instance_ids < <(jq -r '.[]' <<<"${INSTANCE_IDS_JSON}")
-          if (( ${#instance_ids[@]} == 0 )); then
-            echo "Benchmark run did not expose any instance IDs." >&2
-            exit 1
-          fi
-          expected_instances=$(( INSTANCES_PER_FUZZER * $(jq 'length' <<<"${FUZZERS_JSON}") ))
-          if (( ${#instance_ids[@]} != expected_instances )); then
-            echo "Expected ${expected_instances} instance IDs, got ${#instance_ids[@]}." >&2
-            exit 1
-          fi
-
-          while true; do
-            remaining=0
-            for instance_id in "${instance_ids[@]}"; do
-              if state=$(aws ec2 describe-instances \
-                --instance-ids "${instance_id}" \
-                --query 'Reservations[0].Instances[0].State.Name' \
-                --output text 2>/tmp/scfuzzbench-describe-instance.err); then
-                case "${state}" in
-                  terminated) ;;
-                  pending|running|shutting-down|stopping)
-                    remaining=$((remaining + 1))
-                    ;;
-                  stopped)
-                    echo "Benchmark instance ${instance_id} is stopped, not terminated." >&2
-                    exit 1
-                    ;;
-                  *)
-                    echo "Benchmark instance ${instance_id} returned unknown state: ${state}" >&2
-                    exit 1
-                    ;;
-                esac
-              elif grep -q 'InvalidInstanceID.NotFound' /tmp/scfuzzbench-describe-instance.err; then
-                echo "Benchmark instance ${instance_id} is no longer retained by EC2; treating it as terminated."
-              else
-                echo "Could not inspect benchmark instance ${instance_id}:" >&2
-                cat /tmp/scfuzzbench-describe-instance.err >&2
-                exit 1
-              fi
-            done
-            if [[ "${remaining}" == "0" ]]; then
-              echo "All ${#instance_ids[@]} benchmark instances terminated."
-              break
-            fi
-
-            echo "Waiting for ${remaining}/${#instance_ids[@]} benchmark instances to terminate..."
-            sleep 60
-          done
-
-      - name: Verify every instance uploaded a log archive
-        run: |
-          set -euo pipefail
-          expected_archives=$(( INSTANCES_PER_FUZZER * $(jq 'length' <<<"${FUZZERS_JSON}") ))
-          prefix="logs/${RUN_ID}/${BENCHMARK_UUID}/"
-          keys=$(aws s3api list-objects-v2 \
-            --bucket "${SCFUZZBENCH_BUCKET}" \
-            --prefix "${prefix}" \
-            --query 'Contents[].Key' \
-            --output json)
-          mapfile -t archive_keys < <(jq -r '.[]? | select(endswith(".zip"))' <<<"${keys}")
-          if (( ${#archive_keys[@]} != expected_archives )); then
-            echo "Expected ${expected_archives} log archives under s3://${SCFUZZBENCH_BUCKET}/${prefix}, found ${#archive_keys[@]}." >&2
-            jq -r '.[]?' <<<"${keys}" >&2
-            exit 1
-          fi
-          mapfile -t instance_ids < <(jq -r '.[]' <<<"${INSTANCE_IDS_JSON}")
-          for instance_id in "${instance_ids[@]}"; do
-            matches=0
-            for key in "${archive_keys[@]}"; do
-              basename=${key##*/}
-              if [[ "${basename}" == "${instance_id}-"*.zip ]]; then
-                matches=$((matches + 1))
-              fi
-            done
-            if (( matches != 1 )); then
-              echo "Expected exactly one log archive for ${instance_id}, found ${matches}." >&2
-              printf '%s\n' "${archive_keys[@]}" >&2
-              exit 1
-            fi
-          done
-          echo "Verified one log archive for each of ${#instance_ids[@]} instances."
-
-      - name: Completion summary
-        run: |
-          {
-            echo "All benchmark instances terminated."
-            echo ""
-            echo "- Log archives: verified for every instance"
-            echo "- Run ID: ${{ needs.benchmark-run.outputs.run_id }}"
-            echo "- Benchmark UUID: ${{ needs.benchmark-run.outputs.benchmark_uuid }}"
-          } >> "${GITHUB_STEP_SUMMARY}"
