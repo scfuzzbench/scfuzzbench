@@ -753,13 +753,14 @@ def shorten_series_label(label: str) -> str:
     without the matrix shape are returned unchanged.
     """
     arm, sep, target = label.partition("__target-")
+    if not sep:
+        return label
+
     for prefix in ("foundry-", "medusa-", "echidna-", "recon-"):
         if arm.startswith(prefix):
             arm = arm[len(prefix) :]
             break
-    if sep:
-        return f"{arm} · {target}"
-    return arm or label
+    return f"{arm} · {target}"
 
 
 def plot_metric_over_time(
