@@ -117,6 +117,24 @@ if [[ "${has_progress_arg}" -eq 0 ]]; then
   extra_args+=(--show-progress)
 fi
 
+# Forge's test thread pool and invariant campaign sharding are separate dials.
+# The July 2026 N=2 smoke runs passed --threads 16 but omitted invariant workers,
+# so Foundry used one worker and averaged only ~6.3% CPU on 16-vCPU instances.
+# Keep the benchmark parallel even when a target or older Foundry pin defaults
+# invariant workers to one. An explicit operator override remains authoritative.
+has_invariant_workers_arg=0
+for arg in "${extra_args[@]}"; do
+  case "${arg}" in
+    --invariant-workers|--invariant-workers=*)
+      has_invariant_workers_arg=1
+      break
+      ;;
+  esac
+done
+if [[ "${has_invariant_workers_arg}" -eq 0 ]]; then
+  extra_args=(--invariant-workers auto "${extra_args[@]}")
+fi
+
 set_default_worker_env FOUNDRY_THREADS
 if [[ -n "${FOUNDRY_THREADS:-}" ]]; then
   has_threads_arg=0
