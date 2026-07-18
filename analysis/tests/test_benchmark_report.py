@@ -54,6 +54,10 @@ class BenchmarkReportTests(unittest.TestCase):
         # Anonymized and non-matrix labels pass through unchanged.
         self.assertEqual("Fuzzer A", benchmark_report.shorten_series_label("Fuzzer A"))
         self.assertEqual("foundry", benchmark_report.shorten_series_label("foundry"))
+        self.assertEqual(
+            "recon-fuzzer",
+            benchmark_report.shorten_series_label("recon-fuzzer"),
+        )
 
     def test_build_fuzzer_color_map_is_alphabetical_and_stable(self):
         colors_a = plot_palette.build_fuzzer_color_map(
