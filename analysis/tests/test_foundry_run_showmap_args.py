@@ -28,7 +28,6 @@ def write_common_sh(
     main_exit_block = (
         f"""
   if [[ "${{log_file}}" == *foundry.log ]]; then
-    set -e
     return {main_exit_code}
   fi"""
         if main_exit_code
@@ -76,6 +75,49 @@ run_with_timeout() {{
 
 
 class FoundryRunShowmapArgsTests(unittest.TestCase):
+    def run_main_command(self, foundry_test_args: str = "") -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            log_dir = tmp_dir / "logs"
+            work_dir = tmp_dir / "work"
+            common_sh = write_common_sh(tmp_dir)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "SCFUZZBENCH_COMMON_SH": str(common_sh),
+                    "SCFUZZBENCH_WORKDIR": str(work_dir),
+                    "SCFUZZBENCH_LOG_DIR": str(log_dir),
+                    "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS": "1",
+                    "FOUNDRY_LABEL": "foundry-master",
+                }
+            )
+            if foundry_test_args:
+                env["FOUNDRY_TEST_ARGS"] = foundry_test_args
+
+            subprocess.check_call(["bash", str(SCRIPT)], env=env)
+
+            line = (log_dir / "commands.tsv").read_text(encoding="utf-8").splitlines()[0]
+            return line.split("\t")[2:]
+
+    def test_invariant_workers_default_to_auto(self):
+        args = self.run_main_command()
+
+        workers_idx = args.index("--invariant-workers")
+        self.assertEqual(args[workers_idx + 1], "auto")
+
+    def test_explicit_invariant_worker_override_is_preserved(self):
+        for override in ("--invariant-workers 4", "--invariant-workers=4"):
+            with self.subTest(override=override):
+                args = self.run_main_command(override)
+
+                self.assertNotIn("auto", args)
+                if "=" in override:
+                    self.assertIn("--invariant-workers=4", args)
+                else:
+                    workers_idx = args.index("--invariant-workers")
+                    self.assertEqual(args[workers_idx + 1], "4")
+
     def test_showmap_replay_keeps_test_args_but_uses_script_showmap_args(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)

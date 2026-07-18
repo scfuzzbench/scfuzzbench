@@ -51,7 +51,7 @@ Environment variables:
 Environment variables:
 - `FOUNDRY_VERSION` or (`FOUNDRY_GIT_REPO` + `FOUNDRY_GIT_REF`)
 - `FOUNDRY_THREADS` (defaults to `SCFUZZBENCH_WORKERS`, passes `--threads` to `forge test`)
-- `FOUNDRY_TEST_ARGS` (passed to `forge test`)
+- `FOUNDRY_TEST_ARGS` (passed to `forge test`; scfuzzbench adds `--invariant-workers auto` unless this includes an explicit `--invariant-workers` value)
 - `SCFUZZBENCH_FOUNDRY_SHOWMAP` (set to `0` to skip Foundry showmap replay after the main campaign)
 - `SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS` (optional timeout override for showmap replay; default is the smaller of the campaign timeout and 1800 seconds)
 - `FOUNDRY_SHOWMAP_DOMAIN` (optional `forge test --showmap-domain` value)
