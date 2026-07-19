@@ -38,7 +38,7 @@ Terraform computes two IDs used across the pipeline:
 - `scfuzzbench_commit`, `target_repo_url`, `target_commit`
 - `benchmark_type`, `instance_type`, `instances_per_fuzzer`, `timeout_hours`
 - `aws_region`, `ubuntu_ami_id`
-- tool versions and selected `fuzzer_keys`
+- tool versions, `foundry_source_patch`, and selected `fuzzer_keys`
 
 This means changing any of those manifest fields changes `benchmark_uuid`.
 
@@ -129,7 +129,7 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
 ### Event extraction semantics (`analysis/analyze.py`)
 
 - Parser is fuzzer-aware:
-  - Foundry: parse JSON lines, count events only from records with `event=failure`, and use the first JSON `timestamp` as the elapsed-time baseline.
+  - Foundry: parse JSON lines, count bug events only from records with `event=failure`, recover tx/gas throughput from `event=pulse`, and use the first JSON `timestamp` as the elapsed-time baseline.
   - Medusa: parse elapsed markers and failed assertions/properties from textual logs.
   - Echidna and Recon Fuzzer: parse falsification markers from textual logs.
   - Unknown fuzzers: fall back to generic pattern parsing.
@@ -149,6 +149,26 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - `differential_coverage_relcov.csv` (pairwise non-self relcov values computed from normalized AFL showmap campaigns)
   - `showmap_campaign_manifest.json` (raw showmap inputs, skipped inputs, and normalized campaign summaries)
   - `showmap_campaigns/` (canonical `approach/trial.txt` campaign directories used for relscore scoring)
+
+### Foundry throughput semantics
+
+- Upstream Foundry PR [#14266](https://github.com/foundry-rs/foundry/pull/14266) supplies cumulative
+  accepted-call and gas counters plus average rates. The pinned upstream source gates those pulses
+  behind mutually incompatible display/coverage conditions, so scfuzzbench applies the
+  digest-verified `fuzzers/foundry/throughput-progress.patch` only at the exact default source pin.
+- The patch changes reporting reachability only. It keeps `--show-progress` (and therefore graceful
+  SIGINT/final summaries), automatic invariant workers, the natural campaign timeout, and the
+  corpus-off memory safeguard unchanged.
+- `total_txs` counts completed non-discard calls; `total_gas` sums their reported gas. `tps` and
+  `gps` are campaign-to-date averages, not instantaneous rates. With multiple invariant workers the
+  totals are campaign-wide; the pulse's `worker.id` only identifies the worker that emitted that
+  interval.
+- Pulses are cadence-gated at roughly five seconds and occur after a completed invariant run. A
+  long in-flight transaction can therefore create a wider gap. Source-ref overrides do not receive
+  the pinned patch and may legitimately produce no Foundry throughput samples.
+- The existing release pipeline publishes `throughput_samples.csv`,
+  `throughput_summary.csv`, `tx_per_second_over_time.png`, and
+  `gas_per_second_over_time.png`; no rate is inferred from host CPU or other proxy telemetry.
 
 ### Differential coverage from Foundry showmap
 

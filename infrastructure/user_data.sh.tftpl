@@ -23,6 +23,10 @@ cat <<'RUN' >/opt/scfuzzbench/fuzzers/${fuzzer_key}/run.sh
 ${run_sh}
 RUN
 
+cat <<'FOUNDRY_SOURCE_PATCH' >/opt/scfuzzbench/foundry-throughput-progress.patch
+${foundry_source_patch}
+FOUNDRY_SOURCE_PATCH
+
 chmod +x /opt/scfuzzbench/common.sh \
   /opt/scfuzzbench/fuzzers/${fuzzer_key}/install.sh \
   /opt/scfuzzbench/fuzzers/${fuzzer_key}/run.sh
@@ -44,6 +48,7 @@ export SCFUZZBENCH_BENCHMARK_TYPE="${benchmark_type}"
 export FOUNDRY_VERSION="${foundry_version}"
 export FOUNDRY_GIT_REPO="${foundry_git_repo}"
 export FOUNDRY_GIT_REF="${foundry_git_ref}"
+export SCFUZZBENCH_FOUNDRY_SOURCE_PATCH="/opt/scfuzzbench/foundry-throughput-progress.patch"
 export ECHIDNA_VERSION="${echidna_version}"
 export MEDUSA_VERSION="${medusa_version}"
 export RECON_VERSION="${recon_version}"

@@ -1056,6 +1056,7 @@ def main() -> int:
         add_kv("foundry_version", m.get("foundry_version"))
         add_kv("foundry_git_repo", m.get("foundry_git_repo"))
         add_kv("foundry_git_ref", m.get("foundry_git_ref"))
+        add_kv("foundry_source_patch", m.get("foundry_source_patch"))
         add_kv("echidna_version", m.get("echidna_version"))
         add_kv("medusa_version", m.get("medusa_version"))
         add_kv("recon_version", m.get("recon_version"))
