@@ -24,11 +24,38 @@ locals {
   medusa_source_input_count = length(compact(local.medusa_source_inputs))
   medusa_source_enabled     = local.medusa_source_input_count > 0
 
+  foundry_throughput_patch_ref    = "02c05d970d2801da0aef8b82486ce84b01ede36d"
+  foundry_throughput_patch_path   = "${path.module}/../fuzzers/foundry/throughput-progress.patch"
+  foundry_throughput_patch_sha256 = filesha256(local.foundry_throughput_patch_path)
+  foundry_source_patch = var.foundry_git_repo != "" && var.foundry_git_ref == local.foundry_throughput_patch_ref ? (
+    "scfuzzbench-throughput-progress-v1@sha256:${local.foundry_throughput_patch_sha256}"
+  ) : ""
+
+  seed_corpus_s3_match  = regexall("^s3://([^/]+)/(.+?)/?$", var.shared_seed_corpus_source)
+  seed_corpus_s3_parts  = length(local.seed_corpus_s3_match) == 1 ? local.seed_corpus_s3_match[0] : ["", ""]
+  seed_corpus_s3_bucket = local.seed_corpus_s3_parts[0]
+  seed_corpus_s3_prefix = trimsuffix(local.seed_corpus_s3_parts[1], "/")
+  seed_corpus_source_type = var.shared_seed_corpus_source == "" ? "" : (
+    local.seed_corpus_s3_bucket != "" ? "s3" : "local"
+  )
+  seed_corpus_local_path = trimsuffix(var.shared_seed_corpus_source, "/")
+  seed_corpus_provenance_source = local.seed_corpus_source_type == "s3" ? (
+    trimsuffix(var.shared_seed_corpus_source, "/")
+    ) : startswith(local.seed_corpus_local_path, "/") ? (
+    "local-sha256://${sha256(local.seed_corpus_local_path)}"
+    ) : local.seed_corpus_source_type == "local" ? (
+    "target://${trimprefix(local.seed_corpus_local_path, "./")}"
+  ) : ""
+
+  # A release tag is meaningful only on the foundryup path. Source builds
+  # record the version reported by forge when results are uploaded.
+  foundry_release_version = var.foundry_git_repo == "" ? var.foundry_version : ""
+
   # Pick an AZ that supports the requested instance type to avoid flaky applies
   # when AWS auto-selects an AZ where the type isn't offered.
   subnet_availability_zone = var.availability_zone != "" ? var.availability_zone : sort(data.aws_ec2_instance_type_offerings.fuzzer.locations)[0]
 
-  benchmark_manifest = {
+  benchmark_manifest = merge({
     scfuzzbench_commit           = var.scfuzzbench_commit
     target_repo_url              = var.target_repo_url
     target_commit                = var.target_commit
@@ -38,9 +65,10 @@ locals {
     timeout_hours                = var.timeout_hours
     aws_region                   = var.aws_region
     ubuntu_ami_id                = data.aws_ssm_parameter.ubuntu_ami.value
-    foundry_version              = var.foundry_version
+    foundry_version              = local.foundry_release_version
     foundry_git_repo             = var.foundry_git_repo
     foundry_git_ref              = var.foundry_git_ref
+    foundry_source_patch         = local.foundry_source_patch
     echidna_version              = local.echidna_ci_enabled ? "" : var.echidna_version
     echidna_ci_repo              = var.echidna_ci_repo
     echidna_ci_run_id            = var.echidna_ci_run_id
@@ -56,7 +84,13 @@ locals {
     medusa_go_sha256             = local.medusa_source_enabled ? lower(var.medusa_go_sha256) : ""
     recon_version                = var.recon_version
     fuzzer_keys                  = sort([for fuzzer in local.fuzzer_definitions : fuzzer.key])
-  }
+    }, var.shared_seed_corpus_source != "" ? {
+    seed_corpus = {
+      source         = local.seed_corpus_provenance_source
+      source_type    = local.seed_corpus_source_type
+      copy_semantics = "recursive-byte-for-byte"
+    }
+  } : {})
 
   benchmark_manifest_json = jsonencode(local.benchmark_manifest)
   benchmark_manifest_b64  = base64encode(local.benchmark_manifest_json)
@@ -324,12 +358,47 @@ data "aws_iam_policy_document" "s3_access" {
     ]
   }
 
+  statement {
+    sid     = "VerifyImmutableBenchmarkManifests"
+    actions = ["s3:GetObject"]
+    resources = [
+      "arn:aws:s3:::${local.bucket_name}/logs/*/manifest.json",
+      "arn:aws:s3:::${local.bucket_name}/runs/*/manifest.json",
+    ]
+  }
+
   dynamic "statement" {
     for_each = local.ssm_parameter_arns
 
     content {
       actions   = ["ssm:GetParameter"]
       resources = [statement.value]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = local.seed_corpus_s3_bucket != "" ? [local.seed_corpus_s3_bucket] : []
+
+    content {
+      sid       = "ReadSharedSeedCorpusObjects"
+      actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+      resources = ["arn:aws:s3:::${statement.value}/${local.seed_corpus_s3_prefix}/*"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = local.seed_corpus_s3_bucket != "" ? [local.seed_corpus_s3_bucket] : []
+
+    content {
+      sid       = "ListSharedSeedCorpusPrefix"
+      actions   = ["s3:ListBucket"]
+      resources = ["arn:aws:s3:::${statement.value}"]
+
+      condition {
+        test     = "StringLike"
+        variable = "s3:prefix"
+        values   = ["${local.seed_corpus_s3_prefix}/", "${local.seed_corpus_s3_prefix}/*"]
+      }
     }
   }
 }
@@ -446,6 +515,7 @@ resource "aws_instance" "fuzzer" {
   user_data_base64 = base64gzip(templatefile("${path.module}/user_data.sh.tftpl", {
     fuzzer_key                          = each.value.fuzzer.key
     shared_sh                           = file("${path.module}/../fuzzers/_shared/common.sh")
+    seed_corpus_helper                  = file("${path.module}/../fuzzers/_shared/prepare_seed_corpus.py")
     install_sh                          = file(each.value.fuzzer.install_path)
     run_sh                              = file(each.value.fuzzer.run_path)
     echidna_ci_enabled                  = each.value.fuzzer.key == "echidna" && local.echidna_ci_enabled
@@ -461,9 +531,10 @@ resource "aws_instance" "fuzzer" {
     repo_url                            = var.target_repo_url
     repo_commit                         = var.target_commit
     benchmark_type                      = var.benchmark_type
-    foundry_version                     = var.foundry_version
+    foundry_version                     = local.foundry_release_version
     foundry_git_repo                    = var.foundry_git_repo
     foundry_git_ref                     = var.foundry_git_ref
+    foundry_source_patch                = file(local.foundry_throughput_patch_path)
     echidna_version                     = var.echidna_version
     echidna_ci_repo                     = each.value.fuzzer.key == "echidna" ? var.echidna_ci_repo : ""
     echidna_ci_run_id                   = each.value.fuzzer.key == "echidna" ? var.echidna_ci_run_id : ""
@@ -479,6 +550,8 @@ resource "aws_instance" "fuzzer" {
     medusa_go_sha256                    = each.value.fuzzer.key == "medusa" && local.medusa_source_enabled ? var.medusa_go_sha256 : ""
     recon_version                       = var.recon_version
     git_token_ssm_parameter_name        = var.git_token_ssm_parameter_name
+    seed_corpus_source                  = var.shared_seed_corpus_source
+    seed_corpus_provenance_source       = local.seed_corpus_provenance_source
     fuzzer_env                          = local.merged_fuzzer_env
   }))
 

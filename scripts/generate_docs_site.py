@@ -434,6 +434,33 @@ def format_fuzzer_lines(manifest: dict) -> list[str]:
     return lines
 
 
+def format_seed_corpus_lines(manifest: dict) -> list[str]:
+    seed_corpus = manifest.get("seed_corpus")
+    if not isinstance(seed_corpus, dict):
+        return []
+
+    lines: list[str] = []
+    fields = (
+        ("seed_corpus_source", "source"),
+        ("seed_corpus_source_type", "source_type"),
+        ("seed_corpus_file_count", "file_count"),
+        ("seed_corpus_size_bytes", "size_bytes"),
+        ("seed_corpus_sha256", "sha256"),
+        ("seed_corpus_digest_algorithm", "digest_algorithm"),
+        ("seed_corpus_copy_semantics", "copy_semantics"),
+        ("seed_corpus_source_immutability", "source_immutability"),
+        ("seed_corpus_s3_listing_sha256", "s3_listing_sha256"),
+    )
+    for label, key in fields:
+        value = seed_corpus.get(key)
+        if value is None:
+            continue
+        rendered = str(value).strip()
+        if rendered:
+            lines.append(f"- {label}: `{rendered}`")
+    return lines
+
+
 def write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -903,14 +930,28 @@ def main() -> int:
         memory_chart_key = f"{r.analysis_prefix}/memory_usage_over_time.png"
         broken_md_key = f"{r.analysis_prefix}/broken_invariants.md"
         broken_csv_key = f"{r.analysis_prefix}/broken_invariants.csv"
+        known_bug_md_key = f"{r.analysis_prefix}/known_bug_report.md"
+        known_bug_summary_csv_key = f"{r.analysis_prefix}/known_bug_summary.csv"
+        known_bug_findings_csv_key = f"{r.analysis_prefix}/known_bug_findings.csv"
         throughput_summary_csv_key = f"{r.analysis_prefix}/throughput_summary.csv"
         progress_metrics_summary_csv_key = (
             f"{r.analysis_prefix}/progress_metrics_summary.csv"
         )
+        selector_distribution_csv_key = (
+            f"{r.analysis_prefix}/selector_distribution.csv"
+        )
+        selector_summary_json_key = f"{r.analysis_prefix}/selector_summary.json"
         txps_over_time_chart_key = f"{r.analysis_prefix}/tx_per_second_over_time.png"
         gasps_over_time_chart_key = f"{r.analysis_prefix}/gas_per_second_over_time.png"
         seqps_over_time_chart_key = f"{r.analysis_prefix}/seq_per_second_over_time.png"
-        coverage_over_time_chart_key = f"{r.analysis_prefix}/coverage_proxy_over_time.png"
+        coverage_over_time_chart_name = "coverage_over_time.png"
+        coverage_over_time_chart_key = (
+            f"{r.analysis_prefix}/{coverage_over_time_chart_name}"
+        )
+        legacy_coverage_over_time_chart_name = "coverage_proxy_over_time.png"
+        legacy_coverage_over_time_chart_key = (
+            f"{r.analysis_prefix}/{legacy_coverage_over_time_chart_name}"
+        )
         corpus_over_time_chart_key = f"{r.analysis_prefix}/corpus_size_over_time.png"
         runner_md_key = f"{r.analysis_prefix}/runner_resource_usage.md"
         runner_summary_csv_key = f"{r.analysis_prefix}/runner_resource_summary.csv"
@@ -930,6 +971,18 @@ def main() -> int:
         has_broken_csv = (
             r.analysis_kind == "analysis" and head_exists(bucket, broken_csv_key, profile=profile)
         )
+        has_known_bug_md = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, known_bug_md_key, profile=profile)
+        )
+        has_known_bug_summary_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, known_bug_summary_csv_key, profile=profile)
+        )
+        has_known_bug_findings_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, known_bug_findings_csv_key, profile=profile)
+        )
         has_throughput_summary_csv = (
             r.analysis_kind == "analysis"
             and head_exists(bucket, throughput_summary_csv_key, profile=profile)
@@ -937,6 +990,14 @@ def main() -> int:
         has_progress_metrics_summary_csv = (
             r.analysis_kind == "analysis"
             and head_exists(bucket, progress_metrics_summary_csv_key, profile=profile)
+        )
+        has_selector_distribution_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, selector_distribution_csv_key, profile=profile)
+        )
+        has_selector_summary_json = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, selector_summary_json_key, profile=profile)
         )
         has_txps_over_time_chart = (
             r.analysis_kind == "analysis"
@@ -950,10 +1011,17 @@ def main() -> int:
             r.analysis_kind == "analysis"
             and head_exists(bucket, seqps_over_time_chart_key, profile=profile)
         )
-        has_coverage_over_time_chart = (
-            r.analysis_kind == "analysis"
-            and head_exists(bucket, coverage_over_time_chart_key, profile=profile)
-        )
+        has_coverage_over_time_chart = False
+        if r.analysis_kind == "analysis":
+            if head_exists(bucket, coverage_over_time_chart_key, profile=profile):
+                has_coverage_over_time_chart = True
+            elif head_exists(
+                bucket, legacy_coverage_over_time_chart_key, profile=profile
+            ):
+                has_coverage_over_time_chart = True
+                coverage_over_time_chart_name = (
+                    legacy_coverage_over_time_chart_name
+                )
         has_corpus_over_time_chart = (
             r.analysis_kind == "analysis"
             and head_exists(bucket, corpus_over_time_chart_key, profile=profile)
@@ -981,7 +1049,9 @@ def main() -> int:
                 if has_invariant_chart:
                     lines.append(f"![Invariant Overlap (UpSet)]({analysis_base}/invariant_overlap_upset.png)")
                 if has_coverage_over_time_chart:
-                    lines.append(f"![Coverage Over Time]({analysis_base}/coverage_proxy_over_time.png)")
+                    lines.append(
+                        f"![Coverage Over Time]({analysis_base}/{coverage_over_time_chart_name})"
+                    )
                 if has_corpus_over_time_chart:
                     lines.append(f"![Corpus Size Over Time]({analysis_base}/corpus_size_over_time.png)")
                 if has_seqps_over_time_chart:
@@ -1026,6 +1096,17 @@ def main() -> int:
                 except Exception:
                     lines.append("_Failed to fetch broken_invariants.md from S3._")
                     lines.append("")
+            if has_known_bug_md:
+                try:
+                    known_bug_raw = aws_text(
+                        ["s3", "cp", f"s3://{bucket}/{known_bug_md_key}", "-"],
+                        profile=profile,
+                    )
+                    lines.append(rewrite_headings(known_bug_raw, add=2).rstrip())
+                    lines.append("")
+                except Exception:
+                    lines.append("_Failed to fetch known_bug_report.md from S3._")
+                    lines.append("")
             if has_runner_md:
                 try:
                     runner_raw = aws_text(
@@ -1064,6 +1145,7 @@ def main() -> int:
         add_kv("foundry_version", m.get("foundry_version"))
         add_kv("foundry_git_repo", m.get("foundry_git_repo"))
         add_kv("foundry_git_ref", m.get("foundry_git_ref"))
+        add_kv("foundry_source_patch", m.get("foundry_source_patch"))
         add_kv("echidna_version", m.get("echidna_version"))
         add_kv("echidna_ci_repo", m.get("echidna_ci_repo"))
         add_kv("echidna_ci_run_id", m.get("echidna_ci_run_id"))
@@ -1080,6 +1162,7 @@ def main() -> int:
         add_kv("recon_version", m.get("recon_version"))
         if isinstance(m.get("fuzzer_keys"), list):
             lines.append(f"- fuzzer_keys: `{', '.join([str(x) for x in m.get('fuzzer_keys', [])])}`")
+        lines.extend(format_seed_corpus_lines(m))
         lines.append("")
 
         # Artifact links.
@@ -1094,12 +1177,37 @@ def main() -> int:
                 lines.append("- Broken invariants (Markdown): " + f"{analysis_base}/broken_invariants.md")
             if has_broken_csv:
                 lines.append("- Broken invariants (CSV): " + f"{analysis_base}/broken_invariants.csv")
+            if has_known_bug_md:
+                lines.append(
+                    "- Ground-truth known bugs (Markdown): "
+                    + f"{analysis_base}/known_bug_report.md"
+                )
+            if has_known_bug_summary_csv:
+                lines.append(
+                    "- Ground-truth summary (CSV): "
+                    + f"{analysis_base}/known_bug_summary.csv"
+                )
+            if has_known_bug_findings_csv:
+                lines.append(
+                    "- Ground-truth findings (CSV): "
+                    + f"{analysis_base}/known_bug_findings.csv"
+                )
             if has_throughput_summary_csv:
                 lines.append("- Throughput summary (CSV): " + f"{analysis_base}/throughput_summary.csv")
             if has_progress_metrics_summary_csv:
                 lines.append(
                     "- Progress metrics summary (CSV): "
                     + f"{analysis_base}/progress_metrics_summary.csv"
+                )
+            if has_selector_distribution_csv:
+                lines.append(
+                    "- Function selector distribution (CSV): "
+                    + f"{analysis_base}/selector_distribution.csv"
+                )
+            if has_selector_summary_json:
+                lines.append(
+                    "- Function selector summary and health (JSON): "
+                    + f"{analysis_base}/selector_summary.json"
                 )
             if has_runner_md:
                 lines.append("- Runner resource usage (Markdown): " + f"{analysis_base}/runner_resource_usage.md")

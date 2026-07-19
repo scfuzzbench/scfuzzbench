@@ -121,6 +121,30 @@ class GenerateDocsSiteTests(unittest.TestCase):
 
         self.assertEqual(["`echidna (ci:9680bb1)`", "`medusa (git:3857153)`"], lines)
 
+    def test_format_seed_corpus_lines_reports_provenance(self):
+        module = load_generate_docs_site()
+        manifest = {
+            "seed_corpus": {
+                "source": "s3://bench-inputs/seeds/v1",
+                "source_type": "s3",
+                "file_count": 3,
+                "size_bytes": 42,
+                "sha256": "a" * 64,
+                "copy_semantics": "recursive-byte-for-byte",
+            }
+        }
+
+        lines = module.format_seed_corpus_lines(manifest)
+
+        self.assertIn("- seed_corpus_source: `s3://bench-inputs/seeds/v1`", lines)
+        self.assertIn("- seed_corpus_file_count: `3`", lines)
+        self.assertIn(f"- seed_corpus_sha256: `{'a' * 64}`", lines)
+
+    def test_format_seed_corpus_lines_omits_empty_default(self):
+        module = load_generate_docs_site()
+
+        self.assertEqual([], module.format_seed_corpus_lines({}))
+
     def test_run_social_description_is_url_specific(self):
         module = load_generate_docs_site()
         run = module.Run(

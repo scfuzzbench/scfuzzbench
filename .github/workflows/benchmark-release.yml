@@ -19,6 +19,11 @@ on:
         description: "Comma-separated fuzzers to exclude (optional)."
         required: false
         default: ""
+      coverage_over_time:
+        description: "Include opt-in, fuzzer-native coverage-over-time proxies in analysis."
+        required: false
+        type: boolean
+        default: false
       force_reanalyze:
         description: "Re-run analysis and re-upload artifacts even if release tag exists."
         required: false
@@ -284,6 +289,7 @@ jobs:
           DURATION_HOURS: ${{ steps.manifest.outputs.report_budget_hours }}
           REPORT_BUDGET: ${{ steps.manifest.outputs.report_budget_hours }}
           EXCLUDE_FUZZERS: ${{ inputs.exclude_fuzzers }}
+          COVERAGE_OVER_TIME: ${{ inputs.coverage_over_time }}
         run: |
           set -euo pipefail
           make results-analyze-all
@@ -308,7 +314,7 @@ jobs:
             tx_per_second_over_time.png \
             gas_per_second_over_time.png \
             seq_per_second_over_time.png \
-            coverage_proxy_over_time.png \
+            coverage_over_time.png \
             corpus_size_over_time.png \
             favored_items_over_time.png \
             failure_rate_over_time.png \
@@ -321,6 +327,9 @@ jobs:
           done
           cp "${dest_root}/data/broken_invariants.md" "${analysis_dir}/broken_invariants.md"
           cp "${dest_root}/data/broken_invariants.csv" "${analysis_dir}/broken_invariants.csv"
+          cp "${dest_root}/data/known_bug_report.md" "${analysis_dir}/known_bug_report.md"
+          cp "${dest_root}/data/known_bug_summary.csv" "${analysis_dir}/known_bug_summary.csv"
+          cp "${dest_root}/data/known_bug_findings.csv" "${analysis_dir}/known_bug_findings.csv"
           cp "${dest_root}/data/runner_resource_usage.md" "${analysis_dir}/runner_resource_usage.md"
           cp "${dest_root}/data/runner_resource_summary.csv" "${analysis_dir}/runner_resource_summary.csv"
           cp "${dest_root}/data/runner_resource_timeseries.csv" "${analysis_dir}/runner_resource_timeseries.csv"
@@ -329,6 +338,12 @@ jobs:
           fi
           if [[ -f "${dest_root}/data/progress_metrics_summary.csv" ]]; then
             cp "${dest_root}/data/progress_metrics_summary.csv" "${analysis_dir}/progress_metrics_summary.csv"
+          fi
+          if [[ -f "${dest_root}/data/selector_distribution.csv" ]]; then
+            cp "${dest_root}/data/selector_distribution.csv" "${analysis_dir}/selector_distribution.csv"
+          fi
+          if [[ -f "${dest_root}/data/selector_summary.json" ]]; then
+            cp "${dest_root}/data/selector_summary.json" "${analysis_dir}/selector_summary.json"
           fi
           for differential_csv in \
             differential_coverage_summary.csv \
@@ -399,7 +414,7 @@ jobs:
             tx_per_second_over_time.png \
             gas_per_second_over_time.png \
             seq_per_second_over_time.png \
-            coverage_proxy_over_time.png \
+            coverage_over_time.png \
             corpus_size_over_time.png \
             favored_items_over_time.png \
             failure_rate_over_time.png \
@@ -412,6 +427,9 @@ jobs:
           done
           aws s3 cp "${analysis_dir}/broken_invariants.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/broken_invariants.md" --content-type text/markdown
           aws s3 cp "${analysis_dir}/broken_invariants.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/broken_invariants.csv" --content-type text/csv
+          aws s3 cp "${analysis_dir}/known_bug_report.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/known_bug_report.md" --content-type text/markdown
+          aws s3 cp "${analysis_dir}/known_bug_summary.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/known_bug_summary.csv" --content-type text/csv
+          aws s3 cp "${analysis_dir}/known_bug_findings.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/known_bug_findings.csv" --content-type text/csv
           aws s3 cp "${analysis_dir}/runner_resource_usage.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_usage.md" --content-type text/markdown
           aws s3 cp "${analysis_dir}/runner_resource_summary.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_summary.csv" --content-type text/csv
           aws s3 cp "${analysis_dir}/runner_resource_timeseries.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_timeseries.csv" --content-type text/csv
@@ -420,6 +438,12 @@ jobs:
           fi
           if [[ -f "${analysis_dir}/progress_metrics_summary.csv" ]]; then
             aws s3 cp "${analysis_dir}/progress_metrics_summary.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/progress_metrics_summary.csv" --content-type text/csv
+          fi
+          if [[ -f "${analysis_dir}/selector_distribution.csv" ]]; then
+            aws s3 cp "${analysis_dir}/selector_distribution.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/selector_distribution.csv" --content-type text/csv
+          fi
+          if [[ -f "${analysis_dir}/selector_summary.json" ]]; then
+            aws s3 cp "${analysis_dir}/selector_summary.json" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/selector_summary.json" --content-type application/json
           fi
           for differential_csv in \
             differential_coverage_summary.csv \
@@ -475,7 +499,7 @@ jobs:
               tx_per_second_over_time.png \
               gas_per_second_over_time.png \
               seq_per_second_over_time.png \
-              coverage_proxy_over_time.png \
+              coverage_over_time.png \
               corpus_size_over_time.png \
               favored_items_over_time.png \
               failure_rate_over_time.png \
@@ -496,11 +520,20 @@ jobs:
             echo "- Analysis bundle: ${bundles_base}/analysis.zip"
             echo "- Broken invariants (Markdown): ${analysis_base}/broken_invariants.md"
             echo "- Broken invariants (CSV): ${analysis_base}/broken_invariants.csv"
+            echo "- Ground-truth known bugs (Markdown): ${analysis_base}/known_bug_report.md"
+            echo "- Ground-truth summary (CSV): ${analysis_base}/known_bug_summary.csv"
+            echo "- Ground-truth findings (CSV): ${analysis_base}/known_bug_findings.csv"
             if [[ -f "${analysis_dir}/throughput_summary.csv" ]]; then
               echo "- Throughput summary (CSV): ${analysis_base}/throughput_summary.csv"
             fi
             if [[ -f "${analysis_dir}/progress_metrics_summary.csv" ]]; then
               echo "- Progress metrics summary (CSV): ${analysis_base}/progress_metrics_summary.csv"
+            fi
+            if [[ -f "${analysis_dir}/selector_distribution.csv" ]]; then
+              echo "- Function selector distribution (CSV): ${analysis_base}/selector_distribution.csv"
+            fi
+            if [[ -f "${analysis_dir}/selector_summary.json" ]]; then
+              echo "- Function selector summary and health (JSON): ${analysis_base}/selector_summary.json"
             fi
             if [[ -f "${analysis_dir}/differential_coverage_summary.csv" ]]; then
               echo "- Differential coverage summary (CSV): ${analysis_base}/differential_coverage_summary.csv"

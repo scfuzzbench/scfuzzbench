@@ -1,9 +1,11 @@
 import hashlib
 import json
 import os
+import platform
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import textwrap
@@ -88,6 +90,9 @@ class BleedingEdgeInstallerContractTests(unittest.TestCase):
 
     def install_stable_mocks(self):
         curl_log = self.root / "curl.log"
+        echidna_archive = self.root / "echidna-stable.tar.gz"
+        with tarfile.open(echidna_archive, "w:gz") as archive:
+            archive.add(Path(sys.executable).resolve(), arcname="echidna", recursive=False)
         self.write_executable(
             "file",
             """\
@@ -108,7 +113,11 @@ class BleedingEdgeInstallerContractTests(unittest.TestCase):
                 *) shift ;;
               esac
             done
-            : > "${output}"
+            if [[ "${output}" == *echidna* ]]; then
+              cp "${MOCK_ECHIDNA_ARCHIVE}" "${output}"
+            else
+              : > "${output}"
+            fi
             """,
         )
         self.write_executable(
@@ -133,15 +142,19 @@ class BleedingEdgeInstallerContractTests(unittest.TestCase):
             fi
             """,
         )
-        return curl_log
+        return curl_log, echidna_archive
 
     def test_blank_opt_in_inputs_keep_stable_release_installers(self):
-        curl_log = self.install_stable_mocks()
-        stable_env = {"MOCK_CURL_LOG": str(curl_log)}
+        curl_log, echidna_archive = self.install_stable_mocks()
+        echidna_version = platform.python_version()
+        stable_env = {
+            "MOCK_CURL_LOG": str(curl_log),
+            "MOCK_ECHIDNA_ARCHIVE": str(echidna_archive),
+        }
 
         echidna = self.run_installer(
             "fuzzers/echidna/install.sh",
-            {**stable_env, "ECHIDNA_VERSION": "2.3.1"},
+            {**stable_env, "ECHIDNA_VERSION": echidna_version},
         )
         medusa = self.run_installer(
             "fuzzers/medusa/install.sh",
@@ -151,7 +164,7 @@ class BleedingEdgeInstallerContractTests(unittest.TestCase):
         self.assertEqual(0, echidna.returncode, echidna.stderr)
         self.assertEqual(0, medusa.returncode, medusa.stderr)
         requests = curl_log.read_text(encoding="utf-8")
-        self.assertIn("echidna/releases/download/v2.3.1", requests)
+        self.assertIn(f"echidna/releases/download/v{echidna_version}", requests)
         self.assertIn("medusa/releases/download/v1.4.1", requests)
         self.assertNotIn("api.github.com", requests)
         self.assertNotIn("go.dev", requests)

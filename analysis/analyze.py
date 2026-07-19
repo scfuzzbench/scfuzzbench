@@ -138,13 +138,17 @@ SEQ_RATE_KEYS = (
     "sequences_per_second",
     "sequences_per_sec",
 )
-COVERAGE_KEYS = (
-    "cumulative_edges_seen",
-    "edges_seen",
-    "branches_hit",
-    "cov",
-    "coverage",
-)
+# Coverage counters are deliberately selected by normalized fuzzer name. A
+# generic "coverage" key is too ambiguous, and Recon output contains both
+# Echidna-style ``cov`` status lines and a distinct end-of-run
+# ``Unique instructions`` total. Mixing those values would create a series with
+# no coherent unit.
+COVERAGE_KEYS_BY_FUZZER = {
+    "echidna": ("cov",),
+    "medusa": ("branches_hit",),
+    "foundry": ("cumulative_edges_seen", "edges_seen"),
+    "recon-fuzzer": ("unique_instructions",),
+}
 CORPUS_KEYS = (
     "corpus_count",
     "corpus_size",
@@ -165,11 +169,23 @@ SEQ_RATE_PATTERNS = [
     re.compile(r"(?i)\bseq/s:\s*([0-9]+(?:\.[0-9]+)?)"),
     re.compile(r"(?i)\bseq(?:uences?)?\s*(?:/|per)\s*s(?:ec(?:ond)?)?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)"),
 ]
-COVERAGE_PATTERNS = [
-    re.compile(r"(?i)\bbranches hit:\s*([0-9]+(?:\.[0-9]+)?)"),
-    re.compile(r"(?i)\bcov:\s*([0-9]+(?:\.[0-9]+)?)"),
-    re.compile(r"(?i)\bUnique instructions:\s*([0-9]+(?:\.[0-9]+)?)"),
-]
+COVERAGE_PATTERNS_BY_FUZZER = {
+    "echidna": (
+        ("cov", re.compile(r"(?i)\bcov:\s*([0-9]+(?:\.[0-9]+)?)")),
+    ),
+    "medusa": (
+        (
+            "branches_hit",
+            re.compile(r"(?i)\bbranches hit:\s*([0-9]+(?:\.[0-9]+)?)"),
+        ),
+    ),
+    "recon-fuzzer": (
+        (
+            "unique_instructions",
+            re.compile(r"(?i)\bUnique instructions:\s*([0-9]+(?:\.[0-9]+)?)"),
+        ),
+    ),
+}
 CORPUS_PATTERNS = [
     re.compile(r"(?i)\bcorpus:\s*([0-9]+(?:\.[0-9]+)?)"),
     re.compile(r"(?i)\bCorpus size:\s*([0-9]+(?:\.[0-9]+)?)"),
@@ -304,17 +320,29 @@ def parse_optional_float(value: Any) -> Optional[float]:
         return None
     if isinstance(value, bool):
         return None
+    parsed: float
     if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
+        try:
+            parsed = float(value)
+        except OverflowError:
+            return None
+    elif isinstance(value, str):
         text = value.strip()
         if not text:
             return None
         try:
-            return float(text)
-        except ValueError:
+            parsed = float(text)
+        except (OverflowError, ValueError):
             return None
-    return None
+    else:
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def nonnegative_metric(value: Optional[float]) -> Optional[float]:
+    if value is None or value < 0.0:
+        return None
+    return value
 
 
 def normalize_metric_key(key: str) -> str:
@@ -372,6 +400,51 @@ def parse_count_from_text(line: str, patterns: List[re.Pattern[str]]) -> Optiona
     return None
 
 
+def valid_coverage_counter(value: Optional[float]) -> Optional[float]:
+    if value is None or not math.isfinite(value) or value < 0.0:
+        return None
+    return value
+
+
+def parse_coverage_from_payload(
+    payload: Dict[str, Any], fuzzer: str
+) -> Tuple[Optional[float], Optional[str]]:
+    keys = COVERAGE_KEYS_BY_FUZZER.get(fuzzer)
+    if not keys:
+        return None, None
+    value = valid_coverage_counter(
+        pick_metric_value(flatten_numeric_values(payload), keys)
+    )
+    if value is None:
+        return None, None
+    # Resolve the exact/suffix key that supplied the value so the CSV provenance
+    # is explicit. ``pick_metric_value`` follows the same key preference order.
+    metric_values = flatten_numeric_values(payload)
+    for key in keys:
+        for metric_key, candidate in metric_values.items():
+            if metric_key == key or metric_key.endswith(f"_{key}"):
+                if valid_coverage_counter(candidate) == value:
+                    return value, key
+    for key in keys:
+        for metric_key, candidate in metric_values.items():
+            if key in metric_key and valid_coverage_counter(candidate) == value:
+                return value, key
+    return value, keys[0]
+
+
+def parse_coverage_from_text(
+    line: str, fuzzer: str
+) -> Tuple[Optional[float], Optional[str]]:
+    for signal, pattern in COVERAGE_PATTERNS_BY_FUZZER.get(fuzzer, ()):
+        match = pattern.search(line)
+        if not match:
+            continue
+        value = valid_coverage_counter(parse_optional_float(match.group(1)))
+        if value is not None:
+            return value, signal
+    return None, None
+
+
 def parse_failure_rate_from_text(line: str) -> Optional[float]:
     for pattern in FAILURE_RATE_PATTERNS:
         match = pattern.search(line)
@@ -389,15 +462,15 @@ def parse_throughput_from_payload(
     payload: Dict[str, Any], elapsed_seconds: Optional[float]
 ) -> Tuple[Optional[float], Optional[float], Optional[str]]:
     metric_values = flatten_numeric_values(payload)
-    tx_rate = pick_metric_value(metric_values, TX_RATE_KEYS)
-    gas_rate = pick_metric_value(metric_values, GAS_RATE_KEYS)
+    tx_rate = nonnegative_metric(pick_metric_value(metric_values, TX_RATE_KEYS))
+    gas_rate = nonnegative_metric(pick_metric_value(metric_values, GAS_RATE_KEYS))
 
     source = None
     if tx_rate is not None or gas_rate is not None:
         source = "json-rate"
 
-    tx_count = pick_metric_value(metric_values, TX_COUNT_KEYS)
-    gas_count = pick_metric_value(metric_values, GAS_COUNT_KEYS)
+    tx_count = nonnegative_metric(pick_metric_value(metric_values, TX_COUNT_KEYS))
+    gas_count = nonnegative_metric(pick_metric_value(metric_values, GAS_COUNT_KEYS))
     needs_count_derivation = (tx_rate is None and tx_count is not None) or (
         gas_rate is None and gas_count is not None
     )
@@ -420,6 +493,9 @@ def parse_throughput_from_payload(
 
 def parse_progress_metrics_from_payload(
     payload: Dict[str, Any],
+    *,
+    fuzzer: str,
+    include_coverage: bool = False,
 ) -> Tuple[
     Optional[float],
     Optional[float],
@@ -430,7 +506,10 @@ def parse_progress_metrics_from_payload(
 ]:
     metric_values = flatten_numeric_values(payload)
     seq_per_second = pick_metric_value(metric_values, SEQ_RATE_KEYS)
-    coverage_proxy = pick_metric_value(metric_values, COVERAGE_KEYS)
+    coverage_proxy: Optional[float] = None
+    coverage_signal: Optional[str] = None
+    if include_coverage:
+        coverage_proxy, coverage_signal = parse_coverage_from_payload(payload, fuzzer)
     corpus_size = pick_metric_value(metric_values, CORPUS_KEYS)
     favored_items = pick_metric_value(metric_values, FAVORED_KEYS)
     failure_rate = pick_metric_value(metric_values, ("failure_rate", "fail_rate"))
@@ -459,7 +538,11 @@ def parse_progress_metrics_from_payload(
         corpus_size,
         favored_items,
         failure_rate,
-        "json-metrics",
+        (
+            f"json-metrics:{coverage_signal}"
+            if coverage_signal is not None
+            else "json-metrics"
+        ),
     )
 
 
@@ -945,11 +1028,19 @@ def parse_throughput_log(
                     last_elapsed = elapsed_seconds
                 tx_rate, gas_rate, source = parse_throughput_from_payload(payload, elapsed_seconds)
             else:
-                tx_rate = parse_rate_from_text(clean_line, TX_RATE_PATTERNS)
-                gas_rate = parse_rate_from_text(clean_line, GAS_RATE_PATTERNS)
+                tx_rate = nonnegative_metric(
+                    parse_rate_from_text(clean_line, TX_RATE_PATTERNS)
+                )
+                gas_rate = nonnegative_metric(
+                    parse_rate_from_text(clean_line, GAS_RATE_PATTERNS)
+                )
                 if elapsed_seconds is not None and elapsed_seconds > 0.0:
-                    tx_count = parse_count_from_text(clean_line, TEXT_TX_COUNT_PATTERNS)
-                    gas_count = parse_count_from_text(clean_line, TEXT_GAS_COUNT_PATTERNS)
+                    tx_count = nonnegative_metric(
+                        parse_count_from_text(clean_line, TEXT_TX_COUNT_PATTERNS)
+                    )
+                    gas_count = nonnegative_metric(
+                        parse_count_from_text(clean_line, TEXT_GAS_COUNT_PATTERNS)
+                    )
                     if tx_rate is None and tx_count is not None:
                         tx_rate = tx_count / elapsed_seconds
                         source = "text-cumulative"
@@ -1070,9 +1161,15 @@ def parse_throughput_logs(
 
 
 def parse_progress_metrics_log(
-    path: Path, run_id: str, instance_id: str, fuzzer_label: str
+    path: Path,
+    run_id: str,
+    instance_id: str,
+    fuzzer_label: str,
+    *,
+    include_coverage: bool = False,
 ) -> List[ProgressMetricsSample]:
     samples: List[ProgressMetricsSample] = []
+    fuzzer = normalize_fuzzer(fuzzer_label)
     first_ts: Optional[float] = None
     first_abs_ts: Optional[float] = None
     last_elapsed: Optional[float] = None
@@ -1134,10 +1231,18 @@ def parse_progress_metrics_log(
                     favored_items,
                     failure_rate,
                     source,
-                ) = parse_progress_metrics_from_payload(payload)
+                ) = parse_progress_metrics_from_payload(
+                    payload,
+                    fuzzer=fuzzer,
+                    include_coverage=include_coverage,
+                )
             else:
                 seq_per_second = parse_rate_from_text(clean_line, SEQ_RATE_PATTERNS)
-                coverage_proxy = parse_count_from_text(clean_line, COVERAGE_PATTERNS)
+                coverage_signal: Optional[str] = None
+                if include_coverage:
+                    coverage_proxy, coverage_signal = parse_coverage_from_text(
+                        clean_line, fuzzer
+                    )
                 corpus_size = parse_count_from_text(clean_line, CORPUS_PATTERNS)
                 failure_rate = parse_failure_rate_from_text(clean_line)
                 if (
@@ -1146,7 +1251,11 @@ def parse_progress_metrics_log(
                     or corpus_size is not None
                     or failure_rate is not None
                 ):
-                    source = "text-metrics"
+                    source = (
+                        f"text-metrics:{coverage_signal}"
+                        if coverage_signal is not None
+                        else "text-metrics"
+                    )
 
             if (
                 seq_per_second is None
@@ -1175,7 +1284,7 @@ def parse_progress_metrics_log(
                 ProgressMetricsSample(
                     run_id=run_id,
                     instance_id=instance_id,
-                    fuzzer=normalize_fuzzer(fuzzer_label),
+                    fuzzer=fuzzer,
                     fuzzer_label=fuzzer_label,
                     elapsed_seconds=float(elapsed_seconds),
                     seq_per_second=seq_per_second,
@@ -1194,6 +1303,8 @@ def parse_progress_metrics_logs(
     logs_dir: Path,
     run_id: Optional[str],
     log_files: Sequence[LogFile],
+    *,
+    include_coverage: bool = False,
 ) -> List[ProgressMetricsSample]:
     samples: List[ProgressMetricsSample] = []
     run_id_value = run_id or infer_run_id(logs_dir) or "unknown"
@@ -1204,6 +1315,7 @@ def parse_progress_metrics_logs(
                 run_id_value,
                 log_file.instance_id,
                 log_file.fuzzer_label,
+                include_coverage=include_coverage,
             )
         )
     return samples
@@ -2899,6 +3011,15 @@ def parse_args() -> argparse.Namespace:
         help="Use raw directory names as fuzzer labels instead of normalizing.",
     )
     run_parser.add_argument(
+        "--coverage-over-time",
+        action="store_true",
+        help=(
+            "Opt in to extracting fuzzer-native coverage signals from timestamped "
+            "progress output. Signals use different units and are not cross-fuzzer "
+            "coverage scores."
+        ),
+    )
+    run_parser.add_argument(
         "--pairing-mode",
         choices=["unpaired", "paired"],
         default="unpaired",
@@ -2971,7 +3092,10 @@ def main() -> int:
             args.logs_dir, args.run_id, log_files
         )
         progress_metrics_samples = parse_progress_metrics_logs(
-            args.logs_dir, args.run_id, log_files
+            args.logs_dir,
+            args.run_id,
+            log_files,
+            include_coverage=args.coverage_over_time,
         )
         if raw_labels:
             events = _apply_raw_labels_events(events)
