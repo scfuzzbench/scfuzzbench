@@ -26,9 +26,28 @@ from Crypto.Hash import keccak
 
 SCHEMA_VERSION = 1
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+MAX_INSTANCE_ARTIFACT_BYTES = 512 * 1024 * 1024
+MAX_ARTIFACT_FILES = 20_000
+MAX_DISCOVERED_ENTRIES = 100_000
+MAX_TRAVERSAL_DEPTH = 32
+MAX_CALLS_PER_INSTANCE = 1_000_000
 INSTANCE_PREFIX_RE = re.compile(r"^(i-[0-9a-f]+)-(.*)$", re.IGNORECASE)
 SELECTOR_RE = re.compile(r"^0x[0-9a-fA-F]{8}$")
 SIGNATURE_RE = re.compile(r"^([A-Za-z_$][A-Za-z0-9_$]*)\((.*)\)$")
+
+# Echidna and Recon persist closely related typed-call representations. They
+# are useful cross-checks, but do not count as two independent sources when
+# deriving the optional peer heuristic.
+EVIDENCE_FAMILY = {
+    "echidna": "crytic-typed-corpus",
+    "recon-fuzzer": "crytic-typed-corpus",
+    "medusa": "medusa-calldata",
+    "foundry": "foundry-calldata",
+}
+
+
+class ArtifactTooLarge(ValueError):
+    """Raised before JSON parsing when a corpus artifact exceeds its byte cap."""
 
 # Forge Std's invariant targeting API and panic-test helpers can appear in
 # corpora even though they are harness/framework plumbing, not benchmark
@@ -106,6 +125,8 @@ class InstanceResult:
     malformed_artifacts: int = 0
     ignored_calls: int = 0
     selector_mismatches: int = 0
+    processed_artifact_bytes: int = 0
+    limit_violations: int = 0
     calls: list[SelectorCall] = field(default_factory=list)
     status: str = "unavailable"
     warnings: list[str] = field(default_factory=list)
@@ -286,12 +307,13 @@ def _recon_abi_type(value: Any) -> Optional[str]:
         return "address"
     if tag == "Bool":
         return "bool"
-    if tag == "Bytes":
-        if isinstance(contents, list) and len(contents) >= 2:
-            size = contents[1] if isinstance(contents[1], int) else contents[0]
-            return f"bytes{size}" if isinstance(size, int) else None
-        return None
-    if tag in {"DynamicBytes", "BytesDynamic"}:
+    # Recon v0.4.6 serializes alloy DynSolValue::FixedBytes as
+    # {"FixedBytes": [<32-byte word>, <declared size>]} and dynamic Bytes as
+    # {"Bytes": [<byte>, ...]}. Do not infer a fixed width from byte values.
+    if tag == "FixedBytes" and isinstance(contents, list) and len(contents) == 2:
+        size = contents[1]
+        return f"bytes{size}" if isinstance(size, int) and 1 <= size <= 32 else None
+    if tag in {"Bytes", "DynamicBytes", "BytesDynamic"}:
         return "bytes"
     if tag == "String":
         return "string"
@@ -302,16 +324,12 @@ def _recon_abi_type(value: Any) -> Optional[str]:
         item_types.discard(None)
         return f"{next(iter(item_types))}[]" if len(item_types) == 1 else None
     if tag in {"FixedArray", "ArrayFixed"} and isinstance(contents, list):
-        values: Any = None
-        length: Any = None
-        if len(contents) == 2:
-            values, length = contents
-        if not isinstance(values, list) or not isinstance(length, int):
-            return None
-        item_types = {_recon_abi_type(item) for item in values}
+        item_types = {_recon_abi_type(item) for item in contents}
         item_types.discard(None)
         return (
-            f"{next(iter(item_types))}[{length}]" if len(item_types) == 1 else None
+            f"{next(iter(item_types))}[{len(contents)}]"
+            if contents and len(item_types) == 1
+            else None
         )
     if tag == "Tuple" and isinstance(contents, list):
         item_types = [_recon_abi_type(item) for item in contents]
@@ -391,9 +409,10 @@ def _call_from_medusa(item: Any) -> Optional[SelectorCall]:
     )
     signature = normalize_signature(raw_signature)
     function_name = function_name_from_signature(signature)
-    if selector is None and signature is not None:
-        selector = selector_from_signature(signature)
-    if selector is None and signature is None:
+    # The raw calldata is the observation. ABI labels enrich it only after a
+    # selector cross-check; they must not manufacture an invocation when data
+    # is missing or malformed.
+    if selector is None:
         return None
     return SelectorCall(
         selector=selector,
@@ -417,34 +436,79 @@ def _call_from_foundry(item: Any) -> Optional[SelectorCall]:
     )
 
 
-def _artifact_candidates(instance_dir: Path, engine: str) -> list[Path]:
+def _artifact_candidates(instance_dir: Path, engine: str) -> tuple[list[Path], list[str]]:
     candidates: list[Path] = []
-    for path in instance_dir.rglob("*"):
-        if not path.is_file() or path.is_symlink():
+    warnings: list[str] = []
+    discovered_entries = 0
+    stack: list[tuple[Path, int]] = [(instance_dir, 0)]
+    while stack:
+        directory, depth = stack.pop()
+        try:
+            children = sorted(directory.iterdir(), key=lambda path: path.name)
+        except OSError:
+            warnings.append(f"could not read selector corpus directory: {directory.name}")
             continue
-        parts = {part.lower() for part in path.parts}
-        suffixes = [suffix.lower() for suffix in path.suffixes]
-        if engine in {"echidna", "recon-fuzzer"}:
-            if "coverage" in parts and path.suffix.lower() == ".txt":
-                candidates.append(path)
-        elif engine == "medusa":
-            if "call_sequences" in parts and path.suffix.lower() == ".json":
-                candidates.append(path)
-        elif engine == "foundry":
-            if "corpus" in parts and (
-                path.suffix.lower() == ".json" or suffixes[-2:] == [".json", ".gz"]
-            ):
-                candidates.append(path)
-    return sorted(candidates)
+        for path in children:
+            discovered_entries += 1
+            if discovered_entries > MAX_DISCOVERED_ENTRIES:
+                warnings.append(
+                    f"selector corpus traversal stopped at {MAX_DISCOVERED_ENTRIES} entries"
+                )
+                return sorted(candidates), warnings
+            try:
+                if path.is_symlink():
+                    continue
+                if path.is_dir():
+                    if depth < MAX_TRAVERSAL_DEPTH:
+                        stack.append((path, depth + 1))
+                    else:
+                        warnings.append(
+                            f"selector corpus traversal skipped paths deeper than "
+                            f"{MAX_TRAVERSAL_DEPTH}"
+                        )
+                    continue
+                if not path.is_file():
+                    continue
+            except OSError:
+                continue
+
+            is_candidate = False
+            # Match engine-owned subdirectories, not an ancestor such as the
+            # standard top-level `<DEST>/corpus/unzipped` download path.
+            parts = {
+                part.lower()
+                for part in path.relative_to(instance_dir).parts[:-1]
+            }
+            suffixes = [suffix.lower() for suffix in path.suffixes]
+            if engine in {"echidna", "recon-fuzzer"}:
+                is_candidate = "coverage" in parts and path.suffix.lower() == ".txt"
+            elif engine == "medusa":
+                is_candidate = (
+                    "call_sequences" in parts and path.suffix.lower() == ".json"
+                )
+            elif engine == "foundry":
+                is_candidate = "corpus" in parts and (
+                    path.suffix.lower() == ".json"
+                    or suffixes[-2:] == [".json", ".gz"]
+                )
+            if not is_candidate:
+                continue
+            candidates.append(path)
+            if len(candidates) > MAX_ARTIFACT_FILES:
+                warnings.append(
+                    f"selector corpus processing stopped at {MAX_ARTIFACT_FILES} artifacts"
+                )
+                return sorted(candidates[:MAX_ARTIFACT_FILES]), warnings
+    return sorted(candidates), warnings
 
 
-def _read_json_artifact(path: Path) -> Any:
+def _read_json_artifact(path: Path) -> bytes:
     opener = gzip.open if path.suffix.lower() == ".gz" else open
     with opener(path, "rb") as handle:
         payload = handle.read(MAX_ARTIFACT_BYTES + 1)
     if len(payload) > MAX_ARTIFACT_BYTES:
-        raise ValueError(f"artifact exceeds {MAX_ARTIFACT_BYTES} bytes")
-    return json.loads(payload.decode("utf-8"))
+        raise ArtifactTooLarge(f"artifact exceeds {MAX_ARTIFACT_BYTES} bytes")
+    return payload
 
 
 def _sequence_digest(payload: Any) -> str:
@@ -459,9 +523,17 @@ def _parse_instance(result: InstanceResult) -> None:
         result.status = "unavailable"
         return
 
-    artifacts = _artifact_candidates(result.corpus_path, result.engine)
+    artifacts, discovery_warnings = _artifact_candidates(
+        result.corpus_path, result.engine
+    )
+    if discovery_warnings:
+        result.limit_violations += len(discovery_warnings)
+        result.warnings.extend(discovery_warnings)
     result.artifact_files = len(artifacts)
     if not artifacts:
+        if result.limit_violations:
+            result.status = "malformed"
+            return
         # Foundry deliberately disables corpus persistence in the default runner.
         # No artifact therefore means unavailable telemetry, not an observed zero.
         if result.engine == "foundry":
@@ -482,15 +554,47 @@ def _parse_instance(result: InstanceResult) -> None:
         return
 
     seen_sequences: set[str] = set()
+    stop_processing = False
     for path in artifacts:
+        if result.processed_artifact_bytes >= MAX_INSTANCE_ARTIFACT_BYTES:
+            result.limit_violations += 1
+            result.warnings.append(
+                "selector corpus processing stopped at "
+                f"{MAX_INSTANCE_ARTIFACT_BYTES} decompressed bytes"
+            )
+            break
         try:
-            payload = _read_json_artifact(path)
+            artifact_bytes = _read_json_artifact(path)
+            if (
+                result.processed_artifact_bytes + len(artifact_bytes)
+                > MAX_INSTANCE_ARTIFACT_BYTES
+            ):
+                result.limit_violations += 1
+                result.warnings.append(
+                    "selector corpus processing stopped at "
+                    f"{MAX_INSTANCE_ARTIFACT_BYTES} decompressed bytes"
+                )
+                break
+            result.processed_artifact_bytes += len(artifact_bytes)
+            payload = json.loads(artifact_bytes.decode("utf-8"))
             if not isinstance(payload, list):
                 raise ValueError("corpus artifact must contain a JSON array")
-        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            digest = _sequence_digest(payload)
+        except ArtifactTooLarge:
+            result.processed_artifact_bytes += MAX_ARTIFACT_BYTES
+            result.malformed_artifacts += 1
+            result.limit_violations += 1
+            continue
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            TypeError,
+            RecursionError,
+            json.JSONDecodeError,
+        ):
             result.malformed_artifacts += 1
             continue
-        digest = _sequence_digest(payload)
         if digest in seen_sequences:
             result.duplicate_sequences += 1
             continue
@@ -511,13 +615,42 @@ def _parse_instance(result: InstanceResult) -> None:
                 and selector_from_signature(call.signature) != call.selector
             ):
                 result.selector_mismatches += 1
+                # Raw calldata remains authoritative. Do not attach a
+                # contradictory ABI label to that selector.
+                call = SelectorCall(
+                    selector=call.selector,
+                    signature=None,
+                    function_name=None,
+                    source_format=call.source_format,
+                )
             result.calls.append(call)
+            if len(result.calls) >= MAX_CALLS_PER_INSTANCE:
+                result.limit_violations += 1
+                result.warnings.append(
+                    "selector corpus processing stopped at "
+                    f"{MAX_CALLS_PER_INSTANCE} calls"
+                )
+                stop_processing = True
+                break
+        if stop_processing:
+            break
 
     if result.calls:
-        result.status = "partial" if result.malformed_artifacts else "available"
+        result.status = (
+            "partial"
+            if result.malformed_artifacts or result.limit_violations
+            else "available"
+        )
     elif result.parsed_sequences:
-        result.status = "observed_zero"
-        result.warnings.append("parsed corpus artifacts contained zero selector calls")
+        if result.malformed_artifacts or result.limit_violations:
+            result.status = "partial"
+        else:
+            result.status = "observed_zero"
+            result.warnings.append(
+                "parsed corpus artifacts contained zero selector calls"
+            )
+    elif result.malformed_artifacts or result.limit_violations:
+        result.status = "malformed"
     else:
         result.status = "unavailable"
 
@@ -535,7 +668,11 @@ def _discover_instance_paths(root: Optional[Path]) -> dict[str, Path]:
     if root is None or not root.exists():
         return {}
     paths: dict[str, Path] = {}
-    for path in sorted(child for child in root.iterdir() if child.is_dir()):
+    for path in sorted(
+        child
+        for child in root.iterdir()
+        if child.is_dir() and not child.is_symlink()
+    ):
         if INSTANCE_PREFIX_RE.match(path.name):
             paths[path.name] = path
     return paths
@@ -617,25 +754,69 @@ def _load_explicit_expected(path: Path) -> list[dict[str, Any]]:
             signature = None
             function_name = None
         elif isinstance(value, dict):
-            signature = normalize_signature(value.get("signature"))
-            selector = normalize_selector(value.get("selector"))
+            raw_signature = value.get("signature")
+            raw_selector = value.get("selector")
+            signature = normalize_signature(raw_signature)
+            selector = normalize_selector(raw_selector)
+            if raw_signature is not None and signature is None:
+                raise ValueError(
+                    f"invalid expected ABI signature: {raw_signature!r}"
+                )
+            if raw_selector is not None and selector is None:
+                raise ValueError(
+                    f"invalid expected selector: {raw_selector!r}"
+                )
+            signature_selector = selector_from_signature(signature)
+            if selector is not None and signature_selector not in {None, selector}:
+                raise ValueError(
+                    "expected selector disagrees with its ABI signature: "
+                    f"{selector} != {signature_selector}"
+                )
             if selector is None:
-                selector = selector_from_signature(signature)
-            function_name = value.get("function_name") or function_name_from_signature(
+                selector = signature_selector
+            explicit_function_name = value.get("function_name")
+            function_name = explicit_function_name or function_name_from_signature(
                 signature
             )
             if not isinstance(function_name, str):
                 function_name = None
+            if explicit_function_name is not None and (
+                not isinstance(explicit_function_name, str)
+                or not re.fullmatch(
+                    r"[A-Za-z_$][A-Za-z0-9_$]*",
+                    explicit_function_name,
+                )
+            ):
+                raise ValueError(
+                    f"invalid expected function name: {explicit_function_name!r}"
+                )
+            signature_name = function_name_from_signature(signature)
+            if (
+                function_name is not None
+                and signature_name is not None
+                and function_name != signature_name
+            ):
+                raise ValueError(
+                    "expected function name disagrees with its ABI signature: "
+                    f"{function_name!r} != {signature_name!r}"
+                )
         else:
             raise ValueError("expected selectors must be strings or objects")
         if selector is None:
             raise ValueError(f"invalid expected selector entry: {value!r}")
-        selectors[selector] = {
+        entry = {
             "selector": selector,
             "function_name": function_name,
             "signature": signature,
             "supporting_fuzzers": [],
+            "supporting_evidence_families": [],
         }
+        previous = selectors.get(selector)
+        if previous is not None and previous != entry:
+            raise ValueError(
+                f"conflicting expected-selector metadata for {selector}"
+            )
+        selectors[selector] = entry
     return [selectors[key] for key in sorted(selectors)]
 
 
@@ -675,10 +856,17 @@ def _derive_peer_expected(
             if available_by_engine[engine]
             and instance_labels == available_by_engine[engine]
         )
+        supporting_families = sorted(
+            {
+                EVIDENCE_FAMILY.get(engine, engine)
+                for engine in supporting_engines
+            }
+        )
         # This is deliberately a conservative heuristic, never ground truth:
-        # every available instance in at least two different fuzzer families
-        # must have persisted the selector.
-        if len(supporting_engines) < 2:
+        # every available instance of a supporting engine must have persisted
+        # the selector, and support must span at least two independent corpus
+        # evidence families. Echidna and Recon are one related family here.
+        if len(supporting_families) < 2:
             continue
         observation = metadata[selector]
         expected.append(
@@ -695,6 +883,7 @@ def _derive_peer_expected(
                     else None
                 ),
                 "supporting_fuzzers": supporting_engines,
+                "supporting_evidence_families": supporting_families,
             }
         )
     return expected
@@ -745,12 +934,14 @@ def analyze_selector_artifacts(
         expected = _derive_peer_expected(instances, observations_by_instance)
         expected_source = (
             "peer-consensus heuristic: observed in every available corpus for at "
-            "least two different fuzzer families; not benchmark ground truth"
+            "least two independent evidence families (Echidna and Recon count as "
+            "one related typed-corpus family); not benchmark ground truth"
         )
         expected_kind = "peer-consensus-heuristic"
     expected_selectors = {entry["selector"] for entry in expected}
 
     health_warnings: list[str] = []
+    health_findings: list[dict[str, str]] = []
     limitations: list[str] = []
     rows: list[dict[str, Any]] = []
     instance_summaries: list[dict[str, Any]] = []
@@ -760,34 +951,89 @@ def analyze_selector_artifacts(
         observed_selectors = {
             item.selector for item in observations.values() if item.selector
         }
-        missing_expected = sorted(expected_selectors - observed_selectors)
-        warnings = list(instance.warnings)
-        if (
-            instance.status in {"available", "partial", "observed_zero"}
-            and missing_expected
-        ):
-            warnings.append(
-                f"missing {len(missing_expected)} expected selector(s): "
-                + ", ".join(missing_expected)
-            )
-
-        if instance.status == "observed_zero":
-            health_warnings.append(
-                f"{instance.instance_label}: selector telemetry observed zero calls"
-            )
-        if instance.malformed_artifacts:
-            health_warnings.append(
-                f"{instance.instance_label}: "
-                f"{instance.malformed_artifacts} malformed selector artifact(s)"
-            )
-        if missing_expected and instance.status in {
+        comparable = instance.status in {
             "available",
             "partial",
             "observed_zero",
-        }:
-            health_warnings.append(
-                f"{instance.instance_label}: missing expected selector(s) "
-                + ", ".join(missing_expected)
+        }
+        missing_expected = (
+            sorted(expected_selectors - observed_selectors) if comparable else []
+        )
+        warnings = list(instance.warnings)
+        if missing_expected:
+            if expected_kind == "explicit":
+                missing_message = (
+                    f"missing {len(missing_expected)} reviewed expected selector(s): "
+                    + ", ".join(missing_expected)
+                )
+            else:
+                missing_message = (
+                    f"peer-heuristic gap (diagnostic, not ground truth): absent "
+                    f"{len(missing_expected)} selector(s): "
+                    + ", ".join(missing_expected)
+                )
+            warnings.append(
+                missing_message
+            )
+
+        if instance.status == "observed_zero":
+            message = (
+                f"{instance.instance_label}: selector telemetry observed zero calls"
+            )
+            health_warnings.append(message)
+            health_findings.append(
+                {
+                    "severity": "warning",
+                    "kind": "observed_zero",
+                    "instance_label": instance.instance_label,
+                    "message": message,
+                }
+            )
+        if instance.malformed_artifacts:
+            message = (
+                f"{instance.instance_label}: "
+                f"{instance.malformed_artifacts} malformed selector artifact(s)"
+            )
+            health_warnings.append(message)
+            health_findings.append(
+                {
+                    "severity": "warning",
+                    "kind": "malformed_artifact",
+                    "instance_label": instance.instance_label,
+                    "message": message,
+                }
+            )
+        if instance.limit_violations:
+            message = (
+                f"{instance.instance_label}: selector artifact safety limit "
+                f"reached {instance.limit_violations} time(s)"
+            )
+            health_warnings.append(message)
+            health_findings.append(
+                {
+                    "severity": "warning",
+                    "kind": "resource_limit",
+                    "instance_label": instance.instance_label,
+                    "message": message,
+                }
+            )
+        if missing_expected:
+            message = f"{instance.instance_label}: {missing_message}"
+            if expected_kind == "explicit":
+                health_warnings.append(message)
+            health_findings.append(
+                {
+                    "severity": (
+                        "warning" if expected_kind == "explicit" else "info"
+                    ),
+                    "kind": (
+                        "missing_explicit_selector"
+                        if expected_kind == "explicit"
+                        else "peer_heuristic_gap"
+                    ),
+                    "instance_label": instance.instance_label,
+                    "message": message,
+                }
             )
 
         if instance.status == "unavailable":
@@ -850,6 +1096,8 @@ def analyze_selector_artifacts(
                 "parsed_sequences": instance.parsed_sequences,
                 "duplicate_sequences": instance.duplicate_sequences,
                 "malformed_artifacts": instance.malformed_artifacts,
+                "processed_artifact_bytes": instance.processed_artifact_bytes,
+                "limit_violations": instance.limit_violations,
                 "ignored_calls": instance.ignored_calls,
                 "saved_corpus_calls": total_calls,
                 "unique_selectors": len(observed_selectors),
@@ -890,12 +1138,14 @@ def analyze_selector_artifacts(
         statuses = {instance.status for instance in fuzzer_instances}
         if statuses <= {"unavailable"}:
             status = "unavailable"
+        elif statuses <= {"malformed"}:
+            status = "malformed"
         elif statuses <= {"observed_zero"}:
             status = "observed_zero"
-        elif "partial" in statuses or "unavailable" in statuses or "observed_zero" in statuses:
-            status = "partial"
-        else:
+        elif statuses <= {"available"}:
             status = "available"
+        else:
+            status = "partial"
         fuzzer_summaries.append(
             {
                 "fuzzer": fuzzer,
@@ -911,6 +1161,10 @@ def analyze_selector_artifacts(
                 ),
                 "unavailable_instances": sum(
                     instance.status == "unavailable"
+                    for instance in fuzzer_instances
+                ),
+                "malformed_instances": sum(
+                    instance.status == "malformed"
                     for instance in fuzzer_instances
                 ),
                 "saved_corpus_calls": total_calls,
@@ -952,6 +1206,14 @@ def analyze_selector_artifacts(
         },
         "instances": instance_summaries,
         "fuzzers": fuzzer_summaries,
+        "health_findings": sorted(
+            health_findings,
+            key=lambda item: (
+                item["instance_label"],
+                item["kind"],
+                item["message"],
+            ),
+        ),
         "health_warnings": sorted(set(health_warnings)),
         "limitations": sorted(set(limitations)),
     }

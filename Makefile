@@ -107,7 +107,7 @@ RAW_LABELS_ARG := --raw-labels
 endif
 EXPECTED_SELECTORS_ARG :=
 ifneq ($(strip $(EXPECTED_SELECTORS_JSON)),)
-EXPECTED_SELECTORS_ARG := --expected-selectors-json $(EXPECTED_SELECTORS_JSON)
+EXPECTED_SELECTORS_ARG := --expected-selectors-json "$(EXPECTED_SELECTORS_JSON)"
 endif
 DURATION_ARG :=
 

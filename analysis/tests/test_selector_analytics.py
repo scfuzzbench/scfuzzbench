@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from analysis import selector_analytics
 
@@ -117,9 +118,9 @@ class SelectorAnalyticsTests(unittest.TestCase):
             self.assertEqual(["0xa9059cbb"], medusa["missing_expected_selectors"])
             self.assertTrue(
                 any(
-                    "i-cccc-medusa-v1.4.1: missing expected selector(s)"
-                    in warning
-                    for warning in summary["health_warnings"]
+                    "i-cccc-medusa-v1.4.1: peer-heuristic gap"
+                    in finding["message"]
+                    for finding in summary["health_findings"]
                 )
             )
             empty = next(
@@ -177,7 +178,7 @@ class SelectorAnalyticsTests(unittest.TestCase):
                 "observed_zero", _instance(summary, "echidna")["status"]
             )
             self.assertEqual(
-                "unavailable", _instance(summary, "medusa")["status"]
+                "malformed", _instance(summary, "medusa")["status"]
             )
             self.assertEqual(
                 "unavailable", _instance(summary, "foundry")["status"]
@@ -194,6 +195,248 @@ class SelectorAnalyticsTests(unittest.TestCase):
                     for limitation in summary["limitations"]
                 )
             )
+
+    def test_correlated_echidna_and_recon_do_not_define_peer_consensus(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus = Path(tmp) / "corpus"
+            shutil.copytree(FIXTURES / "corpus", corpus)
+            shutil.rmtree(corpus / "i-cccc-medusa-v1.4.1")
+            shutil.rmtree(corpus / "i-dddd-foundry-git-deadbee")
+
+            _, summary = selector_analytics.analyze_selector_artifacts(
+                corpus_dir=corpus,
+                logs_dir=None,
+            )
+
+            self.assertEqual([], summary["expected_set"]["selectors"])
+            self.assertIn(
+                "Echidna and Recon count as one related typed-corpus family",
+                summary["expected_set"]["source"],
+            )
+
+    def test_recon_compound_types_match_v046_serialization(self):
+        self.assertEqual(
+            "bytes32",
+            selector_analytics._recon_abi_type(
+                {"FixedBytes": ["0x" + "00" * 32, 32]}
+            ),
+        )
+        self.assertEqual(
+            "bytes",
+            selector_analytics._recon_abi_type({"Bytes": [8, 31, 255]}),
+        )
+        self.assertEqual(
+            "uint16[2]",
+            selector_analytics._recon_abi_type(
+                {"FixedArray": [{"Uint": ["0x1", 16]}, {"Uint": ["0x2", 16]}]}
+            ),
+        )
+        self.assertEqual(
+            "(address,uint8[])",
+            selector_analytics._recon_abi_type(
+                {
+                    "Tuple": [
+                        {"Address": "0x" + "00" * 20},
+                        {"Array": [{"Uint": ["0x1", 8]}]},
+                    ]
+                }
+            ),
+        )
+
+    def test_echidna_compound_types_preserve_tuple_and_array_shape(self):
+        uint16_type = {"tag": "AbiUIntType", "contents": 16}
+        uint16_value = {"tag": "AbiUInt", "contents": [16, "1"]}
+        self.assertEqual(
+            "uint16[]",
+            selector_analytics._echidna_abi_type(
+                {
+                    "tag": "AbiArrayDynamic",
+                    "contents": [uint16_type, [uint16_value]],
+                }
+            ),
+        )
+        self.assertEqual(
+            "uint16[2]",
+            selector_analytics._echidna_abi_type(
+                {
+                    "tag": "AbiArray",
+                    "contents": [2, uint16_type, [uint16_value, uint16_value]],
+                }
+            ),
+        )
+        self.assertEqual(
+            "(address,uint16[])",
+            selector_analytics._echidna_abi_type(
+                {
+                    "tag": "AbiTuple",
+                    "contents": [
+                        {
+                            "tag": "AbiAddress",
+                            "contents": "0x" + "00" * 20,
+                        },
+                        {
+                            "tag": "AbiArrayDynamic",
+                            "contents": [uint16_type, [uint16_value]],
+                        },
+                    ],
+                }
+            ),
+        )
+
+    def test_medusa_mismatch_keeps_raw_selector_without_false_abi_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus = (
+                Path(tmp)
+                / "i-aaaa-medusa-v1.4.1"
+                / "medusa"
+                / "call_sequences"
+            )
+            corpus.mkdir(parents=True)
+            (corpus / "sequence.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "call": {
+                                "data": "0xa9059cbb",
+                                "dataAbiValues": {
+                                    "methodSignature": "approve(address,uint256)"
+                                },
+                            }
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            rows, summary = selector_analytics.analyze_selector_artifacts(
+                corpus_dir=Path(tmp),
+                logs_dir=None,
+            )
+
+            self.assertEqual("0xa9059cbb", rows[0]["selector"])
+            self.assertEqual("", rows[0]["function_signatures"])
+            self.assertEqual("", rows[0]["function_names"])
+            instance = _instance(summary, "medusa")
+            self.assertIn("disagreed with raw calldata", "\n".join(instance["warnings"]))
+
+    def test_explicit_catalog_rejects_selector_signature_disagreement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = Path(tmp) / "expected.json"
+            expected.write_text(
+                json.dumps(
+                    [
+                        {
+                            "selector": "0xa9059cbb",
+                            "signature": "approve(address,uint256)",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "disagrees"):
+                selector_analytics.analyze_selector_artifacts(
+                    corpus_dir=None,
+                    logs_dir=None,
+                    expected_selectors_json=expected,
+                )
+
+    def test_unavailable_instances_never_report_missing_selectors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            foundry_logs = root / "logs" / "i-aaaa-foundry-git-deadbee"
+            foundry_logs.mkdir(parents=True)
+            expected = root / "expected.json"
+            expected.write_text('["0xa9059cbb"]\n', encoding="utf-8")
+
+            _, summary = selector_analytics.analyze_selector_artifacts(
+                corpus_dir=root / "missing",
+                logs_dir=root / "logs",
+                expected_selectors_json=expected,
+            )
+
+            instance = _instance(summary, "foundry")
+            self.assertEqual("unavailable", instance["status"])
+            self.assertEqual([], instance["missing_expected_selectors"])
+
+    def test_artifact_count_limit_is_bounded_and_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            coverage = (
+                Path(tmp)
+                / "i-aaaa-echidna-v2.3.1"
+                / "echidna"
+                / "coverage"
+            )
+            coverage.mkdir(parents=True)
+            for name in ("a.txt", "b.txt"):
+                (coverage / name).write_text("[]\n", encoding="utf-8")
+
+            with mock.patch.object(selector_analytics, "MAX_ARTIFACT_FILES", 1):
+                _, summary = selector_analytics.analyze_selector_artifacts(
+                    corpus_dir=Path(tmp),
+                    logs_dir=None,
+                )
+
+            instance = _instance(summary, "echidna")
+            self.assertEqual("partial", instance["status"])
+            self.assertEqual(1, instance["limit_violations"])
+            self.assertTrue(
+                any(
+                    finding["kind"] == "resource_limit"
+                    for finding in summary["health_findings"]
+                )
+            )
+
+    def test_symlinked_artifacts_are_not_followed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coverage = (
+                root
+                / "i-aaaa-echidna-v2.3.1"
+                / "echidna"
+                / "coverage"
+            )
+            coverage.mkdir(parents=True)
+            outside = root / "outside.txt"
+            outside.write_text(
+                json.dumps(
+                    [
+                        {
+                            "call": {
+                                "tag": "SolCalldata",
+                                "contents": "0xa9059cbb",
+                            }
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (coverage / "linked.txt").symlink_to(outside)
+
+            rows, summary = selector_analytics.analyze_selector_artifacts(
+                corpus_dir=root,
+                logs_dir=None,
+            )
+
+            self.assertEqual([], rows)
+            self.assertEqual("observed_zero", _instance(summary, "echidna")["status"])
+
+    def test_foundry_candidate_match_is_relative_to_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus" / "unzipped"
+            foundry = root / "i-aaaa-foundry-git-deadbee" / "foundry"
+            foundry.mkdir(parents=True)
+            (foundry / "metadata.json").write_text(
+                '[{"calldata":"0xa9059cbb"}]\n',
+                encoding="utf-8",
+            )
+
+            rows, summary = selector_analytics.analyze_selector_artifacts(
+                corpus_dir=root,
+                logs_dir=None,
+            )
+
+            self.assertEqual([], rows)
+            self.assertEqual("unavailable", _instance(summary, "foundry")["status"])
 
     def test_explicit_expected_catalog_and_outputs_are_stable(self):
         with tempfile.TemporaryDirectory() as tmp:

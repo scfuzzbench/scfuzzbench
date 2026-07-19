@@ -552,13 +552,28 @@ def append_selector_analytics_section(lines: List[str], summary: dict) -> None:
             lines.append("| n/a | n/a | n/a | 0 | n/a |")
         lines.append("")
 
-    warnings = summary.get("health_warnings")
-    if isinstance(warnings, list) and warnings:
-        lines.append("### ⚠️ Selector health warnings")
+    findings = summary.get("health_findings")
+    if isinstance(findings, list) and findings:
+        lines.append("### Selector diagnostic findings")
         lines.append("")
-        for warning in warnings:
-            lines.append(f"- ⚠️ {warning}")
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            severity = str(finding.get("severity", "info")).upper()
+            message = str(finding.get("message", "selector diagnostic"))
+            marker = "⚠️ " if severity == "WARNING" else ""
+            lines.append(f"- {marker}**{severity}**: {message}")
         lines.append("")
+    else:
+        # Backward compatibility for summaries emitted before structured
+        # severity was added.
+        warnings = summary.get("health_warnings")
+        if isinstance(warnings, list) and warnings:
+            lines.append("### ⚠️ Selector health warnings")
+            lines.append("")
+            for warning in warnings:
+                lines.append(f"- ⚠️ {warning}")
+            lines.append("")
 
     limitations = summary.get("limitations")
     if isinstance(limitations, list) and limitations:

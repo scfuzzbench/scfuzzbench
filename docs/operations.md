@@ -191,13 +191,14 @@ make results-analyze-all BUCKET=<bucket-name> RUN_ID=1770053924 BENCHMARK_UUID=<
 
 This pipeline also generates runner resource artifacts (`cpu_usage_over_time.png`, `memory_usage_over_time.png`, `runner_resource_usage.md`, and runner resource CSVs) plus saved-corpus selector artifacts (`selector_distribution.csv` and `selector_summary.json`). Keep `ARTIFACT_CATEGORY=both`: selector analytics require downloaded corpus archives.
 
-The default expected-selector list is an explicitly labelled peer-consensus heuristic. To use a reviewed ground-truth catalog instead, pass a JSON array of selectors or objects containing `selector` and optional `signature`/`function_name` fields:
+The default expected-selector list is an explicitly labelled peer-consensus heuristic. Echidna and Recon count as one related evidence family, so they cannot corroborate each other by themselves; unavailable and empty corpora do not define consensus. To use a reviewed ground-truth catalog instead, pass a JSON array of selectors or objects containing `selector` and optional `signature`/`function_name` fields:
 
 ```bash
 make results-analyze-all ... ARTIFACT_CATEGORY=both EXPECTED_SELECTORS_JSON=/path/to/expected-selectors.json
 ```
 
 Foundry is reported as selector data `unavailable` when its corpus was not persisted; failure-only log selectors are intentionally not counted as a corpus distribution.
+Peer-heuristic gaps are informational diagnostics rather than ground-truth failures. A selector/signature disagreement in an explicit catalog fails analysis, and unsafe or malformed corpus inputs are bounded and surfaced in `selector_summary.json`.
 
 Quick readiness checks:
 

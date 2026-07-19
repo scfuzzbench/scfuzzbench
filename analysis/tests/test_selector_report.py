@@ -52,6 +52,17 @@ def _summary():
         "health_warnings": [
             "i-abcd-medusa-v1.4.1: missing expected selector(s) 0x12345678"
         ],
+        "health_findings": [
+            {
+                "severity": "info",
+                "kind": "peer_heuristic_gap",
+                "instance_label": "i-abcd-medusa-v1.4.1",
+                "message": (
+                    "i-abcd-medusa-v1.4.1: peer-heuristic gap "
+                    "(diagnostic, not ground truth): 0x12345678"
+                ),
+            }
+        ],
         "limitations": [
             "Foundry selector distribution is unavailable because no persisted corpus was present"
         ],
@@ -70,7 +81,8 @@ class SelectorReportTests(unittest.TestCase):
         self.assertIn("| foundry | unavailable | 0/2 | 0 | 0 |", report)
         self.assertIn("`0xa9059cbb`", report)
         self.assertIn("`transfer(address,uint256)`", report)
-        self.assertIn("Selector health warnings", report)
+        self.assertIn("Selector diagnostic findings", report)
+        self.assertIn("**INFO**", report)
         self.assertIn("Selector telemetry limitations", report)
 
     def test_no_bug_data_report_still_includes_selector_health(self):
@@ -87,7 +99,7 @@ class SelectorReportTests(unittest.TestCase):
             report = out.read_text(encoding="utf-8")
             self.assertIn("## No data", report)
             self.assertIn("## Function selector sanity checks", report)
-            self.assertIn("missing expected selector(s)", report)
+            self.assertIn("peer-heuristic gap", report)
 
 
 if __name__ == "__main__":
