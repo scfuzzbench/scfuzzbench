@@ -43,7 +43,9 @@ A fuzzer is currently considered in-scope when it is:
 Every target is a fork under the scfuzzbench org. Its `main` branch holds upstream
 code plus the harness, while `pre-target` holds the pristine upstream baseline.
 The benchmark consumes the immutable commit recorded in the authoritative
-[`benchmarks/targets.json`](benchmarks/targets.json) catalog. See
+[`benchmarks/targets.json`](benchmarks/targets.json) catalog, with
+revision-locked known-bug mappings in
+[`benchmarks/known_bugs.json`](benchmarks/known_bugs.json). See
 [`benchmarks/README.md`](benchmarks/README.md) for fields and maintenance.
 
 Use the target onboarding skill for new targets:

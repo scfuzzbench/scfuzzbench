@@ -5,7 +5,8 @@ targets. The docs site and the preconfigured benchmark request form read it
 directly, so target metadata must not be copied into those consumers.
 
 The catalog records selection metadata only. Ground-truth bug identifiers and
-aliases are intentionally outside its scope.
+aliases live in the separate, revision-locked
+[`known_bugs.json`](known_bugs.json) catalog.
 
 ## Fields
 
@@ -56,3 +57,28 @@ Remove an entry only through review and explain why it no longer belongs in the
 active suite. Historical run manifests and published artifacts remain
 unchanged; removing a target from this catalog only removes it from the current
 curated list and request preset.
+
+## Ground-truth known bugs
+
+[`known_bugs.json`](known_bugs.json) maps evidence-backed known bugs and
+health-check canaries to the normalized event names emitted by each fuzzer.
+Every entry is tied to the same target ID and immutable commit as
+[`targets.json`](targets.json). The validator rejects missing targets, revision
+drift, ambiguous fuzzer/event aliases, and entries without commit-pinned
+evidence.
+
+Canaries are deliberately failing harness checks. They verify that assertion
+and invariant failure paths work, but they are reported separately and never
+count toward known-bug hit rates.
+
+Known-bug entries must be conservative:
+
+- Link evidence at the pinned target revision.
+- Give one canonical ID to aliases that demonstrate the same reviewed bug.
+- Do not promote an event to a known bug only because it crashes or falsifies a
+  property.
+- Leave findings unmapped when root-cause evidence is incomplete.
+
+When a target commit changes, re-review every ground-truth entry and update
+`target_commit` and its pinned evidence together. Run `make targets-validate`
+after any target or ground-truth change.
