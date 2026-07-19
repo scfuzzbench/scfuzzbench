@@ -48,11 +48,11 @@ run_with_timeout() {
 
 
 class EchidnaRunShrinkLimitTests(unittest.TestCase):
-    def run_main_command(
+    def run_script(
         self,
         *,
         extra_args: str = "",
-    ) -> list[str]:
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
             log_dir = tmp_dir / "logs"
@@ -75,11 +75,31 @@ class EchidnaRunShrinkLimitTests(unittest.TestCase):
             else:
                 env.pop("ECHIDNA_EXTRA_ARGS", None)
 
-            subprocess.check_call(["bash", str(SCRIPT)], env=env)
-            line = (
-                (log_dir / "commands.tsv").read_text(encoding="utf-8").splitlines()[0]
+            result = subprocess.run(
+                ["bash", str(SCRIPT)],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
             )
-            return line.split("\t")[1:]
+            commands_path = log_dir / "commands.tsv"
+            args = []
+            if commands_path.exists():
+                line = commands_path.read_text(encoding="utf-8").splitlines()[0]
+                args = line.split("\t")[1:]
+            log_path = log_dir / "log.txt"
+            if log_path.exists():
+                result.stderr += log_path.read_text(encoding="utf-8")
+            return result, args
+
+    def run_main_command(
+        self,
+        *,
+        extra_args: str = "",
+    ) -> list[str]:
+        result, args = self.run_script(extra_args=extra_args)
+        result.check_returncode()
+        return args
 
     def shrink_limit_values(self, args: list[str]) -> list[str]:
         values = []
@@ -115,6 +135,46 @@ class EchidnaRunShrinkLimitTests(unittest.TestCase):
                 self.assertEqual(self.shrink_limit_values(args), ["7"])
                 self.assertIn("--server", args)
                 self.assertIn("3000", args)
+
+    def test_shell_quoting_preserves_one_argument_without_evaluation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "injected"
+            literal = f"$(touch {marker})"
+
+            args = self.run_main_command(
+                extra_args=f'--crytic-args "{literal}" --shrink-limit 0'
+            )
+
+            self.assertFalse(marker.exists())
+            self.assertEqual(args[args.index("--crytic-args") + 1], literal)
+            self.assertEqual(self.shrink_limit_values(args), ["0"])
+
+    def test_malformed_quoting_fails_before_launch(self):
+        result, args = self.run_script(extra_args='--server "3000')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(args, [])
+        self.assertIn("Invalid ECHIDNA_EXTRA_ARGS", result.stderr)
+        self.assertIn("No closing quotation", result.stderr)
+
+    def test_invalid_or_duplicate_shrink_limit_fails_before_launch(self):
+        cases = (
+            ("--shrink-limit", "non-negative integer"),
+            ("--shrink-limit=", "non-negative integer"),
+            ("--shrink-limit nope", "non-negative integer"),
+            ("--shrink-limit -1", "non-negative integer"),
+            (
+                "--shrink-limit 7 --shrink-limit=8",
+                "at most one --shrink-limit",
+            ),
+        )
+        for extra_args, expected_error in cases:
+            with self.subTest(extra_args=extra_args):
+                result, args = self.run_script(extra_args=extra_args)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(args, [])
+                self.assertIn(expected_error, result.stderr)
 
 
 if __name__ == "__main__":
