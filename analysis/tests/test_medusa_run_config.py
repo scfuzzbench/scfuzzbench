@@ -37,12 +37,18 @@ run_with_timeout() {
     if [[ "${expect_config}" -eq 1 ]]; then
       cp "${arg}" "${SCFUZZBENCH_LOG_DIR}/effective-medusa.json"
       printf '%s\\n' "${arg}" > "${SCFUZZBENCH_LOG_DIR}/effective-config-path.txt"
+      stat -c '%a' "${arg}" > "${SCFUZZBENCH_LOG_DIR}/effective-config-mode.txt"
       break
     fi
     if [[ "${arg}" == "--config" ]]; then
       expect_config=1
     fi
   done
+
+  case "${TEST_MEDUSA_RUN_MODE:-success}" in
+    failure) return 23 ;;
+    signal) kill -TERM "${BASHPID}" ;;
+  esac
 }
 """,
         encoding="utf-8",
@@ -54,10 +60,11 @@ class MedusaRunConfigTests(unittest.TestCase):
     def run_medusa(
         self,
         *,
-        source_config: dict | None = None,
+        source_config: object | None = None,
         config_relative_path: str | None = "configs/medusa.json",
         prune_frequency: str | None = None,
         workers: str | None = None,
+        run_mode: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], Path, dict | None, list[str]]:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -91,6 +98,8 @@ class MedusaRunConfigTests(unittest.TestCase):
             env["MEDUSA_PRUNE_FREQUENCY"] = prune_frequency
         if workers is not None:
             env["MEDUSA_WORKERS"] = workers
+        if run_mode is not None:
+            env["TEST_MEDUSA_RUN_MODE"] = run_mode
 
         completed = subprocess.run(
             ["bash", str(SCRIPT)],
@@ -119,12 +128,27 @@ class MedusaRunConfigTests(unittest.TestCase):
                 "the checked-in target config must remain unchanged",
             )
 
+        self.assertEqual(
+            [],
+            list(target_dir.rglob(".scfuzzbench-medusa*")),
+            "all effective-config temporary files must be cleaned up",
+        )
+
         return completed, log_dir, effective, command_args
 
     def test_background_corpus_pruner_is_disabled_by_default(self):
         source = {
-            "fuzzing": {"pruneFrequency": 5, "coverageEnabled": True},
-            "compilation": {"platform": "crytic-compile"},
+            "fuzzing": {
+                "pruneFrequency": 5,
+                "coverageEnabled": True,
+                "workers": 91,
+                "targetContracts": ["TargetA", "TargetB"],
+            },
+            "compilation": {
+                "platform": "crytic-compile",
+                "target": "../contracts/Target.sol",
+            },
+            "logging": {"level": "info"},
         }
 
         completed, log_dir, effective, args = self.run_medusa(
@@ -133,12 +157,16 @@ class MedusaRunConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(effective["fuzzing"]["pruneFrequency"], 0)
-        self.assertTrue(effective["fuzzing"]["coverageEnabled"])
-        self.assertEqual(effective["compilation"], source["compilation"])
+        expected = json.loads(json.dumps(source))
+        expected["fuzzing"]["pruneFrequency"] = 0
+        self.assertEqual(effective, expected)
         self.assertIn("--workers", args)
         self.assertEqual(args[args.index("--workers") + 1], "3")
         self.assertNotIn("--prune-frequency", args)
+        self.assertEqual(
+            (log_dir / "effective-config-mode.txt").read_text(encoding="utf-8").strip(),
+            "600",
+        )
 
         invoked_config = Path(
             (log_dir / "effective-config-path.txt").read_text(encoding="utf-8").strip()
@@ -174,6 +202,33 @@ class MedusaRunConfigTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIsNone(effective)
         self.assertEqual(args, [])
+
+    def test_invalid_source_config_is_cleaned_up_before_medusa_runs(self):
+        completed, _, effective, args = self.run_medusa(source_config=[])
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIsNone(effective)
+        self.assertEqual(args, [])
+
+    def test_effective_config_is_cleaned_up_when_medusa_fails(self):
+        completed, _, effective, args = self.run_medusa(
+            source_config={"fuzzing": {}},
+            run_mode="failure",
+        )
+
+        self.assertEqual(completed.returncode, 23)
+        self.assertEqual(effective, {"fuzzing": {"pruneFrequency": 0}})
+        self.assertIn("--config", args)
+
+    def test_effective_config_is_cleaned_up_on_signal(self):
+        completed, _, effective, args = self.run_medusa(
+            source_config={"fuzzing": {}},
+            run_mode="signal",
+        )
+
+        self.assertEqual(completed.returncode, 143)
+        self.assertEqual(effective, {"fuzzing": {"pruneFrequency": 0}})
+        self.assertIn("--config", args)
 
     def test_missing_explicit_config_fails_instead_of_using_defaults(self):
         completed, _, effective, args = self.run_medusa(
