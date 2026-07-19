@@ -1517,7 +1517,10 @@ def write_report(
 
     lines.append("## Limitations")
     lines.append(
-        "- Core metrics in this section are count-based; use `broken_invariants.md` / `broken_invariants.csv` for invariant identities."
+        "- Core count-based charts use normalized event identities stored under the legacy `bugs_found` column. They do not count crash inputs, but they are not confirmed root-cause bug counts."
+    )
+    lines.append(
+        "- Use `known_bug_report.md`, `known_bug_summary.csv`, and `known_bug_findings.csv` for evidence-backed known-bug hit rates; use `broken_invariants.md` / `broken_invariants.csv` for raw invariant identities."
     )
     lines.append(
         "- Severity, exploitability, and root-cause uniqueness cannot be measured directly without richer per-bug metadata."
