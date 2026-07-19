@@ -64,7 +64,7 @@ if [[ -n "${ECHIDNA_TARGET:-}" && "${ECHIDNA_TARGET}" != /* && ! -f "${repo_dir}
   fi
 fi
 
-cmd=(echidna-test)
+cmd=(echidna)
 if [[ -n "${ECHIDNA_CONFIG:-}" ]]; then
   cmd+=(--config "${ECHIDNA_CONFIG}")
 fi
@@ -81,10 +81,68 @@ if [[ -n "${ECHIDNA_WORKERS:-}" ]]; then
   cmd+=(--workers "${ECHIDNA_WORKERS}")
 fi
 cmd+=(--corpus-dir "${SCFUZZBENCH_CORPUS_DIR}")
+
+shrink_limit_overridden=0
 if [[ -n "${ECHIDNA_EXTRA_ARGS:-}" ]]; then
-  read -r -a extra_args <<< "${ECHIDNA_EXTRA_ARGS}"
+  extra_args=()
+  mapfile -d '' -t extra_args < <(
+    python3 - "${ECHIDNA_EXTRA_ARGS}" <<'PY'
+import shlex
+import sys
+
+try:
+    args = shlex.split(sys.argv[1], comments=False, posix=True)
+except ValueError as exc:
+    print(f"Invalid ECHIDNA_EXTRA_ARGS: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+
+for arg in args:
+    sys.stdout.buffer.write(arg.encode() + b"\0")
+PY
+  )
+  parser_pid=$!
+  if ! wait "${parser_pid}"; then
+    log "ECHIDNA_EXTRA_ARGS must use valid shell-style quoting."
+    exit 1
+  fi
+
+  for ((arg_index = 0; arg_index < ${#extra_args[@]}; arg_index++)); do
+    arg="${extra_args[arg_index]}"
+    case "${arg}" in
+      --shrink-limit)
+        if ((shrink_limit_overridden == 1)); then
+          log "ECHIDNA_EXTRA_ARGS must contain at most one --shrink-limit option."
+          exit 1
+        fi
+        shrink_limit_overridden=1
+        shrink_limit_value="${extra_args[arg_index + 1]:-}"
+        ;;
+      --shrink-limit=*)
+        if ((shrink_limit_overridden == 1)); then
+          log "ECHIDNA_EXTRA_ARGS must contain at most one --shrink-limit option."
+          exit 1
+        fi
+        shrink_limit_overridden=1
+        shrink_limit_value="${arg#*=}"
+        ;;
+    esac
+    if [[ "${arg}" == "--shrink-limit" || "${arg}" == --shrink-limit=* ]]; then
+      if [[ ! "${shrink_limit_value}" =~ ^[0-9]+$ ]]; then
+        log "ECHIDNA_EXTRA_ARGS --shrink-limit must be a non-negative integer."
+        exit 1
+      fi
+    fi
+  done
   cmd+=("${extra_args[@]}")
 fi
+
+# A CLI value overrides shrinkLimit from the target config. Keep shrinking from
+# consuming the benchmark exploration budget unless the operator explicitly
+# supplied a different limit.
+if ((shrink_limit_overridden == 0)); then
+  cmd+=(--shrink-limit 1)
+fi
+
 if [[ -n "${ECHIDNA_TARGET:-}" ]]; then
   cmd+=("${ECHIDNA_TARGET}")
 fi

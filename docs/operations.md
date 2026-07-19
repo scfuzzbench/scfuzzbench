@@ -10,7 +10,7 @@ Set inputs via `-var`/`tfvars` (`TF_VAR_*` also works):
 - `benchmark_type` (`property` or `optimization`)
 - `instance_type`, `instances_per_fuzzer`, `timeout_hours`
 - `fuzzers` (allowlist; empty means all available)
-- fuzzer versions (`foundry_version`, `echidna_version`, `medusa_version`, `recon_version`)
+- fuzzer versions (`foundry_git_repo`/`foundry_git_ref`, `echidna_version`, `medusa_version`, `recon_version`)
 - `git_token_ssm_parameter_name` (for private repos)
 - `shared_seed_corpus_source` (optional directory or `s3://bucket/prefix`; empty by default)
 - `fuzzer_env` values such as `SCFUZZBENCH_PROPERTIES_PATH`
@@ -91,6 +91,11 @@ and continuous invariant campaigns with handler-bug dedup
 v1.7.1 predate #14482, so keep the commit pin until a stable release ships both. The analysis pipeline
 consumes upstream's `event: failure` JSON pulse events. Override `TF_VAR_foundry_git_repo` /
 `TF_VAR_foundry_git_ref` only for experiments.
+
+Cloud benchmark requests do not expose `foundry_version`: setting only that release tag would be ignored while the
+non-empty git repository selects the source build. For a local release-binary run, use
+`scripts/local-run.sh --foundry-version <tag>` without `FOUNDRY_GIT_REPO`. Low-level Terraform callers can select the
+same fallback only by explicitly setting `foundry_git_repo` to an empty string.
 
 ## One Run At A Time
 
@@ -180,7 +185,7 @@ You can run fuzzers locally without AWS infrastructure using `scripts/local-run.
 
 ### Prerequisites
 
-- The fuzzer binary must already be installed (e.g. `echidna-test` in `$PATH`)
+- The fuzzer binary must already be installed (e.g. `echidna` in `$PATH`)
 - Foundry must be installed (`forge`, `cast`)
 - `zip` must be available for result packaging
 
@@ -212,9 +217,12 @@ Optional flags:
 - `-T, --type`: `property` or `optimization` (default: `property`)
 - `--install`: run the fuzzer's `install.sh` first
 - `--seed-corpus`: shared local directory or S3 prefix (default: empty)
-- `--echidna-extra-args`: extra arguments passed to echidna (e.g. `"--server 3000 --shrink-limit 1"`)
+- `--echidna-extra-args`: extra arguments passed to echidna (e.g. `"--server 3000 --shrink-limit 25"`)
+- `--medusa-prune-frequency`: positive pruning interval in minutes for an explicit Medusa experiment (default: `0`, disabled)
 
 All fuzzer-specific flags (`--echidna-*`, `--medusa-*`, `--foundry-*`) mirror the environment variables documented in `fuzzers/README.md`.
+
+Echidna runs default to `--shrink-limit 1`, passed as a CLI option so it overrides any `shrinkLimit` in the target config. Supply one non-negative value through `--echidna-extra-args` when an experiment intentionally needs a different amount of shrinking. Extra arguments support shell-style quoting without shell evaluation; malformed quoting and duplicate shrink-limit options fail before Echidna starts.
 
 ### How it works
 
@@ -239,7 +247,17 @@ DEST="$(mktemp -d /tmp/scfuzzbench-analysis-1770053924-XXXXXX)"
 make results-analyze-all BUCKET=<bucket-name> RUN_ID=1770053924 BENCHMARK_UUID=<benchmark_uuid> DEST="$DEST" ARTIFACT_CATEGORY=both
 ```
 
-This pipeline now also generates runner resource artifacts (`cpu_usage_over_time.png`, `memory_usage_over_time.png`, `runner_resource_usage.md`, and runner resource CSVs).
+The pipeline also generates:
+
+- evidence-backed ground-truth artifacts (`known_bug_report.md`,
+  `known_bug_summary.csv`, and `known_bug_findings.csv`);
+- runner resource artifacts (`cpu_usage_over_time.png`,
+  `memory_usage_over_time.png`, `runner_resource_usage.md`, and runner resource
+  CSVs).
+
+If the run target or commit does not exactly match the curated catalog,
+`known_bug_report.md` explains why mapping was withheld and the ground-truth
+CSVs remain empty.
 
 Quick readiness checks:
 

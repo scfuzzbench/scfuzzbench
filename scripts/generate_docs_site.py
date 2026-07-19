@@ -922,6 +922,9 @@ def main() -> int:
         memory_chart_key = f"{r.analysis_prefix}/memory_usage_over_time.png"
         broken_md_key = f"{r.analysis_prefix}/broken_invariants.md"
         broken_csv_key = f"{r.analysis_prefix}/broken_invariants.csv"
+        known_bug_md_key = f"{r.analysis_prefix}/known_bug_report.md"
+        known_bug_summary_csv_key = f"{r.analysis_prefix}/known_bug_summary.csv"
+        known_bug_findings_csv_key = f"{r.analysis_prefix}/known_bug_findings.csv"
         throughput_summary_csv_key = f"{r.analysis_prefix}/throughput_summary.csv"
         progress_metrics_summary_csv_key = (
             f"{r.analysis_prefix}/progress_metrics_summary.csv"
@@ -948,6 +951,18 @@ def main() -> int:
         )
         has_broken_csv = (
             r.analysis_kind == "analysis" and head_exists(bucket, broken_csv_key, profile=profile)
+        )
+        has_known_bug_md = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, known_bug_md_key, profile=profile)
+        )
+        has_known_bug_summary_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, known_bug_summary_csv_key, profile=profile)
+        )
+        has_known_bug_findings_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, known_bug_findings_csv_key, profile=profile)
         )
         has_throughput_summary_csv = (
             r.analysis_kind == "analysis"
@@ -1045,6 +1060,17 @@ def main() -> int:
                 except Exception:
                     lines.append("_Failed to fetch broken_invariants.md from S3._")
                     lines.append("")
+            if has_known_bug_md:
+                try:
+                    known_bug_raw = aws_text(
+                        ["s3", "cp", f"s3://{bucket}/{known_bug_md_key}", "-"],
+                        profile=profile,
+                    )
+                    lines.append(rewrite_headings(known_bug_raw, add=2).rstrip())
+                    lines.append("")
+                except Exception:
+                    lines.append("_Failed to fetch known_bug_report.md from S3._")
+                    lines.append("")
             if has_runner_md:
                 try:
                     runner_raw = aws_text(
@@ -1103,6 +1129,21 @@ def main() -> int:
                 lines.append("- Broken invariants (Markdown): " + f"{analysis_base}/broken_invariants.md")
             if has_broken_csv:
                 lines.append("- Broken invariants (CSV): " + f"{analysis_base}/broken_invariants.csv")
+            if has_known_bug_md:
+                lines.append(
+                    "- Ground-truth known bugs (Markdown): "
+                    + f"{analysis_base}/known_bug_report.md"
+                )
+            if has_known_bug_summary_csv:
+                lines.append(
+                    "- Ground-truth summary (CSV): "
+                    + f"{analysis_base}/known_bug_summary.csv"
+                )
+            if has_known_bug_findings_csv:
+                lines.append(
+                    "- Ground-truth findings (CSV): "
+                    + f"{analysis_base}/known_bug_findings.csv"
+                )
             if has_throughput_summary_csv:
                 lines.append("- Throughput summary (CSV): " + f"{analysis_base}/throughput_summary.csv")
             if has_progress_metrics_summary_csv:

@@ -72,7 +72,7 @@ variable "benchmark_type" {
 
 variable "foundry_version" {
   type        = string
-  description = "Pinned Foundry version (tag used by foundryup). Only used when foundry_git_repo is empty."
+  description = "Foundry release tag used by foundryup only when foundry_git_repo is empty. Cloud workflows do not expose this local/manual fallback."
   default     = "v1.7.1"
 }
 

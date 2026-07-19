@@ -11,28 +11,29 @@ Paste a JSON request below.
 
 Notes:
 - Do not include secrets in this issue.
+- Prefer the immutable commit and properties path from `benchmarks/targets.json`.
 - Step `01` (`benchmark/01-pending`) is applied by this template at issue creation.
 - Step `02` (`benchmark/02-validated`) is applied by the bot after JSON validation passes.
 - Step `03` (`benchmark/03-approved`) is applied manually by a maintainer to start the run.
 - Limits: `instances_per_fuzzer` must be in `[1, 20]`, `timeout_hours` must be in `[0.25, 72]`.
+- Cloud runs build Foundry from the pinned git ref. `--foundry-version` is available only through `scripts/local-run.sh`.
 
 ```json
 {
-  "target_repo_url": "https://github.com/scfuzzbench/aave-v4-scfuzzbench",
-  "target_commit": "main",
+  "target_repo_url": "https://github.com/OWNER/REPOSITORY",
+  "target_commit": "0123456789abcdef0123456789abcdef01234567",
   "benchmark_type": "property",
   "instance_type": "c6a.4xlarge",
   "instances_per_fuzzer": 4,
   "timeout_hours": 1,
   "fuzzers": ["echidna", "medusa", "foundry", "recon-fuzzer"],
-  "foundry_version": "",
   "foundry_git_repo": "",
   "foundry_git_ref": "",
   "echidna_version": "",
   "medusa_version": "",
   "recon_version": "",
   "git_token_ssm_parameter_name": "/scfuzzbench/recon/github_token",
-  "properties_path": "",
+  "properties_path": "test/recon/Properties.sol",
   "shared_seed_corpus_source": "",
   "fuzzer_env_json": ""
 }
