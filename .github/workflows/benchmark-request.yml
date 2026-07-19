@@ -25,7 +25,6 @@ jobs:
       instances_per_fuzzer: ${{ steps.prepare.outputs.instances_per_fuzzer }}
       timeout_hours: ${{ steps.prepare.outputs.timeout_hours }}
       fuzzers_json: ${{ steps.prepare.outputs.fuzzers_json }}
-      foundry_version: ${{ steps.prepare.outputs.foundry_version }}
       foundry_git_repo: ${{ steps.prepare.outputs.foundry_git_repo }}
       foundry_git_ref: ${{ steps.prepare.outputs.foundry_git_ref }}
       echidna_version: ${{ steps.prepare.outputs.echidna_version }}
@@ -307,8 +306,9 @@ jobs:
             const foundry_version = mustString(payload, "foundry_version", { required: false, maxLen: 64 });
             if (!foundry_version.ok) errors.push(foundry_version.message);
             if (foundry_version.ok && foundry_version.value) {
-              const mv = mustMatch(foundry_version.value, "foundry_version", /^[A-Za-z0-9._+-]+$/, "avoid spaces/shell metacharacters");
-              if (!mv.ok) errors.push(mv.message);
+              errors.push(
+                "foundry_version is local-only and is not supported by cloud benchmark requests; remove it to use the pinned Foundry git build"
+              );
             }
 
             const foundry_git_repo = mustString(payload, "foundry_git_repo", { required: false, maxLen: 300 });
@@ -440,7 +440,6 @@ jobs:
               core.setOutput("timeout_hours", String(hours.value));
               core.setOutput("fuzzers_json", fuzzersJson);
 
-              core.setOutput("foundry_version", foundry_version.ok ? foundry_version.value : "");
               core.setOutput("foundry_git_repo", foundry_git_repo.ok ? foundry_git_repo.value : "");
               core.setOutput("foundry_git_ref", foundry_git_ref.ok ? foundry_git_ref.value : "");
               core.setOutput("echidna_version", echidna_version.ok ? echidna_version.value : "");
@@ -464,7 +463,6 @@ jobs:
       instances_per_fuzzer: ${{ fromJSON(needs.prepare.outputs.instances_per_fuzzer) }}
       timeout_hours: ${{ fromJSON(needs.prepare.outputs.timeout_hours) }}
       fuzzers_json: ${{ needs.prepare.outputs.fuzzers_json }}
-      foundry_version: ${{ needs.prepare.outputs.foundry_version }}
       foundry_git_repo: ${{ needs.prepare.outputs.foundry_git_repo }}
       foundry_git_ref: ${{ needs.prepare.outputs.foundry_git_ref }}
       echidna_version: ${{ needs.prepare.outputs.echidna_version }}

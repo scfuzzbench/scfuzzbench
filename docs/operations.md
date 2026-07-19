@@ -10,7 +10,7 @@ Set inputs via `-var`/`tfvars` (`TF_VAR_*` also works):
 - `benchmark_type` (`property` or `optimization`)
 - `instance_type`, `instances_per_fuzzer`, `timeout_hours`
 - `fuzzers` (allowlist; empty means all available)
-- fuzzer versions (`foundry_version`, `echidna_version`, `medusa_version`, `recon_version`)
+- fuzzer versions (`foundry_git_repo`/`foundry_git_ref`, `echidna_version`, `medusa_version`, `recon_version`)
 - `git_token_ssm_parameter_name` (for private repos)
 - `fuzzer_env` values such as `SCFUZZBENCH_PROPERTIES_PATH`
 
@@ -45,6 +45,11 @@ and continuous invariant campaigns with handler-bug dedup
 v1.7.1 predate #14482, so keep the commit pin until a stable release ships both. The analysis pipeline
 consumes upstream's `event: failure` JSON pulse events. Override `TF_VAR_foundry_git_repo` /
 `TF_VAR_foundry_git_ref` only for experiments.
+
+Cloud benchmark requests do not expose `foundry_version`: setting only that release tag would be ignored while the
+non-empty git repository selects the source build. For a local release-binary run, use
+`scripts/local-run.sh --foundry-version <tag>` without `FOUNDRY_GIT_REPO`. Low-level Terraform callers can select the
+same fallback only by explicitly setting `foundry_git_repo` to an empty string.
 
 ## One Run At A Time
 

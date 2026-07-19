@@ -15,6 +15,7 @@ Notes:
 - Step `02` (`benchmark/02-validated`) is applied by the bot after JSON validation passes.
 - Step `03` (`benchmark/03-approved`) is applied manually by a maintainer to start the run.
 - Limits: `instances_per_fuzzer` must be in `[1, 20]`, `timeout_hours` must be in `[0.25, 72]`.
+- Cloud runs build Foundry from the pinned git ref. `--foundry-version` is available only through `scripts/local-run.sh`.
 
 ```json
 {
@@ -25,7 +26,6 @@ Notes:
   "instances_per_fuzzer": 4,
   "timeout_hours": 1,
   "fuzzers": ["echidna", "medusa", "foundry", "recon-fuzzer"],
-  "foundry_version": "",
   "foundry_git_repo": "",
   "foundry_git_ref": "",
   "echidna_version": "",

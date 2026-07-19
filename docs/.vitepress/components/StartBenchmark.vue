@@ -97,7 +97,6 @@ const participatingFuzzerKeys = computed(() => {
 });
 
 // Advanced / optional overrides.
-const foundryVersion = ref("");
 const foundryGitRepo = ref("");
 const foundryGitRef = ref("");
 
@@ -218,7 +217,6 @@ const requestJson = computed(() => {
     timeout_hours: timeoutHours.value,
     fuzzers: participatingFuzzerKeys.value,
 
-    foundry_version: foundryVersion.value.trim(),
     foundry_git_repo: foundryGitRepo.value.trim(),
     foundry_git_ref: foundryGitRef.value.trim(),
 
@@ -376,11 +374,6 @@ const showAdvanced = ref(false);
           </label>
 
           <label class="sb-start__field">
-            <div class="sb-start__label">Foundry version override (optional)</div>
-            <input v-model="foundryVersion" class="sb-start__input" type="text" placeholder="e.g. v1.7.1" />
-          </label>
-
-          <label class="sb-start__field">
             <div class="sb-start__label">Foundry git repo (build from source, optional)</div>
             <input v-model="foundryGitRepo" class="sb-start__input" type="text" />
           </label>
@@ -422,6 +415,9 @@ const showAdvanced = ref(false);
         </div>
 
         <p class="sb-start__hint">
+          Cloud runs build Foundry from the pinned git ref. The <code>--foundry-version</code> release override is
+          available only through <code>scripts/local-run.sh</code>.
+          <br />
           Note: setting <code>properties_path</code> or <code>fuzzer_env_json</code> causes the workflow to pass a
           complete <code>fuzzer_env</code> map to Terraform (overriding its defaults). Leave these blank unless you know
           you want that.
