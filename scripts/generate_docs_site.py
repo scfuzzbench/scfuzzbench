@@ -22,6 +22,14 @@ from analysis.trial_run import (  # noqa: E402
     MIN_RUNS_PER_FUZZER,
     format_trial_run_warning,
 )
+from scripts.preliminary_results import (  # noqa: E402
+    ANALYSIS_META_RE,
+    FINALIZED_KEY_RE,
+    RESULT_SCHEMA,
+    RUN_KEY_RE as PRELIMINARY_RUN_KEY_RE,
+    format_duration,
+    validate_run_manifest,
+)
 
 
 RUN_MANIFEST_RE = re.compile(r"^runs/([0-9]+)/([0-9a-f]{32})/manifest\.json$")
@@ -468,6 +476,236 @@ def rm_tree_children(dir_path: Path, *, keep_files: set[str], dir_name_re: re.Pa
             shutil.rmtree(child)
 
 
+def preliminary_warning_lines(metadata: dict) -> list[str]:
+    expected = int(metadata.get("expected_snapshots", 0))
+    present = int(metadata.get("present_snapshots", 0))
+    missing = max(0, expected - present)
+    return [
+        "::: danger PRELIMINARY — DO NOT COMPARE OR STOP",
+        "This view is incomplete and non-terminal. Wait for the canonical release.",
+        "",
+        f"- As of: `{metadata.get('as_of_utc', 'not available')}`",
+        f"- Elapsed: `{format_duration(int(metadata.get('elapsed_seconds', 0)))}` "
+        f"of `{format_duration(int(metadata.get('planned_timeout_seconds', 0)))}`",
+        f"- Snapshot coverage: `{present}/{expected}` replicates (`{missing}` missing)",
+        "",
+        "Do not use this page for rankings, pass/fail decisions, or optional stopping.",
+        ":::",
+        "",
+    ]
+
+
+def render_preliminary_page(
+    *,
+    manifest: dict,
+    metadata: dict | None,
+    report_markdown: str,
+    chart_urls: list[tuple[str, str]],
+    generated_at: str,
+) -> str:
+    run_id = str(manifest["run_id"])
+    uuid = str(manifest["benchmark_uuid"])
+    lines = [
+        "---",
+        "aside: false",
+        "---",
+        "",
+        f"# Preliminary run `{run_id}`",
+        "",
+    ]
+    if metadata is None:
+        lines.extend(
+            [
+                "::: danger PRELIMINARY — NO CHECKPOINT YET",
+                "The run is active, but no settled checkpoint has been published.",
+                "Wait for the next preliminary update. Do not make benchmark decisions.",
+                ":::",
+                "",
+            ]
+        )
+    else:
+        lines.extend(preliminary_warning_lines(metadata))
+    lines.extend(
+        [
+            f"- Benchmark: `{uuid}`",
+            f"- Started: `{utc_ts(int(manifest['run_started_at_epoch']))}`",
+            f"- Planned timeout: `{float(manifest['timeout_hours']):g}h`",
+            f"- Page generated: `{generated_at}`",
+            "",
+        ]
+    )
+    if chart_urls:
+        lines.extend(["## Watermarked charts", ""])
+        for label, url in chart_urls:
+            lines.append(f"![PRELIMINARY — {label}]({url})")
+            lines.append("")
+    if report_markdown.strip():
+        lines.extend(["## Watermarked report", ""])
+        lines.extend(rewrite_headings(report_markdown, add=2).splitlines())
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def generate_preliminary_pages(
+    *,
+    bucket: str,
+    region: str,
+    profile: str | None,
+    docs_dir: Path,
+    now: int,
+    generated_at: str,
+) -> None:
+    keys = list_keys(bucket, "preliminary/", profile=profile)
+    finalized = {
+        (match["run"], match["uuid"])
+        for key in keys
+        if (match := FINALIZED_KEY_RE.fullmatch(key))
+    }
+    analysis_by_run: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    for key in keys:
+        match = ANALYSIS_META_RE.fullmatch(key)
+        if match:
+            analysis_by_run.setdefault((match["run"], match["uuid"]), []).append(
+                (int(match["checkpoint"]), key)
+            )
+
+    active: list[tuple[dict, dict | None, str, list[tuple[str, str]]]] = []
+    for key in sorted(k for k in keys if PRELIMINARY_RUN_KEY_RE.fullmatch(k)):
+        match = PRELIMINARY_RUN_KEY_RE.fullmatch(key)
+        run_id, uuid = match["run"], match["uuid"]
+        try:
+            manifest = json.loads(
+                aws_text(["s3", "cp", f"s3://{bucket}/{key}", "-"], profile=profile)
+            )
+            manifest = validate_run_manifest(
+                manifest, run_id=run_id, benchmark_uuid=uuid
+            )
+        except Exception as exc:
+            print(f"WARNING: skipping malformed preliminary manifest {key}: {exc}", file=sys.stderr)
+            continue
+        if not manifest["preliminary"]["enabled"] or (run_id, uuid) in finalized:
+            continue
+        deadline = manifest["run_started_at_epoch"] + int(
+            manifest["timeout_hours"] * 3600
+        )
+        if now < manifest["run_started_at_epoch"] or now >= deadline:
+            continue
+
+        metadata = None
+        report_markdown = ""
+        chart_urls: list[tuple[str, str]] = []
+        checkpoints = analysis_by_run.get((run_id, uuid), [])
+        if checkpoints:
+            checkpoint, metadata_key = max(checkpoints)
+            try:
+                metadata = json.loads(
+                    aws_text(
+                        ["s3", "cp", f"s3://{bucket}/{metadata_key}", "-"],
+                        profile=profile,
+                    )
+                )
+                if (
+                    metadata.get("schema") != RESULT_SCHEMA
+                    or metadata.get("run_id") != run_id
+                    or metadata.get("benchmark_uuid") != uuid
+                    or int(metadata.get("checkpoint", -1)) != checkpoint
+                ):
+                    raise ValueError("analysis metadata disagrees with its key")
+                prefix = metadata_key.removesuffix("/preliminary.json")
+                report_key = f"{prefix}/data/REPORT.md"
+                if head_exists(bucket, report_key, profile=profile):
+                    report_markdown = aws_text(
+                        ["s3", "cp", f"s3://{bucket}/{report_key}", "-"],
+                        profile=profile,
+                    )
+                for chart_key in sorted(
+                    item
+                    for item in keys
+                    if item.startswith(f"{prefix}/") and item.endswith(".png")
+                ):
+                    label = Path(chart_key).stem.replace("_", " ").title()
+                    chart_urls.append((label, s3_url(bucket, region, chart_key)))
+            except Exception as exc:
+                print(
+                    f"WARNING: skipping malformed preliminary analysis {metadata_key}: {exc}",
+                    file=sys.stderr,
+                )
+                metadata = None
+                report_markdown = ""
+                chart_urls = []
+        active.append((manifest, metadata, report_markdown, chart_urls))
+
+    active.sort(
+        key=lambda item: (
+            int(item[0]["run_started_at_epoch"]),
+            str(item[0]["run_id"]),
+        ),
+        reverse=True,
+    )
+    rm_tree_children(
+        docs_dir / "preliminary",
+        keep_files={"index.md"},
+        dir_name_re=None,
+    )
+    index_lines = [
+        "---",
+        "aside: false",
+        "---",
+        "",
+        "# Active preliminary results",
+        "",
+        "::: danger Preliminary views are not benchmark results",
+        "These pages are incomplete. Do not compare fuzzers, declare success or failure, or stop a run early.",
+        ":::",
+        "",
+        f"_Generated at: **{generated_at}** (UTC)_",
+        "",
+    ]
+    if not active:
+        index_lines.extend(["_No active preliminary runs._", ""])
+    else:
+        index_lines.extend(
+            [
+                "| Run | Started (UTC) | Benchmark | Latest checkpoint | Snapshot coverage |",
+                "|---|---|---|---:|---:|",
+            ]
+        )
+        for manifest, metadata, _, _ in active:
+            run_id = str(manifest["run_id"])
+            uuid = str(manifest["benchmark_uuid"])
+            checkpoint = str(metadata["checkpoint"]) if metadata else "waiting"
+            coverage = (
+                f"{metadata['present_snapshots']}/{metadata['expected_snapshots']}"
+                if metadata
+                else "0/0"
+            )
+            index_lines.append(
+                f"| [`{run_id}`](./{run_id}/{uuid}/) | "
+                f"`{utc_ts(int(manifest['run_started_at_epoch']))}` | "
+                f"`{uuid}` | {checkpoint} | {coverage} |"
+            )
+        index_lines.append("")
+    write_text(
+        docs_dir / "preliminary" / "index.md",
+        "\n".join(index_lines).rstrip() + "\n",
+    )
+    for manifest, metadata, report, charts in active:
+        write_text(
+            docs_dir
+            / "preliminary"
+            / str(manifest["run_id"])
+            / str(manifest["benchmark_uuid"])
+            / "index.md",
+            render_preliminary_page(
+                manifest=manifest,
+                metadata=metadata,
+                report_markdown=report,
+                chart_urls=charts,
+                generated_at=generated_at,
+            ),
+        )
+
+
 @dataclass(frozen=True)
 class Run:
     run_id: int
@@ -571,6 +809,15 @@ def main() -> int:
 
     complete_runs.sort(key=lambda r: (r.run_id, r.benchmark_uuid), reverse=True)
     print(f"Found {len(complete_runs)} complete runs (timeout + grace)")
+
+    generate_preliminary_pages(
+        bucket=bucket,
+        region=region,
+        profile=profile,
+        docs_dir=docs_dir,
+        now=now,
+        generated_at=generated_at,
+    )
 
     # Build compile-time EC2 pricing table for the Start Benchmark page.
     pricing_instance_types = {

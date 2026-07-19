@@ -31,6 +31,8 @@ SCFUZZBENCH_BENCHMARK_MANIFEST_B64=${SCFUZZBENCH_BENCHMARK_MANIFEST_B64:-}
 SCFUZZBENCH_PROPERTIES_PATH=${SCFUZZBENCH_PROPERTIES_PATH:-}
 SCFUZZBENCH_RUNNER_METRICS=${SCFUZZBENCH_RUNNER_METRICS:-1}
 SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS=${SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS:-5}
+SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS=${SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS:-3600}
+SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT=${SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT:-${SCFUZZBENCH_ROOT}/preliminary_snapshot.py}
 
 SCFUZZBENCH_AWS_CREDS_ENV_FILE=${SCFUZZBENCH_AWS_CREDS_ENV_FILE:-${SCFUZZBENCH_ROOT}/aws_creds.env}
 SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS=${SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS:-300}
@@ -450,9 +452,212 @@ stop_runner_metrics() {
   fi
 }
 
+preliminary_snapshot_interval_seconds() {
+  local raw="${SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS:-3600}"
+  local normalized
+  normalized=$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]')
+  case "${normalized}" in
+    0|false|no|off|disabled)
+      echo 0
+      return 0
+      ;;
+  esac
+  if [[ "${raw}" =~ ^[0-9]+$ ]] && (( raw > 0 )); then
+    echo "${raw}"
+    return 0
+  fi
+  log "Invalid preliminary snapshot interval '${raw}'; using 3600 seconds."
+  echo 3600
+}
+
+preliminary_snapshots_enabled() {
+  if is_local_mode; then
+    return 1
+  fi
+  local interval
+  interval=$(preliminary_snapshot_interval_seconds)
+  [[ "${interval}" -gt 0 ]]
+}
+
+preliminary_snapshot_prefix() {
+  require_env SCFUZZBENCH_RUN_ID SCFUZZBENCH_BENCHMARK_UUID
+  printf 'preliminary/%s/%s' \
+    "${SCFUZZBENCH_RUN_ID}" \
+    "${SCFUZZBENCH_BENCHMARK_UUID}"
+}
+
+# PutObject is atomic. If a retry finds the key already present, accept it only
+# when its recorded SHA-256 matches the exact local bytes. A divergent retry is
+# a hard collision and is never allowed to overwrite the first checkpoint.
+put_preliminary_immutable() {
+  local source=$1
+  local key=$2
+  require_env SCFUZZBENCH_S3_BUCKET
+  local sha256
+  sha256=$(sha256sum "${source}" | awk '{print $1}')
+  local attempt=1
+  local max_attempts=5
+  while (( attempt <= max_attempts )); do
+    if aws_cli s3api put-object \
+      --bucket "${SCFUZZBENCH_S3_BUCKET}" \
+      --key "${key}" \
+      --body "${source}" \
+      --if-none-match '*' \
+      --metadata "sha256=${sha256}" \
+      >/dev/null; then
+      return 0
+    fi
+
+    local remote_sha=""
+    remote_sha=$(aws_cli s3api head-object \
+      --bucket "${SCFUZZBENCH_S3_BUCKET}" \
+      --key "${key}" \
+      --query 'Metadata.sha256' \
+      --output text 2>/dev/null || true)
+    if [[ "${remote_sha}" == "${sha256}" ]]; then
+      log "Immutable preliminary object already exists with matching SHA-256: ${key}"
+      return 0
+    fi
+    if [[ -n "${remote_sha}" && "${remote_sha}" != "None" ]]; then
+      log "Refusing to overwrite divergent preliminary object ${key} (local ${sha256}, remote ${remote_sha})."
+      return 1
+    fi
+    if (( attempt == max_attempts )); then
+      break
+    fi
+    log "Preliminary upload failed (attempt ${attempt}/${max_attempts}); retrying in 60s: ${key}"
+    sleep 60 || true
+    attempt=$((attempt + 1))
+  done
+  log "Preliminary upload failed after ${max_attempts} attempts: ${key}"
+  return 1
+}
+
+capture_preliminary_snapshot() {
+  local checkpoint=$1
+  local scheduled_at=$2
+  require_env \
+    SCFUZZBENCH_RUN_ID \
+    SCFUZZBENCH_RUN_STARTED_AT_EPOCH \
+    SCFUZZBENCH_BENCHMARK_UUID \
+    SCFUZZBENCH_TIMEOUT_SECONDS \
+    SCFUZZBENCH_FUZZER_LABEL \
+    SCFUZZBENCH_FUZZER_KEY \
+    SCFUZZBENCH_RUN_INDEX
+  cache_instance_id || true
+  local instance_id="${SCFUZZBENCH_INSTANCE_ID:-unknown}"
+  local checkpoint_padded
+  checkpoint_padded=$(printf '%06d' "${checkpoint}")
+  local capture_root="${SCFUZZBENCH_ROOT}/preliminary-checkpoints"
+  local capture_dir="${capture_root}/${checkpoint_padded}"
+  local archive="${capture_dir}/snapshot.zip"
+  local captured_at
+  captured_at=$(date +%s)
+  rm -rf "${capture_dir}"
+  mkdir -p "${capture_dir}"
+
+  python3 "${SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT}" \
+    --log-dir "${SCFUZZBENCH_LOG_DIR}" \
+    --archive "${archive}" \
+    --run-id "${SCFUZZBENCH_RUN_ID}" \
+    --run-started-at-epoch "${SCFUZZBENCH_RUN_STARTED_AT_EPOCH}" \
+    --benchmark-uuid "${SCFUZZBENCH_BENCHMARK_UUID}" \
+    --checkpoint "${checkpoint}" \
+    --interval-seconds "$(preliminary_snapshot_interval_seconds)" \
+    --scheduled-at-epoch "${scheduled_at}" \
+    --captured-at-epoch "${captured_at}" \
+    --instance-id "${instance_id}" \
+    --fuzzer-key "${SCFUZZBENCH_FUZZER_KEY}" \
+    --run-index "${SCFUZZBENCH_RUN_INDEX}" \
+    --fuzzer-label "${SCFUZZBENCH_FUZZER_LABEL}" \
+    --timeout-seconds "${SCFUZZBENCH_TIMEOUT_SECONDS}" \
+    >"${capture_dir}/capture-result.json"
+
+  local identity="${SCFUZZBENCH_FUZZER_KEY}-${SCFUZZBENCH_RUN_INDEX}-${instance_id}"
+  local key
+  key="$(preliminary_snapshot_prefix)/snapshots/${checkpoint_padded}/${identity}/snapshot.zip"
+  put_preliminary_immutable "${archive}" "${key}"
+  log "Uploaded preliminary checkpoint ${checkpoint_padded}: ${key}"
+  rm -rf "${capture_dir}"
+}
+
+start_preliminary_snapshots() {
+  if ! preliminary_snapshots_enabled; then
+    log "Preliminary snapshots disabled (SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS=${SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS})."
+    return 0
+  fi
+  if [[ -n "${SCFUZZBENCH_PRELIMINARY_PID:-}" ]] && kill -0 "${SCFUZZBENCH_PRELIMINARY_PID}" 2>/dev/null; then
+    return 0
+  fi
+  require_env \
+    SCFUZZBENCH_RUN_ID \
+    SCFUZZBENCH_BENCHMARK_UUID \
+    SCFUZZBENCH_FUZZER_KEY \
+    SCFUZZBENCH_RUN_INDEX
+  local run_started_at="${SCFUZZBENCH_RUN_STARTED_AT_EPOCH:-}"
+  if [[ -z "${run_started_at}" && "${SCFUZZBENCH_RUN_ID}" =~ ^[0-9]+$ ]]; then
+    run_started_at="${SCFUZZBENCH_RUN_ID}"
+    export SCFUZZBENCH_RUN_STARTED_AT_EPOCH="${run_started_at}"
+  fi
+  if [[ ! "${run_started_at}" =~ ^[0-9]+$ ]] || (( run_started_at <= 0 )); then
+    log "Preliminary snapshots require SCFUZZBENCH_RUN_STARTED_AT_EPOCH; skipping."
+    return 0
+  fi
+  if [[ ! -f "${SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT}" ]]; then
+    log "Preliminary snapshot helper missing: ${SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT}"
+    return 1
+  fi
+
+  local interval
+  interval=$(preliminary_snapshot_interval_seconds)
+  local now elapsed checkpoint
+  now=$(date +%s)
+  elapsed=$(( now - run_started_at ))
+  if (( elapsed < 0 )); then
+    elapsed=0
+  fi
+  checkpoint=$(( elapsed / interval + 1 ))
+
+  (
+    set +e
+    preliminary_loop_exit() {
+      local child
+      while read -r child; do
+        [[ -n "${child}" ]] && kill "${child}" 2>/dev/null || true
+      done < <(jobs -pr)
+      wait 2>/dev/null || true
+      exit 0
+    }
+    trap preliminary_loop_exit TERM INT
+    while true; do
+      local scheduled_at=$(( run_started_at + checkpoint * interval ))
+      local sleep_for=$(( scheduled_at - $(date +%s) ))
+      if (( sleep_for > 0 )); then
+        sleep "${sleep_for}" &
+        wait $! || exit 0
+      fi
+      capture_preliminary_snapshot "${checkpoint}" "${scheduled_at}" || \
+        log "Preliminary checkpoint ${checkpoint} failed; the live campaign continues."
+      checkpoint=$((checkpoint + 1))
+    done
+  ) &
+  export SCFUZZBENCH_PRELIMINARY_PID=$!
+  log "Scheduled preliminary snapshots every ${interval}s from run epoch ${run_started_at} (next checkpoint ${checkpoint})."
+}
+
+stop_preliminary_snapshots() {
+  local pid="${SCFUZZBENCH_PRELIMINARY_PID:-}"
+  if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+    kill "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+  fi
+  unset SCFUZZBENCH_PRELIMINARY_PID
+}
+
 finalize_run() {
   local exit_code=$?
   set +e
+  stop_preliminary_snapshots || true
   stop_runner_metrics || true
   if [[ -z "${SCFUZZBENCH_UPLOAD_DONE:-}" ]]; then
     if is_local_mode; then
@@ -1039,11 +1244,13 @@ run_with_timeout() {
     kill_after=300
   fi
   append_runner_command_log "${SCFUZZBENCH_TIMEOUT_SECONDS}" "${kill_after}" "$@" || true
+  start_preliminary_snapshots
   log "Running command with timeout ${SCFUZZBENCH_TIMEOUT_SECONDS}s (grace ${kill_after}s)"
   set +e
   timeout --signal=SIGINT --kill-after="${kill_after}s" "${SCFUZZBENCH_TIMEOUT_SECONDS}s" "$@" 2>&1 | tee "${log_file}"
   local exit_code=${PIPESTATUS[0]}
   set -e
+  stop_preliminary_snapshots || true
   log_duration "run_with_timeout $(basename "${log_file}")" "${run_start}"
   if [[ "${exit_code}" -eq 124 ]]; then
     log "Command reached configured benchmark timeout; treating as completed run"

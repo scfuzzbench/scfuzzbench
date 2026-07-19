@@ -543,6 +543,15 @@ jobs:
           tag="${{ steps.release_check.outputs.tag }}"
           gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --title "${tag}" --notes-file "${{ steps.body.outputs.release_body }}"
 
+      - name: Close preliminary stream
+        run: |
+          set -euo pipefail
+          python3 scripts/preliminary_results.py mark-finalized \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${{ matrix.run_id }}" \
+            --benchmark-uuid "${{ matrix.benchmark_uuid }}" \
+            --canonical-tag "${{ steps.release_check.outputs.tag }}"
+
   refresh_docs:
     needs: [discover, release]
     if: ${{ needs.discover.outputs.has_runs == 'true' && needs.release.result == 'success' }}

@@ -62,6 +62,7 @@ const benchmarkType = ref<BenchmarkType>("property");
 const instanceType = ref("c6a.4xlarge");
 const instancesPerFuzzer = ref(4);
 const timeoutHours = ref(1);
+const preliminaryIntervalMinutes = ref(60);
 
 // Dynamically discover fuzzers from committed run scripts.
 // In CI tarball checkouts, this naturally reflects the tracked repo content.
@@ -216,6 +217,7 @@ const requestJson = computed(() => {
     instance_type: instanceType.value.trim(),
     instances_per_fuzzer: instancesPerFuzzer.value,
     timeout_hours: timeoutHours.value,
+    preliminary_interval_minutes: preliminaryIntervalMinutes.value,
     fuzzers: participatingFuzzerKeys.value,
 
     foundry_version: foundryVersion.value.trim(),
@@ -334,6 +336,18 @@ const showAdvanced = ref(false);
             min="0.25"
             max="72"
             step="0.25"
+          />
+        </label>
+
+        <label class="sb-start__field">
+          <div class="sb-start__label">Preliminary updates (minutes; 0 turns them off)</div>
+          <input
+            v-model.number="preliminaryIntervalMinutes"
+            class="sb-start__input"
+            type="number"
+            min="0"
+            max="1440"
+            step="1"
           />
         </label>
 

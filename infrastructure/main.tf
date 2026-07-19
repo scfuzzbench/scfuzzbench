@@ -4,28 +4,34 @@ locals {
 
   timeout_seconds = var.timeout_hours * 3600
   run_id          = var.run_id != "" ? var.run_id : time_static.run.unix
+  run_started_at_epoch = (
+    var.run_started_at_epoch != "" ? var.run_started_at_epoch :
+    can(regex("^[0-9]+$", local.run_id)) ? local.run_id :
+    time_static.run.unix
+  )
 
   # Pick an AZ that supports the requested instance type to avoid flaky applies
   # when AWS auto-selects an AZ where the type isn't offered.
   subnet_availability_zone = var.availability_zone != "" ? var.availability_zone : sort(data.aws_ec2_instance_type_offerings.fuzzer.locations)[0]
 
   benchmark_manifest = {
-    scfuzzbench_commit   = var.scfuzzbench_commit
-    target_repo_url      = var.target_repo_url
-    target_commit        = var.target_commit
-    benchmark_type       = var.benchmark_type
-    instance_type        = var.instance_type
-    instances_per_fuzzer = var.instances_per_fuzzer
-    timeout_hours        = var.timeout_hours
-    aws_region           = var.aws_region
-    ubuntu_ami_id        = data.aws_ssm_parameter.ubuntu_ami.value
-    foundry_version      = var.foundry_version
-    foundry_git_repo     = var.foundry_git_repo
-    foundry_git_ref      = var.foundry_git_ref
-    echidna_version      = var.echidna_version
-    medusa_version       = var.medusa_version
-    recon_version        = var.recon_version
-    fuzzer_keys          = sort([for fuzzer in local.fuzzer_definitions : fuzzer.key])
+    scfuzzbench_commit           = var.scfuzzbench_commit
+    target_repo_url              = var.target_repo_url
+    target_commit                = var.target_commit
+    benchmark_type               = var.benchmark_type
+    instance_type                = var.instance_type
+    instances_per_fuzzer         = var.instances_per_fuzzer
+    timeout_hours                = var.timeout_hours
+    preliminary_interval_seconds = var.preliminary_interval_seconds
+    aws_region                   = var.aws_region
+    ubuntu_ami_id                = data.aws_ssm_parameter.ubuntu_ami.value
+    foundry_version              = var.foundry_version
+    foundry_git_repo             = var.foundry_git_repo
+    foundry_git_ref              = var.foundry_git_ref
+    echidna_version              = var.echidna_version
+    medusa_version               = var.medusa_version
+    recon_version                = var.recon_version
+    fuzzer_keys                  = sort([for fuzzer in local.fuzzer_definitions : fuzzer.key])
   }
 
   benchmark_manifest_json = jsonencode(local.benchmark_manifest)
@@ -350,15 +356,19 @@ resource "aws_instance" "fuzzer" {
     shared_sh                    = file("${path.module}/../fuzzers/_shared/common.sh")
     install_sh                   = file(each.value.fuzzer.install_path)
     run_sh                       = file(each.value.fuzzer.run_path)
+    preliminary_snapshot_py      = file("${path.module}/../scripts/preliminary_snapshot.py")
     aws_region                   = var.aws_region
     s3_bucket                    = local.bucket_name
     run_id                       = local.run_id
+    run_started_at_epoch         = local.run_started_at_epoch
     benchmark_uuid               = local.benchmark_uuid
     benchmark_manifest_b64       = local.benchmark_manifest_b64
     timeout_seconds              = local.timeout_seconds
     repo_url                     = var.target_repo_url
     repo_commit                  = var.target_commit
     benchmark_type               = var.benchmark_type
+    preliminary_interval_seconds = var.preliminary_interval_seconds
+    run_index                    = each.value.run_index
     foundry_version              = var.foundry_version
     foundry_git_repo             = var.foundry_git_repo
     foundry_git_ref              = var.foundry_git_ref

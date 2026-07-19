@@ -132,6 +132,48 @@ class GenerateDocsSiteTests(unittest.TestCase):
         self.assertIn("Commit 0123456789", desc)
         self.assertIn("Fuzzers foundry, echidna, medusa", desc)
 
+    def test_preliminary_page_repeats_non_terminal_warning_and_as_of_context(self):
+        module = load_generate_docs_site()
+        manifest = {
+            "run_id": "gh-24680-1",
+            "benchmark_uuid": "b" * 32,
+            "run_started_at_epoch": 1_800_000_000,
+            "timeout_hours": 24,
+        }
+        metadata = {
+            "as_of_utc": "2027-01-15T10:00:00Z",
+            "elapsed_seconds": 7200,
+            "planned_timeout_seconds": 86400,
+            "present_snapshots": 3,
+            "expected_snapshots": 4,
+        }
+
+        rendered = module.render_preliminary_page(
+            manifest=manifest,
+            metadata=metadata,
+            report_markdown=(
+                "> [!CAUTION]\n"
+                "> **PRELIMINARY — INCOMPLETE — DO NOT COMPARE OR STOP**\n\n"
+                "# Benchmark report\n"
+            ),
+            chart_urls=[
+                (
+                    "Bugs Over Time",
+                    "https://bucket.example/preliminary/gh-24680-1/chart.png",
+                )
+            ],
+            generated_at="2027-01-15 10:05:00Z",
+        )
+
+        self.assertIn("PRELIMINARY — DO NOT COMPARE OR STOP", rendered)
+        self.assertIn("2027-01-15T10:00:00Z", rendered)
+        self.assertIn("2h 0m", rendered)
+        self.assertIn("24h 0m", rendered)
+        self.assertIn("3/4", rendered)
+        self.assertIn("rankings, pass/fail decisions, or optional stopping", rendered)
+        self.assertIn("![PRELIMINARY — Bugs Over Time]", rendered)
+        self.assertIn("### Benchmark report", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,11 @@ on:
         required: true
         type: number
         default: 24
+      preliminary_interval_minutes:
+        description: "Preliminary checkpoint interval in minutes (0 disables)."
+        required: false
+        type: number
+        default: 60
       fuzzers_json:
         description: "JSON list of fuzzer keys to run (optional)."
         required: false
@@ -106,6 +111,11 @@ on:
         required: false
         type: number
         default: 24
+      preliminary_interval_minutes:
+        description: "Preliminary checkpoint interval in minutes (0 disables)."
+        required: false
+        type: number
+        default: 60
       fuzzers_json:
         description: "JSON list of fuzzer keys to run (optional)."
         required: false
@@ -174,7 +184,7 @@ on:
         required: false
     outputs:
       run_id:
-        description: "Run ID (Unix timestamp)."
+        description: "Opaque run identifier."
         value: ${{ jobs.benchmark-run.outputs.run_id }}
       benchmark_uuid:
         description: "Benchmark UUID (derived from manifest)."
@@ -287,6 +297,7 @@ jobs:
           INSTANCE_TYPE: ${{ inputs.instance_type }}
           INSTANCES_PER_FUZZER: ${{ inputs.instances_per_fuzzer }}
           TIMEOUT_HOURS: ${{ inputs.timeout_hours }}
+          PRELIMINARY_INTERVAL_MINUTES: ${{ inputs.preliminary_interval_minutes }}
           FUZZERS_JSON: ${{ inputs.fuzzers_json }}
           FOUNDRY_VERSION: ${{ inputs.foundry_version }}
           FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
@@ -392,6 +403,12 @@ jobs:
           hours = float(os.environ["TIMEOUT_HOURS"])
           if hours < 0.25 or hours > 72:
               raise SystemExit("timeout_hours must be in [0.25, 72]")
+          minutes = float(os.environ["PRELIMINARY_INTERVAL_MINUTES"])
+          seconds = minutes * 60
+          if minutes < 0 or minutes > 1440:
+              raise SystemExit("preliminary_interval_minutes must be in [0, 1440]")
+          if not seconds.is_integer():
+              raise SystemExit("preliminary_interval_minutes must resolve to whole seconds")
           PY
 
           python3 - <<'PY'
@@ -473,6 +490,7 @@ jobs:
           INSTANCE_TYPE: ${{ inputs.instance_type }}
           INSTANCES_PER_FUZZER: ${{ inputs.instances_per_fuzzer }}
           TIMEOUT_HOURS: ${{ inputs.timeout_hours }}
+          PRELIMINARY_INTERVAL_MINUTES: ${{ inputs.preliminary_interval_minutes }}
           FUZZERS_JSON: ${{ inputs.fuzzers_json }}
           FOUNDRY_VERSION: ${{ inputs.foundry_version }}
           FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
@@ -485,7 +503,13 @@ jobs:
           PROPERTIES_PATH: ${{ inputs.properties_path }}
         run: |
           set -euo pipefail
-          run_id=$(date +%s)
+          run_started_at_epoch=$(date +%s)
+          run_id="${run_started_at_epoch}"
+          preliminary_interval_seconds=$(python3 - <<'PY'
+          import os
+          print(int(float(os.environ["PRELIMINARY_INTERVAL_MINUTES"]) * 60))
+          PY
+          )
           fuzzers="${FUZZERS_JSON:-}"
           if [[ -z "${fuzzers}" ]]; then
             fuzzers='["echidna","medusa","foundry","recon-fuzzer"]'
@@ -499,8 +523,10 @@ jobs:
             -var "instance_type=${INSTANCE_TYPE}"
             -var "instances_per_fuzzer=${INSTANCES_PER_FUZZER}"
             -var "timeout_hours=${TIMEOUT_HOURS}"
+            -var "preliminary_interval_seconds=${preliminary_interval_seconds}"
             -var "fuzzers=${fuzzers}"
             -var "run_id=${run_id}"
+            -var "run_started_at_epoch=${run_started_at_epoch}"
             -var "scfuzzbench_commit=${GITHUB_SHA}"
           )
 
@@ -559,12 +585,25 @@ jobs:
             echo "benchmark_uuid=${benchmark_uuid}"
           } >> "${GITHUB_OUTPUT}"
 
+      - name: Publish preliminary run metadata
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          python3 scripts/preliminary_results.py write-run-manifest \
+            --terraform-output run_metadata.json \
+            --out preliminary_run.json
+          python3 scripts/preliminary_results.py publish-run \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --manifest preliminary_run.json
+
       - name: Upload run metadata
         if: ${{ !inputs.dry_run }}
         uses: actions/upload-artifact@v4
         with:
           name: run-metadata
-          path: run_metadata.json
+          path: |
+            run_metadata.json
+            preliminary_run.json
 
       - name: Summary
         run: |
@@ -581,5 +620,6 @@ jobs:
               echo ""
               echo "- Run ID: ${{ steps.tf_outputs.outputs.run_id }}"
               echo "- Benchmark UUID: ${{ steps.tf_outputs.outputs.benchmark_uuid }}"
+              echo "- Preliminary checkpoints: every ${{ inputs.preliminary_interval_minutes }} minute(s) (0 disables)"
             } >> "${GITHUB_STEP_SUMMARY}"
           fi
