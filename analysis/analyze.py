@@ -420,6 +420,8 @@ def parse_throughput_from_payload(
 
 def parse_progress_metrics_from_payload(
     payload: Dict[str, Any],
+    *,
+    include_coverage: bool = False,
 ) -> Tuple[
     Optional[float],
     Optional[float],
@@ -430,7 +432,9 @@ def parse_progress_metrics_from_payload(
 ]:
     metric_values = flatten_numeric_values(payload)
     seq_per_second = pick_metric_value(metric_values, SEQ_RATE_KEYS)
-    coverage_proxy = pick_metric_value(metric_values, COVERAGE_KEYS)
+    coverage_proxy = (
+        pick_metric_value(metric_values, COVERAGE_KEYS) if include_coverage else None
+    )
     corpus_size = pick_metric_value(metric_values, CORPUS_KEYS)
     favored_items = pick_metric_value(metric_values, FAVORED_KEYS)
     failure_rate = pick_metric_value(metric_values, ("failure_rate", "fail_rate"))
@@ -1070,7 +1074,12 @@ def parse_throughput_logs(
 
 
 def parse_progress_metrics_log(
-    path: Path, run_id: str, instance_id: str, fuzzer_label: str
+    path: Path,
+    run_id: str,
+    instance_id: str,
+    fuzzer_label: str,
+    *,
+    include_coverage: bool = False,
 ) -> List[ProgressMetricsSample]:
     samples: List[ProgressMetricsSample] = []
     first_ts: Optional[float] = None
@@ -1134,10 +1143,16 @@ def parse_progress_metrics_log(
                     favored_items,
                     failure_rate,
                     source,
-                ) = parse_progress_metrics_from_payload(payload)
+                ) = parse_progress_metrics_from_payload(
+                    payload, include_coverage=include_coverage
+                )
             else:
                 seq_per_second = parse_rate_from_text(clean_line, SEQ_RATE_PATTERNS)
-                coverage_proxy = parse_count_from_text(clean_line, COVERAGE_PATTERNS)
+                coverage_proxy = (
+                    parse_count_from_text(clean_line, COVERAGE_PATTERNS)
+                    if include_coverage
+                    else None
+                )
                 corpus_size = parse_count_from_text(clean_line, CORPUS_PATTERNS)
                 failure_rate = parse_failure_rate_from_text(clean_line)
                 if (
@@ -1194,6 +1209,8 @@ def parse_progress_metrics_logs(
     logs_dir: Path,
     run_id: Optional[str],
     log_files: Sequence[LogFile],
+    *,
+    include_coverage: bool = False,
 ) -> List[ProgressMetricsSample]:
     samples: List[ProgressMetricsSample] = []
     run_id_value = run_id or infer_run_id(logs_dir) or "unknown"
@@ -1204,6 +1221,7 @@ def parse_progress_metrics_logs(
                 run_id_value,
                 log_file.instance_id,
                 log_file.fuzzer_label,
+                include_coverage=include_coverage,
             )
         )
     return samples
@@ -2899,6 +2917,15 @@ def parse_args() -> argparse.Namespace:
         help="Use raw directory names as fuzzer labels instead of normalizing.",
     )
     run_parser.add_argument(
+        "--coverage-over-time",
+        action="store_true",
+        help=(
+            "Opt in to extracting fuzzer-native coverage signals from timestamped "
+            "progress output. Signals use different units and are not cross-fuzzer "
+            "coverage scores."
+        ),
+    )
+    run_parser.add_argument(
         "--pairing-mode",
         choices=["unpaired", "paired"],
         default="unpaired",
@@ -2971,7 +2998,10 @@ def main() -> int:
             args.logs_dir, args.run_id, log_files
         )
         progress_metrics_samples = parse_progress_metrics_logs(
-            args.logs_dir, args.run_id, log_files
+            args.logs_dir,
+            args.run_id,
+            log_files,
+            include_coverage=args.coverage_over_time,
         )
         if raw_labels:
             events = _apply_raw_labels_events(events)

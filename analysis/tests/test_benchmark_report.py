@@ -12,6 +12,9 @@ from analysis import benchmark_report
 from analysis import plot_palette
 
 
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
 def _make_metrics(fuzzer, final_values, runs=None, **kwargs):
     vals = np.array(final_values, dtype=float)
     defaults = dict(
@@ -212,11 +215,46 @@ class BenchmarkReportTests(unittest.TestCase):
 
             self.assertIn("Progress metrics from logs", report)
             self.assertIn(
-                "| foundry | 1 | 0 | n/a | 1 | 280.00 [260.00,300.00] | 1 | 85.00 [80.00,90.00] |",
+                "| foundry | 1 | 0 | n/a | 1 | 85.00 [80.00,90.00] |",
                 report,
             )
+            self.assertIn("## Coverage over time (opt-in, fuzzer-native signals)", report)
+            self.assertIn("Status: **disabled**", report)
+            self.assertNotIn("280.00 [260.00,300.00]", report)
             self.assertNotIn("Favored", report)
             self.assertNotIn("Failure-rate", report)
+
+    def test_write_report_documents_enabled_coverage_signals_and_limits(self):
+        progress = benchmark_report.load_progress_metrics_summary(
+            FIXTURES / "coverage_progress_summary.csv"
+        )
+        metrics = [
+            _make_metrics(fuzzer, [1, 1])
+            for fuzzer in ("echidna", "foundry", "medusa", "recon-fuzzer")
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outpath = Path(tmp) / "REPORT.md"
+            benchmark_report.write_report(
+                metrics=metrics,
+                budget=1.0,
+                checkpoints=[1.0],
+                ks=[1],
+                outpath=outpath,
+                progress_metrics_by_fuzzer=progress,
+                coverage_over_time=True,
+            )
+            report = outpath.read_text(encoding="utf-8")
+
+        self.assertIn("Status: **enabled**", report)
+        self.assertIn("Source-based coverage is preferred", report)
+        self.assertIn("must not be ranked, pooled, or plotted on a shared scale", report)
+        self.assertIn("`cov` coverage points", report)
+        self.assertIn("`branches hit`", report)
+        self.assertIn("`cumulative_edges_seen`", report)
+        self.assertIn("`Unique instructions`", report)
+        self.assertIn("| echidna | `cov` coverage points (coverage points) | No (runtime proxy)", report)
+        self.assertIn("| 2 | 130.00 [125.00,135.00] |", report)
 
     def test_write_report_omits_scoreboard_without_relative_scores_csv(self):
         metrics = [
@@ -491,10 +529,46 @@ class BenchmarkReportTests(unittest.TestCase):
             self.assertTrue((out_dir / "tx_per_second_over_time.png").exists())
             self.assertTrue((out_dir / "gas_per_second_over_time.png").exists())
             self.assertTrue((out_dir / "seq_per_second_over_time.png").exists())
-            self.assertTrue((out_dir / "coverage_proxy_over_time.png").exists())
+            self.assertFalse((out_dir / "coverage_over_time.png").exists())
+            self.assertFalse((out_dir / "coverage_proxy_over_time.png").exists())
             self.assertTrue((out_dir / "corpus_size_over_time.png").exists())
             self.assertFalse((out_dir / "favored_items_over_time.png").exists())
             self.assertFalse((out_dir / "failure_rate_over_time.png").exists())
+
+    def test_cli_generates_opt_in_coverage_chart_with_independent_signals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            csv_path = FIXTURES / "coverage_cumulative.csv"
+
+            out_dir = tmp_dir / "out"
+            script = Path(__file__).resolve().parents[1] / "benchmark_report.py"
+            subprocess.check_call(
+                [
+                    sys.executable,
+                    str(script),
+                    "--csv",
+                    str(csv_path),
+                    "--outdir",
+                    str(out_dir),
+                    "--budget",
+                    "1",
+                    "--checkpoints",
+                    "1",
+                    "--ks",
+                    "1",
+                    "--progress-metrics-summary-csv",
+                    str(FIXTURES / "coverage_progress_summary.csv"),
+                    "--progress-metrics-samples-csv",
+                    str(FIXTURES / "coverage_progress_samples.csv"),
+                    "--coverage-over-time",
+                ]
+            )
+
+            report = (out_dir / "REPORT.md").read_text(encoding="utf-8")
+            self.assertTrue((out_dir / "coverage_over_time.png").exists())
+            self.assertFalse((out_dir / "coverage_proxy_over_time.png").exists())
+            self.assertIn("Status: **enabled**", report)
+            self.assertIn("Compatible Foundry JSON pulse builds", report)
 
     def test_cli_generates_differential_coverage_statistics_chart(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,0 +1,17 @@
+run_id,instance_id,fuzzer,fuzzer_label,elapsed_seconds,seq_per_second,coverage_proxy,corpus_size,favored_items,failure_rate,source,log_path
+run-e1,i-e1,echidna,echidna-v2.3.1,0,,100,,,,text-metrics,echidna-1.log
+run-e1,i-e1,echidna,echidna-v2.3.1,3600,,120,,,,text-metrics,echidna-1.log
+run-e2,i-e2,echidna,echidna-v2.3.1,0,,110,,,,text-metrics,echidna-2.log
+run-e2,i-e2,echidna,echidna-v2.3.1,3600,,140,,,,text-metrics,echidna-2.log
+run-m1,i-m1,medusa,medusa-v1.4.1,0,,200,,,,text-metrics,medusa-1.log
+run-m1,i-m1,medusa,medusa-v1.4.1,3600,,220,,,,text-metrics,medusa-1.log
+run-m2,i-m2,medusa,medusa-v1.4.1,0,,205,,,,text-metrics,medusa-2.log
+run-m2,i-m2,medusa,medusa-v1.4.1,3600,,240,,,,text-metrics,medusa-2.log
+run-f1,i-f1,foundry,foundry-git-test,0,,300,,,,json-metrics,foundry-1.log
+run-f1,i-f1,foundry,foundry-git-test,3600,,330,,,,json-metrics,foundry-1.log
+run-f2,i-f2,foundry,foundry-git-test,0,,310,,,,json-metrics,foundry-2.log
+run-f2,i-f2,foundry,foundry-git-test,3600,,360,,,,json-metrics,foundry-2.log
+run-r1,i-r1,recon-fuzzer,recon-v0.4.6,0,,400,,,,text-metrics,recon-1.log
+run-r1,i-r1,recon-fuzzer,recon-v0.4.6,3600,,440,,,,text-metrics,recon-1.log
+run-r2,i-r2,recon-fuzzer,recon-v0.4.6,0,,420,,,,text-metrics,recon-2.log
+run-r2,i-r2,recon-fuzzer,recon-v0.4.6,3600,,480,,,,text-metrics,recon-2.log

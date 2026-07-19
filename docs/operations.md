@@ -240,6 +240,18 @@ logs/
 
 Each subdirectory name becomes the fuzzer label in all CSVs and plots.
 
+### Coverage Over Time
+
+Native coverage-over-time reporting is disabled by default because the fuzzers expose different bytecode/instrumentation counters rather than a common source-based metric. Enable it during analysis with:
+
+```bash
+make results-analyze-all \
+  COVERAGE_OVER_TIME=1 \
+  BUCKET=<bucket> RUN_ID=<id> BENCHMARK_UUID=<benchmark_uuid> DEST="$DEST"
+```
+
+This is an analysis-only opt-in; it does not start another benchmark. It adds a per-fuzzer limitations table to `REPORT.md` and, when timestamped signals are present, `coverage_over_time.png` with an independent y-axis for each fuzzer. See [Coverage over time](/methodology#coverage-over-time) for signal definitions and comparability limits.
+
 ## CSV Report
 
 ```bash

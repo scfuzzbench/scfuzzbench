@@ -25,7 +25,11 @@ class ProgressMetricsParserTests(unittest.TestCase):
         )
 
         samples = analyze.parse_progress_metrics_log(
-            log_path, "run-1", "i-1", "medusa-vtest"
+            log_path,
+            "run-1",
+            "i-1",
+            "medusa-vtest",
+            include_coverage=True,
         )
         self.assertEqual(len(samples), 1)
         sample = samples[0]
@@ -47,7 +51,11 @@ class ProgressMetricsParserTests(unittest.TestCase):
         )
 
         samples = analyze.parse_progress_metrics_log(
-            log_path, "run-1", "i-1", "echidna-vtest"
+            log_path,
+            "run-1",
+            "i-1",
+            "echidna-vtest",
+            include_coverage=True,
         )
         self.assertEqual(len(samples), 2)
         self.assertEqual(samples[0].fuzzer, "echidna")
@@ -67,7 +75,11 @@ class ProgressMetricsParserTests(unittest.TestCase):
         )
 
         samples = analyze.parse_progress_metrics_log(
-            log_path, "run-1", "i-1", "foundry-git-test"
+            log_path,
+            "run-1",
+            "i-1",
+            "foundry-git-test",
+            include_coverage=True,
         )
         self.assertEqual(len(samples), 2)
         self.assertEqual(samples[1].fuzzer, "foundry")
@@ -87,7 +99,11 @@ class ProgressMetricsParserTests(unittest.TestCase):
         )
 
         samples = analyze.parse_progress_metrics_log(
-            log_path, "run-1", "i-1", "foundry-git-test"
+            log_path,
+            "run-1",
+            "i-1",
+            "foundry-git-test",
+            include_coverage=True,
         )
         self.assertEqual(len(samples), 2)
         self.assertEqual(samples[1].fuzzer, "foundry")
@@ -97,6 +113,31 @@ class ProgressMetricsParserTests(unittest.TestCase):
         self.assertAlmostEqual(samples[1].corpus_size, 65.0)
         self.assertAlmostEqual(samples[1].favored_items, 44.0)
         self.assertIsNone(samples[1].failure_rate)
+
+    def test_native_coverage_extraction_can_be_disabled(self):
+        log_path = self.write_log(
+            [
+                "[2026-02-24 14:35:10.44] Unique instructions: 4474",
+            ]
+        )
+
+        enabled = analyze.parse_progress_metrics_log(
+            log_path,
+            "run-1",
+            "i-1",
+            "recon-vtest",
+            include_coverage=True,
+        )
+        disabled = analyze.parse_progress_metrics_log(
+            log_path,
+            "run-1",
+            "i-1",
+            "recon-vtest",
+        )
+
+        self.assertEqual(len(enabled), 1)
+        self.assertAlmostEqual(enabled[0].coverage_proxy, 4474.0)
+        self.assertEqual(disabled, [])
 
     def test_writes_progress_metrics_summary_csv_with_latest_run_values(self):
         samples = [
