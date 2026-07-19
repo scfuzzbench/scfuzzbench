@@ -55,6 +55,33 @@ class TargetManifestValidationTests(unittest.TestCase):
         self.assertTrue(any(".properties_path must be a repo-relative path" in error for error in errors))
         self.assertTrue(any(".url must be an HTTPS URL" in error for error in errors))
 
+    def test_properties_path_matches_benchmark_request_constraints(self):
+        invalid_paths = {
+            "/test/Properties.sol": "repo-relative",
+            "test/Properties..sol": "without '..'",
+            "test//Properties.sol": "normalized",
+            "test\\Properties.sol": "forward slashes",
+            "test/My Properties.sol": "contain only",
+            "test/Properties!.sol": "contain only",
+            f"test/{'a' * 196}.sol": "at most 200 characters",
+            "test/Properties": "point to a .sol file",
+        }
+
+        for properties_path, expected_error in invalid_paths.items():
+            with self.subTest(properties_path=properties_path):
+                manifest = copy.deepcopy(self.manifest)
+                manifest["targets"][0]["properties_path"] = properties_path
+
+                errors = self.module.validate_manifest(manifest)
+
+                self.assertTrue(
+                    any(
+                        ".properties_path" in error and expected_error in error
+                        for error in errors
+                    ),
+                    errors,
+                )
+
     def test_missing_and_unknown_fields_are_rejected(self):
         manifest = copy.deepcopy(self.manifest)
         del manifest["targets"][0]["rationale"]

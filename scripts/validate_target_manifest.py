@@ -28,6 +28,8 @@ RELATED_WORK_FIELDS = {"url", "description"}
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 REPO_RE = re.compile(r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+PROPERTIES_PATH_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
+PROPERTIES_PATH_MAX_LENGTH = 200
 
 
 def _string(value: object) -> bool:
@@ -51,10 +53,14 @@ def _validate_properties_path(value: object) -> str | None:
     if not _string(value):
         return "must be a non-empty string"
     raw = str(value)
+    if len(raw) > PROPERTIES_PATH_MAX_LENGTH:
+        return f"must be at most {PROPERTIES_PATH_MAX_LENGTH} characters"
     if "\\" in raw:
         return "must use forward slashes"
+    if not PROPERTIES_PATH_RE.fullmatch(raw):
+        return "must contain only letters, digits, '_', '.', '/', and '-'"
     path = PurePosixPath(raw)
-    if path.is_absolute() or ".." in path.parts:
+    if path.is_absolute() or ".." in raw:
         return "must be a repo-relative path without '..'"
     if str(path) != raw:
         return "must be a normalized repo-relative path"

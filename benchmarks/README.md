@@ -16,7 +16,8 @@ Each target contains:
 - `repo`: canonical HTTPS repository URL.
 - `commit`: immutable, lowercase 40-character Git commit SHA.
 - `properties_path`: repository-relative Solidity properties file used by
-  `SCFUZZBENCH_PROPERTIES_PATH`.
+  `SCFUZZBENCH_PROPERTIES_PATH` (at most 200 characters, using only letters,
+  digits, `_`, `.`, `/`, and `-`).
 - `rationale`: why the target improves the suite's representativeness.
 - `related_work_refs`: prior benchmark, fuzzing campaign, or property-suite
   references, each with a URL and description.
