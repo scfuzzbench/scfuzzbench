@@ -42,9 +42,7 @@ if [[ "${corpus_dir}" != /* ]]; then
   corpus_dir="${repo_dir}/${corpus_dir}"
 fi
 export SCFUZZBENCH_CORPUS_DIR="${corpus_dir}"
-log "Cleaning corpus directory ${corpus_dir}"
-rm -rf "${corpus_dir:?}"
-mkdir -p "${corpus_dir}"
+prepare_shared_seed_corpus
 
 set_default_worker_env ECHIDNA_WORKERS
 

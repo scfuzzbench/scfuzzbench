@@ -15,6 +15,10 @@ cat <<'SHARED' >/opt/scfuzzbench/common.sh
 ${shared_sh}
 SHARED
 
+cat <<'SEED_CORPUS_HELPER' >/opt/scfuzzbench/prepare_seed_corpus.py
+${seed_corpus_helper}
+SEED_CORPUS_HELPER
+
 cat <<'INSTALL' >/opt/scfuzzbench/fuzzers/${fuzzer_key}/install.sh
 ${install_sh}
 INSTALL
@@ -24,6 +28,7 @@ ${run_sh}
 RUN
 
 chmod +x /opt/scfuzzbench/common.sh \
+  /opt/scfuzzbench/prepare_seed_corpus.py \
   /opt/scfuzzbench/fuzzers/${fuzzer_key}/install.sh \
   /opt/scfuzzbench/fuzzers/${fuzzer_key}/run.sh
 
@@ -48,6 +53,8 @@ export ECHIDNA_VERSION="${echidna_version}"
 export MEDUSA_VERSION="${medusa_version}"
 export RECON_VERSION="${recon_version}"
 export SCFUZZBENCH_GIT_TOKEN_SSM_PARAMETER="${git_token_ssm_parameter_name}"
+export SCFUZZBENCH_SEED_CORPUS_SOURCE="${seed_corpus_source}"
+export SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE="${seed_corpus_provenance_source}"
 %{ for key, value in fuzzer_env ~}
 export ${key}="${value}"
 %{ endfor ~}

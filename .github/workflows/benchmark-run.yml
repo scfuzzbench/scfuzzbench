@@ -67,6 +67,10 @@ on:
         description: "JSON map of extra fuzzer env vars (optional)."
         required: false
         default: ""
+      shared_seed_corpus_source:
+        description: "Optional target-relative directory or s3://bucket/prefix shared by all fuzzers."
+        required: false
+        default: ""
       dry_run:
         description: "Validate inputs only; skip Terraform apply and infrastructure changes."
         required: false
@@ -144,6 +148,11 @@ on:
         default: ""
       fuzzer_env_json:
         description: "JSON map of extra fuzzer env vars (optional)."
+        required: false
+        type: string
+        default: ""
+      shared_seed_corpus_source:
+        description: "Optional target-relative directory or s3://bucket/prefix shared by all fuzzers."
         required: false
         type: string
         default: ""
@@ -287,6 +296,7 @@ jobs:
           GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
           PROPERTIES_PATH: ${{ inputs.properties_path }}
           FUZZER_ENV_JSON: ${{ inputs.fuzzer_env_json }}
+          SHARED_SEED_CORPUS_SOURCE: ${{ inputs.shared_seed_corpus_source }}
         run: |
           set -euo pipefail
 
@@ -418,6 +428,16 @@ jobs:
             fi
           fi
 
+          if [[ -n "${SHARED_SEED_CORPUS_SOURCE}" ]]; then
+            require_safe "shared_seed_corpus_source" "${SHARED_SEED_CORPUS_SOURCE}"
+            if [[ ! "${SHARED_SEED_CORPUS_SOURCE}" =~ ^(s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/)?[A-Za-z0-9/._+~-]+/?$ ]]; then
+              fail "shared_seed_corpus_source must be a safe target-relative path or s3://bucket/prefix"
+            fi
+            if [[ "/${SHARED_SEED_CORPUS_SOURCE}/" == *"/./"* || "/${SHARED_SEED_CORPUS_SOURCE}/" == *"/../"* ]]; then
+              fail "shared_seed_corpus_source must not contain '.' or '..' path segments"
+            fi
+          fi
+
           if [[ -n "${FUZZER_ENV_JSON}" ]]; then
             python3 - <<'PY'
           import json
@@ -434,9 +454,17 @@ jobs:
               raise SystemExit("fuzzer_env_json has too many keys (max 64)")
           key_re = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
           forbidden = re.compile(r'[\r\n"`$\\\\]')
+          reserved_seed_keys = {
+              "SCFUZZBENCH_SEED_CORPUS_SOURCE",
+              "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
+              "SCFUZZBENCH_SEED_CORPUS_HELPER",
+              "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
+          }
           for k, v in obj.items():
               if not isinstance(k, str) or not key_re.match(k):
                   raise SystemExit(f"Invalid env key: {k}")
+              if k in reserved_seed_keys:
+                  raise SystemExit(f"fuzzer_env_json cannot override framework-owned seed variable: {k}")
               if not isinstance(v, str):
                   raise SystemExit(f"Env value for {k} must be a string")
               if len(v) > 2000:
@@ -465,6 +493,7 @@ jobs:
           GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
           FUZZER_ENV_JSON: ${{ inputs.fuzzer_env_json }}
           PROPERTIES_PATH: ${{ inputs.properties_path }}
+          SHARED_SEED_CORPUS_SOURCE: ${{ inputs.shared_seed_corpus_source }}
         run: |
           set -euo pipefail
           run_id=$(date +%s)
@@ -484,6 +513,7 @@ jobs:
             -var "fuzzers=${fuzzers}"
             -var "run_id=${run_id}"
             -var "scfuzzbench_commit=${GITHUB_SHA}"
+            -var "shared_seed_corpus_source=${SHARED_SEED_CORPUS_SOURCE}"
           )
 
           if [[ -n "${FOUNDRY_GIT_REPO}" ]]; then

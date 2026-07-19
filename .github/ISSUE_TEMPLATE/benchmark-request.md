@@ -34,6 +34,7 @@ Notes:
   "recon_version": "",
   "git_token_ssm_parameter_name": "/scfuzzbench/recon/github_token",
   "properties_path": "test/recon/Properties.sol",
+  "shared_seed_corpus_source": "",
   "fuzzer_env_json": ""
 }
 ```

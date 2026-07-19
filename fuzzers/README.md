@@ -10,6 +10,7 @@ Each fuzzer lives in `fuzzers/<name>/` with an `install.sh` and `run.sh`. Common
 - `SCFUZZBENCH_WORKERS`: override default worker count (defaults to vCPU count on the instance).
 - `SCFUZZBENCH_RUNNER_METRICS`: set to `0` to disable runner metrics collection (default `1`).
 - `SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS`: sampling interval in seconds for runner metrics (default `5`).
+- `SCFUZZBENCH_SEED_CORPUS_SOURCE`: optional target-relative/absolute directory or `s3://bucket/prefix`. The same raw file tree is copied into every selected fuzzer corpus; no corpus-format conversion or archive extraction is performed. Inputs are limited to 10,000 regular, non-hardlinked files and 1 GiB.
 - `SCFUZZBENCH_LOCAL_MODE`: set to `1` to enable local mode (used by `scripts/local-run.sh`). Changes workspace to `~/.scfuzzbench/`, skips shutdown/upload/apt, saves results locally.
 - `SCFUZZBENCH_COMMON_SH`: path to `common.sh` (default: `/opt/scfuzzbench/common.sh`). Set automatically by `local-run.sh`.
 - `SCFUZZBENCH_BIN_DIR`: directory for installed binaries (default: `/usr/local/bin`, or `~/.local/bin` in local mode).

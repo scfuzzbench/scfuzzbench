@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -52,10 +53,15 @@ class FoundryVersionScopeTests(unittest.TestCase):
             'foundry_release_version = var.foundry_git_repo == "" ? var.foundry_version : ""',
             terraform,
         )
-        self.assertIn("foundry_version      = local.foundry_release_version", terraform)
-        self.assertIn(
-            "foundry_version              = local.foundry_release_version",
-            terraform,
+        self.assertEqual(
+            len(
+                re.findall(
+                    r"(?m)^\s*foundry_version\s*=\s*"
+                    r"local\.foundry_release_version\s*$",
+                    terraform,
+                )
+            ),
+            2,
         )
 
 
