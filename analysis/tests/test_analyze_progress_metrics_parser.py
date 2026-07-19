@@ -34,7 +34,7 @@ class ProgressMetricsParserTests(unittest.TestCase):
         self.assertEqual(len(samples), 1)
         sample = samples[0]
         self.assertEqual(sample.fuzzer, "medusa")
-        self.assertEqual(sample.source, "text-metrics")
+        self.assertEqual(sample.source, "text-metrics:branches_hit")
         self.assertAlmostEqual(sample.elapsed_seconds, 6.0)
         self.assertAlmostEqual(sample.seq_per_second, 211.0)
         self.assertAlmostEqual(sample.coverage_proxy, 537.0)
@@ -59,7 +59,7 @@ class ProgressMetricsParserTests(unittest.TestCase):
         )
         self.assertEqual(len(samples), 2)
         self.assertEqual(samples[0].fuzzer, "echidna")
-        self.assertEqual(samples[0].source, "text-metrics")
+        self.assertEqual(samples[0].source, "text-metrics:cov")
         self.assertAlmostEqual(samples[1].elapsed_seconds, 3.01, places=2)
         self.assertAlmostEqual(samples[1].coverage_proxy, 4474.0)
         self.assertAlmostEqual(samples[1].corpus_size, 9.0)
@@ -83,7 +83,7 @@ class ProgressMetricsParserTests(unittest.TestCase):
         )
         self.assertEqual(len(samples), 2)
         self.assertEqual(samples[1].fuzzer, "foundry")
-        self.assertEqual(samples[1].source, "json-metrics")
+        self.assertEqual(samples[1].source, "json-metrics:cumulative_edges_seen")
         self.assertAlmostEqual(samples[1].elapsed_seconds, 5.0)
         self.assertAlmostEqual(samples[1].coverage_proxy, 259.0)
         self.assertAlmostEqual(samples[1].corpus_size, 65.0)
@@ -107,7 +107,7 @@ class ProgressMetricsParserTests(unittest.TestCase):
         )
         self.assertEqual(len(samples), 2)
         self.assertEqual(samples[1].fuzzer, "foundry")
-        self.assertEqual(samples[1].source, "json-metrics")
+        self.assertEqual(samples[1].source, "json-metrics:cumulative_edges_seen")
         self.assertAlmostEqual(samples[1].elapsed_seconds, 5.0)
         self.assertAlmostEqual(samples[1].coverage_proxy, 259.0)
         self.assertAlmostEqual(samples[1].corpus_size, 65.0)
@@ -137,7 +137,59 @@ class ProgressMetricsParserTests(unittest.TestCase):
 
         self.assertEqual(len(enabled), 1)
         self.assertAlmostEqual(enabled[0].coverage_proxy, 4474.0)
+        self.assertEqual(
+            enabled[0].source, "text-metrics:unique_instructions"
+        )
         self.assertEqual(disabled, [])
+
+    def test_recon_does_not_mix_echidna_cov_with_unique_instructions(self):
+        # Actual Recon v0.4.6 output contains frequent Echidna-style status
+        # counters plus one distinct instruction total in its final summary.
+        log_path = self.write_log(
+            [
+                "[2026-02-24 14:35:10.44] [status] cov: 4474, corpus: 9",
+                "[2026-02-24 14:35:13.45] [status] cov: 4480, corpus: 10",
+                "Unique instructions: 4512",
+            ]
+        )
+
+        samples = analyze.parse_progress_metrics_log(
+            log_path,
+            "run-1",
+            "i-1",
+            "recon-v0.4.6",
+            include_coverage=True,
+        )
+
+        coverage_samples = [
+            sample for sample in samples if sample.coverage_proxy is not None
+        ]
+        self.assertEqual(len(coverage_samples), 1)
+        self.assertAlmostEqual(coverage_samples[0].coverage_proxy, 4512.0)
+        self.assertEqual(
+            coverage_samples[0].source,
+            "text-metrics:unique_instructions",
+        )
+
+    def test_rejects_non_finite_and_negative_json_coverage_counters(self):
+        for invalid in ("NaN", "-1"):
+            with self.subTest(invalid=invalid):
+                log_path = self.write_log(
+                    [
+                        '{"timestamp":100,"event":"pulse","metrics":'
+                        f'{{"cumulative_edges_seen":{invalid},'
+                        '"corpus_count":1}}',
+                    ]
+                )
+                samples = analyze.parse_progress_metrics_log(
+                    log_path,
+                    "run-1",
+                    "i-1",
+                    "foundry-git-test",
+                    include_coverage=True,
+                )
+                self.assertEqual(len(samples), 1)
+                self.assertIsNone(samples[0].coverage_proxy)
 
     def test_writes_progress_metrics_summary_csv_with_latest_run_values(self):
         samples = [

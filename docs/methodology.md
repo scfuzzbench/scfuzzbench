@@ -188,18 +188,18 @@ make results-analyze-all \
   COVERAGE_OVER_TIME=1
 ```
 
-The flag extracts timestamped native coverage counters already present in supported fuzzer logs and adds `coverage_over_time.png` plus a coverage limitations table to `REPORT.md`. The chart uses a separate panel and y-axis for every fuzzer. Native signals are not normalized, pooled, ranked, or treated as a universal coverage metric.
+The flag extracts supported native coverage counters and adds a coverage limitations table to `REPORT.md`. Repeated live counters are plotted in `coverage_over_time.png`, with a separate panel and y-axis for each available fuzzer signal. End-of-run-only counters remain in the table and are not stretched into a time series. Native signals are not normalized, pooled, ranked, or treated as a universal coverage metric.
 
 Source-based coverage is preferred, but no current real-time log format exposes source locations. The available signals and limitations are:
 
-| Fuzzer | Native live signal | Source-based? | Real-time availability | Limitation |
+| Fuzzer | Native signal | Source-based? | Temporal availability | Limitation |
 |---|---|---|---|---|
 | Echidna | `cov` coverage points | No | Echidna status lines | Tool/config-specific counter; the progress log has no source locations. |
 | Medusa | `branches hit` | No | Medusa status lines | Branch identities depend on compiled bytecode/config; the progress log has no source locations. |
 | Foundry | `cumulative_edges_seen` | No | Compatible Foundry JSON pulse builds | Edge identities depend on the build/instrumentation. |
-| Recon Fuzzer | `Unique instructions` | No | Only when Recon text status emits the field | Tool/version-specific instruction count; the progress log has no source locations. |
+| Recon Fuzzer | `Unique instructions` | No | End-of-run summary only | Tool/version-specific final instruction count; there are no source locations or intermediate observations. Recon's separate Echidna-style `cov` status field is not mixed into this series. |
 
-Foundry showmap is intentionally separate. It is an opt-in, post-campaign edge replay for comparable Foundry A/B campaigns, not real-time or source-based coverage. When a native signal is absent, the report records zero available runs rather than substituting another metric.
+Foundry showmap is intentionally separate. It is an opt-in, post-campaign edge replay for comparable Foundry A/B campaigns, not real-time or source-based coverage. When a native signal is absent, the report records zero available runs rather than substituting another metric. The table also records parser provenance and observation windows: partial runs are labelled, live lines stop at each run's last observation, and malformed/non-finite/negative coverage values make opt-in report generation fail instead of being reported as unavailable.
 
 ### Cumulative conversion (`analysis/events_to_cumulative.py`)
 
@@ -226,7 +226,7 @@ Foundry showmap is intentionally separate. It is an opt-in, post-campaign edge r
 - If `throughput_samples.csv` is present, the report also emits throughput trend charts (`tx_per_second_over_time.png`, `gas_per_second_over_time.png`).
 - If `progress_metrics_summary.csv` is present, the report also includes per-fuzzer progress proxy tables (seq/s and corpus).
 - If `progress_metrics_samples.csv` is present, the report also emits progress trend charts (`seq_per_second_over_time.png` and `corpus_size_over_time.png`).
-- With `COVERAGE_OVER_TIME=1`, the report includes per-fuzzer native coverage availability/final-value rows and emits `coverage_over_time.png` with independent scales. Without the opt-in, coverage columns remain empty and no coverage chart is generated.
+- With `COVERAGE_OVER_TIME=1`, the report includes per-fuzzer native coverage availability, provenance, observation windows, and final-value rows. It emits `coverage_over_time.png` with independent scales when at least one live signal has two observations. Without the opt-in, coverage columns remain empty, the coverage report section is omitted, and no coverage chart is generated.
 - Emits:
   - `REPORT.md`
   - `bugs_over_time.png`

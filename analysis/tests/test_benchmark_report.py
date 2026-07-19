@@ -7,6 +7,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from analysis import benchmark_report
 from analysis import plot_palette
@@ -218,8 +219,9 @@ class BenchmarkReportTests(unittest.TestCase):
                 "| foundry | 1 | 0 | n/a | 1 | 85.00 [80.00,90.00] |",
                 report,
             )
-            self.assertIn("## Coverage over time (opt-in, fuzzer-native signals)", report)
-            self.assertIn("Status: **disabled**", report)
+            self.assertNotIn(
+                "## Coverage over time (opt-in, fuzzer-native signals)", report
+            )
             self.assertNotIn("280.00 [260.00,300.00]", report)
             self.assertNotIn("Favored", report)
             self.assertNotIn("Failure-rate", report)
@@ -227,6 +229,20 @@ class BenchmarkReportTests(unittest.TestCase):
     def test_write_report_documents_enabled_coverage_signals_and_limits(self):
         progress = benchmark_report.load_progress_metrics_summary(
             FIXTURES / "coverage_progress_summary.csv"
+        )
+        samples = benchmark_report.load_metric_samples_csv(
+            FIXTURES / "coverage_progress_samples.csv",
+            benchmark_report.PROGRESS_SAMPLE_VALUE_COLS,
+            strict_nonnegative_columns={"coverage_proxy"},
+        )
+        availability = benchmark_report.build_coverage_availability(
+            samples,
+            {
+                "echidna": 2,
+                "foundry": 2,
+                "medusa": 2,
+                "recon-fuzzer": 2,
+            },
         )
         metrics = [
             _make_metrics(fuzzer, [1, 1])
@@ -243,6 +259,7 @@ class BenchmarkReportTests(unittest.TestCase):
                 outpath=outpath,
                 progress_metrics_by_fuzzer=progress,
                 coverage_over_time=True,
+                coverage_availability_by_fuzzer=availability,
             )
             report = outpath.read_text(encoding="utf-8")
 
@@ -254,7 +271,14 @@ class BenchmarkReportTests(unittest.TestCase):
         self.assertIn("`cumulative_edges_seen`", report)
         self.assertIn("`Unique instructions`", report)
         self.assertIn("| echidna | `cov` coverage points (coverage points) | No (runtime proxy)", report)
-        self.assertIn("| 2 | 130.00 [125.00,135.00] |", report)
+        self.assertIn("| 2/2 | live;", report)
+        self.assertIn("text-metrics:cov", report)
+        self.assertIn("json-metrics:cumulative_edges_seen", report)
+        self.assertIn(
+            "end-of-run only; 2 sample(s); excluded from time-series chart",
+            report,
+        )
+        self.assertIn("130.00 [125.00,135.00]", report)
 
     def test_write_report_omits_scoreboard_without_relative_scores_csv(self):
         metrics = [
@@ -534,6 +558,98 @@ class BenchmarkReportTests(unittest.TestCase):
             self.assertTrue((out_dir / "corpus_size_over_time.png").exists())
             self.assertFalse((out_dir / "favored_items_over_time.png").exists())
             self.assertFalse((out_dir / "failure_rate_over_time.png").exists())
+
+    def test_coverage_resampling_stops_at_last_observation_and_keeps_decreases(self):
+        samples = pd.DataFrame(
+            [
+                {
+                    "fuzzer": "echidna",
+                    "series_id": "run-1:i-1",
+                    "time_hours": 0.0,
+                    "coverage_proxy": 10.0,
+                },
+                {
+                    "fuzzer": "echidna",
+                    "series_id": "run-1:i-1",
+                    "time_hours": 0.5,
+                    "coverage_proxy": 7.0,
+                },
+                {
+                    "fuzzer": "echidna",
+                    "series_id": "run-1:i-1",
+                    "time_hours": 0.5,
+                    "coverage_proxy": 5.0,
+                },
+            ]
+        )
+
+        resampled = benchmark_report.resample_metric_samples_to_grid(
+            samples,
+            "coverage_proxy",
+            np.array([0.0, 0.5, 1.0]),
+            extend_to_grid_end=False,
+            duplicate_aggregation="last",
+        )
+
+        values = resampled["coverage_proxy"].to_numpy()
+        self.assertEqual(10.0, values[0])
+        self.assertEqual(5.0, values[1])
+        self.assertTrue(np.isnan(values[2]))
+
+    def test_coverage_availability_distinguishes_partial_and_unavailable(self):
+        samples = pd.DataFrame(
+            [
+                {
+                    "fuzzer": "echidna",
+                    "series_id": "run-1:i-1",
+                    "time_hours": 0.0,
+                    "coverage_proxy": 10.0,
+                    "source": "text-metrics:cov",
+                },
+                {
+                    "fuzzer": "echidna",
+                    "series_id": "run-1:i-1",
+                    "time_hours": 0.5,
+                    "coverage_proxy": 12.0,
+                    "source": "text-metrics:cov",
+                },
+            ]
+        )
+
+        availability = benchmark_report.build_coverage_availability(
+            samples,
+            {"echidna": 2, "foundry": 2},
+        )
+
+        self.assertEqual(1, availability["echidna"].runs_with_signal)
+        self.assertEqual(1, availability["echidna"].runs_with_time_series)
+        self.assertEqual(2, availability["echidna"].expected_runs)
+        self.assertEqual(0.5, availability["echidna"].last_observation_max_hours)
+        self.assertEqual(0, availability["foundry"].runs_with_signal)
+
+    def test_opt_in_rejects_malformed_coverage_sample_values(self):
+        for invalid in ("bogus", "NaN", "-1", "inf"):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "progress_metrics_samples.csv"
+                path.write_text(
+                    "\n".join(
+                        [
+                            "run_id,instance_id,fuzzer,fuzzer_label,elapsed_seconds,seq_per_second,coverage_proxy,corpus_size,source,log_path",
+                            f"run-1,i-1,foundry,foundry,0,,{invalid},,json-metrics,a.log",
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+                with self.assertRaisesRegex(
+                    SystemExit, "malformed non-negative coverage_proxy"
+                ):
+                    benchmark_report.load_metric_samples_csv(
+                        path,
+                        benchmark_report.PROGRESS_SAMPLE_VALUE_COLS,
+                        strict_nonnegative_columns={"coverage_proxy"},
+                    )
 
     def test_cli_generates_opt_in_coverage_chart_with_independent_signals(self):
         with tempfile.TemporaryDirectory() as tmp:

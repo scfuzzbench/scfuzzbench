@@ -250,7 +250,7 @@ make results-analyze-all \
   BUCKET=<bucket> RUN_ID=<id> BENCHMARK_UUID=<benchmark_uuid> DEST="$DEST"
 ```
 
-This is an analysis-only opt-in; it does not start another benchmark. It adds a per-fuzzer limitations table to `REPORT.md` and, when timestamped signals are present, `coverage_over_time.png` with an independent y-axis for each fuzzer. See [Coverage over time](/methodology#coverage-over-time) for signal definitions and comparability limits.
+This is an analysis-only opt-in; it does not start another benchmark. It adds per-fuzzer signal provenance, availability, observation windows, and limitations to `REPORT.md`. Repeated live signals are shown in `coverage_over_time.png` on independent y-axes; end-only signals are table-only, and lines stop at the last observation instead of being extended to the report budget. Malformed coverage values fail analysis explicitly. See [Coverage over time](/methodology#coverage-over-time) for signal definitions and comparability limits.
 
 ## CSV Report
 

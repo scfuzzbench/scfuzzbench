@@ -206,6 +206,20 @@ class CoverageSignal:
     unit: str
     live_availability: str
     limitation: str
+    supports_time_series: bool
+
+
+@dataclass(frozen=True)
+class CoverageAvailability:
+    expected_runs: int
+    runs_with_signal: int
+    runs_with_time_series: int
+    samples: int
+    first_observation_min_hours: Optional[float]
+    first_observation_max_hours: Optional[float]
+    last_observation_min_hours: Optional[float]
+    last_observation_max_hours: Optional[float]
+    observed_sources: Tuple[str, ...]
 
 
 @dataclass
@@ -221,24 +235,28 @@ KNOWN_COVERAGE_SIGNALS = {
         unit="coverage points",
         live_availability="Echidna status lines",
         limitation="Tool/config-specific counter; no source locations in the progress log.",
+        supports_time_series=True,
     ),
     "medusa": CoverageSignal(
         native_signal="`branches hit`",
         unit="branches",
         live_availability="Medusa status lines",
         limitation="Branch identities depend on compiled bytecode/config; no source locations.",
+        supports_time_series=True,
     ),
     "foundry": CoverageSignal(
         native_signal="`cumulative_edges_seen`",
         unit="instrumented edges",
         live_availability="Compatible Foundry JSON pulse builds",
         limitation="Edge identities depend on the build/instrumentation; showmap replay is separate and post-campaign.",
+        supports_time_series=True,
     ),
     "recon-fuzzer": CoverageSignal(
         native_signal="`Unique instructions`",
         unit="instructions",
-        live_availability="When Recon text status emits the field",
-        limitation="Tool/version-specific instruction counter; no source locations.",
+        live_availability="End-of-run Recon summary (not a live series)",
+        limitation="Tool/version-specific final instruction count; no source locations or intermediate observations.",
+        supports_time_series=False,
     ),
 }
 
@@ -258,6 +276,7 @@ def coverage_signal_for_fuzzer(fuzzer: str) -> CoverageSignal:
         unit="tool-defined units",
         live_availability="Only when timestamped progress output includes it",
         limitation="Unknown tool semantics; treat as a within-tool proxy only.",
+        supports_time_series=False,
     )
 
 
@@ -384,9 +403,14 @@ def load_relative_scores(path: Path) -> Dict[str, RelativeScoreSummary]:
     return rows
 
 
-def load_metric_samples_csv(path: Path, value_columns: List[str]) -> pd.DataFrame:
+def load_metric_samples_csv(
+    path: Path,
+    value_columns: List[str],
+    *,
+    strict_nonnegative_columns: Optional[set[str]] = None,
+) -> pd.DataFrame:
     if not path.exists():
-        cols = ["fuzzer", "series_id", "time_hours", *value_columns]
+        cols = ["fuzzer", "series_id", "time_hours", *value_columns, "source"]
         return pd.DataFrame(columns=cols)
 
     df = pd.read_csv(path)
@@ -402,15 +426,40 @@ def load_metric_samples_csv(path: Path, value_columns: List[str]) -> pd.DataFram
     elapsed_seconds = pd.to_numeric(df["elapsed_seconds"], errors="coerce")
     df["time_hours"] = elapsed_seconds / 3600.0
 
+    strict_nonnegative_columns = strict_nonnegative_columns or set()
+    raw_df = (
+        pd.read_csv(path, keep_default_na=False)
+        if strict_nonnegative_columns
+        else None
+    )
     for col in value_columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+        numeric = pd.to_numeric(df[col], errors="coerce")
+        if col in strict_nonnegative_columns and raw_df is not None:
+            raw = raw_df[col].astype(str).str.strip()
+            invalid = raw.ne("") & (
+                numeric.isna() | ~np.isfinite(numeric) | (numeric < 0.0)
+            )
+            if invalid.any():
+                row_numbers = [str(index + 2) for index in invalid[invalid].index[:5]]
+                die(
+                    f"malformed non-negative {col} value in sample CSV {path} "
+                    f"at row(s) {', '.join(row_numbers)}"
+                )
+        df[col] = numeric
 
     df = df.dropna(subset=["time_hours"])
-    return df[["fuzzer", "series_id", "time_hours", *value_columns]]
+    if "source" not in df.columns:
+        df["source"] = ""
+    return df[["fuzzer", "series_id", "time_hours", *value_columns, "source"]]
 
 
 def resample_metric_samples_to_grid(
-    samples_df: pd.DataFrame, value_column: str, grid: np.ndarray
+    samples_df: pd.DataFrame,
+    value_column: str,
+    grid: np.ndarray,
+    *,
+    extend_to_grid_end: bool = True,
+    duplicate_aggregation: str = "mean",
 ) -> pd.DataFrame:
     if samples_df.empty:
         return pd.DataFrame(columns=["fuzzer", "series_id", "time_hours", value_column])
@@ -421,9 +470,13 @@ def resample_metric_samples_to_grid(
         if g.empty:
             continue
         g = g.sort_values("time_hours")
-        g = g.groupby("time_hours", as_index=False)[value_column].mean()
+        g = g.groupby("time_hours", as_index=False)[value_column].agg(
+            duplicate_aggregation
+        )
         series = pd.Series(g[value_column].to_numpy(dtype=float), index=g["time_hours"].to_numpy(dtype=float))
         reindexed = series.reindex(grid, method="ffill")
+        if not extend_to_grid_end:
+            reindexed.loc[reindexed.index > float(g["time_hours"].max())] = np.nan
         out.append(
             pd.DataFrame(
                 {
@@ -437,6 +490,68 @@ def resample_metric_samples_to_grid(
     if not out:
         return pd.DataFrame(columns=["fuzzer", "series_id", "time_hours", value_column])
     return pd.concat(out, ignore_index=True)
+
+
+def build_coverage_availability(
+    samples_df: pd.DataFrame,
+    expected_runs_by_fuzzer: Dict[str, int],
+) -> Dict[str, CoverageAvailability]:
+    availability: Dict[str, CoverageAvailability] = {}
+    fuzzers = set(expected_runs_by_fuzzer)
+    if not samples_df.empty:
+        fuzzers.update(str(value) for value in samples_df["fuzzer"].dropna().unique())
+
+    for fuzzer in sorted(fuzzers):
+        subset = samples_df[samples_df["fuzzer"] == fuzzer].copy()
+        if "coverage_proxy" not in subset.columns:
+            subset = subset.iloc[0:0]
+        else:
+            coverage = pd.to_numeric(subset["coverage_proxy"], errors="coerce")
+            subset = subset[np.isfinite(coverage) & (coverage >= 0.0)].copy()
+            subset["coverage_proxy"] = coverage[
+                np.isfinite(coverage) & (coverage >= 0.0)
+            ]
+
+        expected_runs = int(expected_runs_by_fuzzer.get(fuzzer, 0))
+        if subset.empty:
+            availability[fuzzer] = CoverageAvailability(
+                expected_runs=expected_runs,
+                runs_with_signal=0,
+                runs_with_time_series=0,
+                samples=0,
+                first_observation_min_hours=None,
+                first_observation_max_hours=None,
+                last_observation_min_hours=None,
+                last_observation_max_hours=None,
+                observed_sources=(),
+            )
+            continue
+
+        per_series = subset.groupby("series_id")["time_hours"]
+        first = per_series.min()
+        last = per_series.max()
+        distinct_times = per_series.nunique()
+        observed_sources = tuple(
+            sorted(
+                {
+                    str(source).strip()
+                    for source in subset.get("source", pd.Series(dtype=str))
+                    if str(source).strip()
+                }
+            )
+        )
+        availability[fuzzer] = CoverageAvailability(
+            expected_runs=expected_runs,
+            runs_with_signal=int(subset["series_id"].nunique()),
+            runs_with_time_series=int((distinct_times >= 2).sum()),
+            samples=len(subset),
+            first_observation_min_hours=float(first.min()),
+            first_observation_max_hours=float(first.max()),
+            last_observation_min_hours=float(last.min()),
+            last_observation_max_hours=float(last.max()),
+            observed_sources=observed_sources,
+        )
+    return availability
 
 
 # A leg whose last parsed activity ends this early (as a fraction of the time
@@ -635,15 +750,16 @@ def append_coverage_over_time_section(
     fuzzer_order: List[str],
     *,
     enabled: bool,
+    budget: float,
+    availability_by_fuzzer: Optional[Dict[str, CoverageAvailability]] = None,
 ) -> None:
+    # Keep the canonical report unchanged unless the operator explicitly opted
+    # into these non-comparable native signals.
+    if not enabled:
+        return
+
     lines.append("## Coverage over time (opt-in, fuzzer-native signals)")
-    if enabled:
-        lines.append("- Status: **enabled**")
-    else:
-        lines.append(
-            "- Status: **disabled**. Re-run analysis with `COVERAGE_OVER_TIME=1` "
-            "(or `--coverage-over-time`) to include native coverage samples and charts."
-        )
+    lines.append("- Status: **enabled**")
     lines.append(
         "- Source-based coverage is preferred, but the current timestamped progress "
         "formats expose only native bytecode/instrumentation proxies. The signals "
@@ -678,6 +794,8 @@ def append_coverage_over_time_section(
         "Source-based?",
         "Live availability",
         "Runs with signal",
+        "Temporal observations",
+        "Observed parser provenance",
         "Final native signal p50 [p25,p75]",
         "Limitation",
     ]
@@ -686,12 +804,80 @@ def append_coverage_over_time_section(
     for fuzzer in ordered_fuzzers:
         descriptor = coverage_signal_for_fuzzer(fuzzer)
         row = progress_metrics_by_fuzzer.get(fuzzer)
-        coverage_runs = row.coverage_runs if enabled and row is not None else 0
+        availability = (availability_by_fuzzer or {}).get(fuzzer)
+        coverage_runs = (
+            availability.runs_with_signal
+            if availability is not None
+            else (row.coverage_runs if row is not None else 0)
+        )
+        expected_runs = (
+            availability.expected_runs
+            if availability is not None and availability.expected_runs > 0
+            else (row.runs if row is not None and row.runs > 0 else 0)
+        )
+        runs_display = (
+            f"{coverage_runs}/{expected_runs}"
+            if expected_runs > 0
+            else str(coverage_runs)
+        )
         coverage_summary = (
             fmt_triplet(row.coverage_p50, row.coverage_p25, row.coverage_p75)
-            if enabled and row is not None
+            if row is not None and coverage_runs > 0
             else "n/a"
         )
+        if availability is None and coverage_runs > 0:
+            temporal_observations = (
+                "not assessed (progress sample CSV was not provided)"
+            )
+            observed_provenance = "not recorded in summary CSV"
+        elif availability is None or coverage_runs == 0:
+            temporal_observations = "unavailable"
+            observed_provenance = "none observed"
+        elif not descriptor.supports_time_series:
+            temporal_observations = (
+                f"end-of-run only; {availability.samples} sample(s); "
+                "excluded from time-series chart"
+            )
+            observed_provenance = (
+                ", ".join(availability.observed_sources)
+                or descriptor.live_availability
+            )
+        else:
+            incomplete_reasons: List[str] = []
+            if (
+                expected_runs > 0
+                and availability.runs_with_signal < expected_runs
+            ):
+                incomplete_reasons.append("some runs unavailable")
+            if (
+                availability.runs_with_time_series
+                < availability.runs_with_signal
+            ):
+                incomplete_reasons.append("some runs have only one sample")
+            if (
+                budget > 0.0
+                and availability.last_observation_min_hours is not None
+                and availability.last_observation_min_hours < 0.9 * budget
+            ):
+                incomplete_reasons.append("observations end before 90% of budget")
+            state = "partial" if incomplete_reasons else "live"
+            first_min = availability.first_observation_min_hours or 0.0
+            first_max = availability.first_observation_max_hours or first_min
+            last_min = availability.last_observation_min_hours or 0.0
+            last_max = availability.last_observation_max_hours or last_min
+            temporal_observations = (
+                f"{state}; {availability.samples} samples; "
+                f"first {first_min:.2f}-{first_max:.2f}h, "
+                f"last {last_min:.2f}-{last_max:.2f}h"
+            )
+            if budget > 0.0:
+                temporal_observations += f" of {budget:.2f}h budget"
+            if incomplete_reasons:
+                temporal_observations += f" ({'; '.join(incomplete_reasons)})"
+            observed_provenance = (
+                ", ".join(availability.observed_sources)
+                or descriptor.live_availability
+            )
         lines.append(
             "| "
             + " | ".join(
@@ -700,7 +886,9 @@ def append_coverage_over_time_section(
                     f"{descriptor.native_signal} ({descriptor.unit})",
                     "No (runtime proxy)",
                     descriptor.live_availability,
-                    str(coverage_runs),
+                    runs_display,
+                    temporal_observations,
+                    observed_provenance,
                     coverage_summary,
                     descriptor.limitation,
                 ]
@@ -969,13 +1157,30 @@ def plot_coverage_over_time(
     fuzzer_colors: Dict[str, tuple] | None,
 ) -> bool:
     metric_df = resample_metric_samples_to_grid(
-        progress_metrics_samples_df, "coverage_proxy", grid
+        progress_metrics_samples_df,
+        "coverage_proxy",
+        grid,
+        extend_to_grid_end=False,
+        duplicate_aggregation="last",
     )
-    groups = [
-        (str(fuzzer), group)
-        for fuzzer, group in metric_df.groupby("fuzzer", sort=False)
-        if pd.to_numeric(group["coverage_proxy"], errors="coerce").notna().any()
-    ]
+    groups = []
+    for fuzzer, group in metric_df.groupby("fuzzer", sort=True):
+        fuzzer_name = str(fuzzer)
+        descriptor = coverage_signal_for_fuzzer(fuzzer_name)
+        if not descriptor.supports_time_series:
+            continue
+        per_series_samples = (
+            progress_metrics_samples_df[
+                progress_metrics_samples_df["fuzzer"] == fuzzer
+            ]
+            .dropna(subset=["coverage_proxy"])
+            .groupby("series_id")["time_hours"]
+            .nunique()
+        )
+        eligible_series = set(per_series_samples[per_series_samples >= 2].index)
+        group = group[group["series_id"].isin(eligible_series)]
+        if pd.to_numeric(group["coverage_proxy"], errors="coerce").notna().any():
+            groups.append((fuzzer_name, group))
     if not groups:
         return False
 
@@ -1020,7 +1225,7 @@ def plot_coverage_over_time(
     fig.text(
         0.5,
         0.01,
-        "Panels use independent y-axes; signals are tool-specific proxies, not cross-fuzzer scores.",
+        "Independent y-axes; tool-native runtime proxies only. Lines stop at each run's last observation.",
         ha="center",
         fontsize=9,
     )
@@ -1607,6 +1812,9 @@ def write_report(
     alpha: float = 0.05,
     run_health_warnings: Optional[List[str]] = None,
     coverage_over_time: bool = False,
+    coverage_availability_by_fuzzer: Optional[
+        Dict[str, CoverageAvailability]
+    ] = None,
 ) -> None:
     lines: List[str] = []
     lines.append("# Fuzzer Benchmark Report (from bug-count CSV)")
@@ -1705,6 +1913,8 @@ def write_report(
         progress_metrics_by_fuzzer or {},
         fuzzer_order=[metric.fuzzer for metric in metrics],
         enabled=coverage_over_time,
+        budget=budget,
+        availability_by_fuzzer=coverage_availability_by_fuzzer,
     )
 
     if stat_results is not None:
@@ -1751,6 +1961,9 @@ def write_no_data_report(
     throughput_by_fuzzer: Dict[str, ThroughputSummary] | None = None,
     progress_metrics_by_fuzzer: Dict[str, ProgressMetricsSummary] | None = None,
     coverage_over_time: bool = False,
+    coverage_availability_by_fuzzer: Optional[
+        Dict[str, CoverageAvailability]
+    ] = None,
 ) -> None:
     lines: List[str] = []
     lines.append("# Fuzzer Benchmark Report (from bug-count CSV)")
@@ -1791,6 +2004,8 @@ def write_no_data_report(
         progress_metrics_by_fuzzer or {},
         fuzzer_order=sorted((progress_metrics_by_fuzzer or {}).keys()),
         enabled=coverage_over_time,
+        budget=budget,
+        availability_by_fuzzer=coverage_availability_by_fuzzer,
     )
 
     outpath.write_text("\n".join(lines), encoding="utf-8")
@@ -2053,10 +2268,34 @@ def main() -> int:
     )
     progress_metrics_samples_df = (
         load_metric_samples_csv(
-            args.progress_metrics_samples_csv, PROGRESS_SAMPLE_VALUE_COLS
+            args.progress_metrics_samples_csv,
+            PROGRESS_SAMPLE_VALUE_COLS,
+            strict_nonnegative_columns=(
+                {"coverage_proxy"} if args.coverage_over_time else set()
+            ),
         )
         if args.progress_metrics_samples_csv is not None
-        else pd.DataFrame(columns=["fuzzer", "series_id", "time_hours", *PROGRESS_SAMPLE_VALUE_COLS])
+        else pd.DataFrame(
+            columns=[
+                "fuzzer",
+                "series_id",
+                "time_hours",
+                *PROGRESS_SAMPLE_VALUE_COLS,
+                "source",
+            ]
+        )
+    )
+    expected_runs_by_fuzzer = {
+        str(fuzzer): int(group["run_id"].nunique())
+        for fuzzer, group in df.groupby("fuzzer", sort=False)
+    }
+    for fuzzer, summary in progress_metrics_by_fuzzer.items():
+        expected_runs_by_fuzzer[fuzzer] = max(
+            expected_runs_by_fuzzer.get(fuzzer, 0), summary.runs
+        )
+    coverage_availability_by_fuzzer = build_coverage_availability(
+        progress_metrics_samples_df,
+        expected_runs_by_fuzzer,
     )
     fuzzer_colors = build_fuzzer_color_map(
         collect_fuzzer_names(
@@ -2103,6 +2342,7 @@ def main() -> int:
             throughput_by_fuzzer=throughput_by_fuzzer,
             progress_metrics_by_fuzzer=progress_metrics_by_fuzzer,
             coverage_over_time=args.coverage_over_time,
+            coverage_availability_by_fuzzer=coverage_availability_by_fuzzer,
         )
         msg = "No rows in input CSV. This usually means no bugs were found (or parsing produced no events)."
         write_placeholder_plot(
@@ -2192,6 +2432,7 @@ def main() -> int:
         stat_warnings=stat_warnings,
         run_health_warnings=run_health_warnings,
         coverage_over_time=args.coverage_over_time,
+        coverage_availability_by_fuzzer=coverage_availability_by_fuzzer,
     )
 
     print(f"wrote: {report_outdir / 'REPORT.md'}")
