@@ -33,10 +33,73 @@ rm -rf "${SCFUZZBENCH_CORPUS_DIR:?}"/*
 
 set_default_worker_env MEDUSA_WORKERS
 
-cmd=(medusa fuzz --no-color)
-if [[ -n "${MEDUSA_CONFIG:-}" ]]; then
-  cmd+=(--config "${MEDUSA_CONFIG}")
+# Medusa 1.4.1 has no CLI flag for corpus pruning. Its
+# `fuzzing.pruneFrequency` config value controls a separate corpus-pruner
+# goroutine, and 0 disables it. Use a working copy so benchmark fairness does
+# not depend on each target's checked-in default while leaving the target
+# config untouched. Keep the copy beside the source config because Medusa
+# resolves relative compilation paths from the config directory.
+medusa_prune_frequency="${MEDUSA_PRUNE_FREQUENCY:-0}"
+if ! [[ "${medusa_prune_frequency}" =~ ^[0-9]+$ ]]; then
+  log "Invalid MEDUSA_PRUNE_FREQUENCY='${medusa_prune_frequency}'; expected a non-negative integer number of minutes."
+  exit 1
 fi
+
+medusa_source_config=""
+if [[ -n "${MEDUSA_CONFIG:-}" ]]; then
+  medusa_source_config="${MEDUSA_CONFIG}"
+  if [[ "${medusa_source_config}" != /* ]]; then
+    medusa_source_config="${repo_dir}/${medusa_source_config}"
+  fi
+  if [[ ! -f "${medusa_source_config}" ]]; then
+    log "Medusa config not found at ${medusa_source_config}."
+    exit 1
+  fi
+elif [[ -f "${repo_dir}/medusa.json" ]]; then
+  medusa_source_config="${repo_dir}/medusa.json"
+fi
+
+if [[ -n "${medusa_source_config}" ]]; then
+  medusa_config_dir=$(dirname "${medusa_source_config}")
+else
+  medusa_config_dir="${repo_dir}"
+fi
+medusa_effective_config=$(mktemp "${medusa_config_dir}/.scfuzzbench-medusa.XXXXXX.json")
+
+python3 - "${medusa_source_config}" "${medusa_effective_config}" "${medusa_prune_frequency}" <<'PY'
+import json
+import os
+import sys
+
+source_path, output_path, raw_frequency = sys.argv[1:]
+if source_path:
+    with open(source_path, encoding="utf-8") as source:
+        config = json.load(source)
+else:
+    config = {}
+
+if not isinstance(config, dict):
+    raise SystemExit("Medusa config root must be a JSON object")
+
+fuzzing = config.setdefault("fuzzing", {})
+if not isinstance(fuzzing, dict):
+    raise SystemExit("Medusa config 'fuzzing' value must be a JSON object")
+
+frequency = int(raw_frequency)
+if frequency > 2**64 - 1:
+    raise SystemExit("MEDUSA_PRUNE_FREQUENCY exceeds Medusa's uint64 range")
+fuzzing["pruneFrequency"] = frequency
+
+temporary_path = f"{output_path}.tmp"
+with open(temporary_path, "w", encoding="utf-8") as output:
+    json.dump(config, output, indent=2)
+    output.write("\n")
+os.replace(temporary_path, output_path)
+PY
+log "Medusa corpus pruning frequency: ${medusa_prune_frequency} minute(s) (0 disables the background pruner)."
+
+cmd=(medusa fuzz --no-color)
+cmd+=(--config "${medusa_effective_config}")
 if [[ -n "${MEDUSA_COMPILATION_TARGET:-}" ]]; then
   cmd+=(--compilation-target "${MEDUSA_COMPILATION_TARGET}")
 fi
@@ -59,5 +122,6 @@ exit_code=$?
 popd >/dev/null
 set -e
 
+rm -f "${medusa_effective_config}"
 upload_results
 exit ${exit_code}
