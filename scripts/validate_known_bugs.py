@@ -54,6 +54,37 @@ def _https_url(value: object) -> bool:
     )
 
 
+def _pinned_github_blob_url(
+    value: object,
+    *,
+    target_repo: object,
+    target_commit: object,
+) -> bool:
+    if not (_string(value) and _string(target_repo) and _string(target_commit)):
+        return False
+
+    parsed = urlsplit(str(value))
+    expected = urlsplit(str(target_repo))
+    path_parts = parsed.path.strip("/").split("/")
+    expected_parts = expected.path.strip("/").split("/")
+    return (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").lower() == "github.com"
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and len(path_parts) >= 5
+        and len(expected_parts) == 2
+        and [part.lower() for part in path_parts[:2]]
+        == [part.lower() for part in expected_parts]
+        and path_parts[2] == "blob"
+        and path_parts[3] == str(target_commit)
+        and all(path_parts[4:])
+        and re.fullmatch(r"L[0-9]+(?:-L[0-9]+)?", parsed.fragment or "")
+        is not None
+    )
+
+
 def _normalized_event(value: object) -> bool:
     if not _string(value):
         return False
@@ -70,6 +101,7 @@ def _validate_entry(
     *,
     prefix: str,
     expected_fields: set[str],
+    target_repo: object,
     target_commit: object,
     seen_entry_ids: dict[str, str],
     seen_aliases: dict[tuple[str, str], str],
@@ -129,7 +161,11 @@ def _validate_entry(
                     f"{evidence_prefix}.url must be an HTTPS URL without "
                     "credentials (only GitHub-style line fragments are allowed)"
                 )
-            elif _string(target_commit) and str(target_commit) in str(url):
+            elif _pinned_github_blob_url(
+                url,
+                target_repo=target_repo,
+                target_commit=target_commit,
+            ):
                 has_pinned_evidence = True
             if not _string(item.get("description")):
                 errors.append(f"{evidence_prefix}.description must be a non-empty string")
@@ -140,8 +176,8 @@ def _validate_entry(
         and not has_pinned_evidence
     ):
         errors.append(
-            f"{prefix}.evidence must include a URL pinned to target_commit "
-            f"{target_commit}"
+            f"{prefix}.evidence must include an exact {target_repo}/blob/"
+            f"{target_commit}/...#L... source URL"
         )
 
     aliases = entry.get("aliases")
@@ -214,7 +250,7 @@ def validate_catalog(catalog: object, targets_manifest: object) -> list[str]:
     if type(catalog.get("schema_version")) is not int or catalog.get("schema_version") != 1:
         errors.append("schema_version must be the integer 1")
 
-    target_refs: dict[str, str] = {}
+    target_refs: dict[str, dict[str, str]] = {}
     if not isinstance(targets_manifest, dict) or not isinstance(
         targets_manifest.get("targets"), list
     ):
@@ -225,8 +261,12 @@ def validate_catalog(catalog: object, targets_manifest: object) -> list[str]:
                 continue
             target_id = target.get("id")
             commit = target.get("commit")
-            if _string(target_id) and _string(commit):
-                target_refs[str(target_id)] = str(commit)
+            repo = target.get("repo")
+            if _string(target_id):
+                target_refs[str(target_id)] = {
+                    "commit": str(commit) if _string(commit) else "",
+                    "repo": str(repo) if _string(repo) else "",
+                }
 
     targets = catalog.get("targets")
     if not isinstance(targets, list) or not targets:
@@ -264,15 +304,15 @@ def validate_catalog(catalog: object, targets_manifest: object) -> list[str]:
                 f"{prefix}.target_commit must be a lowercase 40-character Git SHA"
             )
         if _string(target_id):
-            expected_commit = target_refs.get(str(target_id))
-            if expected_commit is None:
+            target_ref = target_refs.get(str(target_id))
+            if target_ref is None:
                 errors.append(
                     f"{prefix}.target_id does not exist in the target manifest: {target_id}"
                 )
-            elif target_commit != expected_commit:
+            elif target_commit != target_ref["commit"]:
                 errors.append(
                     f"{prefix}.target_commit must match the target manifest commit "
-                    f"{expected_commit}"
+                    f"{target_ref['commit']}"
                 )
 
         if not _string(target.get("notes")):
@@ -294,6 +334,11 @@ def validate_catalog(catalog: object, targets_manifest: object) -> list[str]:
                         entry,
                         prefix=f"{prefix}.{collection_name}[{entry_index}]",
                         expected_fields=expected_fields,
+                        target_repo=(
+                            target_refs.get(str(target_id), {}).get("repo", "")
+                            if _string(target_id)
+                            else ""
+                        ),
                         target_commit=target_commit,
                         seen_entry_ids=seen_entry_ids,
                         seen_aliases=seen_aliases,

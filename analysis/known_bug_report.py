@@ -52,16 +52,16 @@ SUMMARY_FIELDS = (
     "target_id",
     "target_commit",
     "fuzzer",
-    "runs",
+    "replicates",
     "known_bugs",
-    "known_bug_run_hits",
-    "known_bug_run_opportunities",
+    "known_bug_replicate_hits",
+    "known_bug_replicate_opportunities",
     "known_bug_hit_rate",
     "distinct_known_bugs_hit",
     "known_bug_catalog_coverage_rate",
     "canaries",
-    "canary_run_hits",
-    "canary_run_opportunities",
+    "canary_replicate_hits",
+    "canary_replicate_opportunities",
     "canary_hit_rate",
     "distinct_canaries_hit",
     "canary_catalog_coverage_rate",
@@ -90,7 +90,7 @@ class EventRecord:
 
 
 @dataclass(frozen=True)
-class RunRecord:
+class ReplicateRecord:
     run_id: str
     instance_id: str
     fuzzer: str
@@ -270,15 +270,15 @@ def _event_run_ids(events: Sequence[EventRecord]) -> dict[tuple[str, str], set[s
     return result
 
 
-def build_runs(
+def build_replicates(
     events: Sequence[EventRecord],
     *,
     logs_dir: Path,
     default_run_id: str,
     run_manifest: Mapping[str, object] | None,
     excluded_fuzzers: set[str],
-) -> list[RunRecord]:
-    runs: dict[tuple[str, str, str], RunRecord] = {}
+) -> list[ReplicateRecord]:
+    replicates: dict[tuple[str, str, str], ReplicateRecord] = {}
     event_run_ids = _event_run_ids(events)
 
     for event in events:
@@ -289,7 +289,7 @@ def build_runs(
         ):
             continue
         key = (event.run_id, event.instance_id, fuzzer)
-        runs[key] = RunRecord(
+        replicates[key] = ReplicateRecord(
             run_id=event.run_id,
             instance_id=event.instance_id,
             fuzzer=fuzzer,
@@ -315,7 +315,7 @@ def build_runs(
                 else default_run_id
             )
             key = (run_id, instance_id, fuzzer)
-            runs[key] = RunRecord(
+            replicates[key] = ReplicateRecord(
                 run_id=run_id,
                 instance_id=instance_id,
                 fuzzer=fuzzer,
@@ -344,11 +344,13 @@ def build_runs(
                 )
 
             for fuzzer, expected in expected_by_fuzzer.items():
-                actual = sum(1 for run in runs.values() if run.fuzzer == fuzzer)
+                actual = sum(
+                    1 for replicate in replicates.values() if replicate.fuzzer == fuzzer
+                )
                 for missing_index in range(actual + 1, expected + 1):
                     instance_id = f"missing-{fuzzer}-{missing_index}"
                     key = (default_run_id, instance_id, fuzzer)
-                    runs[key] = RunRecord(
+                    replicates[key] = ReplicateRecord(
                         run_id=default_run_id,
                         instance_id=instance_id,
                         fuzzer=fuzzer,
@@ -356,8 +358,12 @@ def build_runs(
                     )
 
     return sorted(
-        runs.values(),
-        key=lambda run: (run.fuzzer, run.run_id, run.instance_id),
+        replicates.values(),
+        key=lambda replicate: (
+            replicate.fuzzer,
+            replicate.run_id,
+            replicate.instance_id,
+        ),
     )
 
 
@@ -495,13 +501,18 @@ def _rate(numerator: int, denominator: int) -> str:
 def summarize_findings(
     findings: Sequence[Mapping[str, object]],
     *,
-    runs: Sequence[RunRecord],
+    replicates: Sequence[ReplicateRecord],
     target: Mapping[str, object],
 ) -> list[dict[str, object]]:
-    fuzzers = sorted({run.fuzzer for run in runs} | {str(row["fuzzer"]) for row in findings})
+    fuzzers = sorted(
+        {replicate.fuzzer for replicate in replicates}
+        | {str(row["fuzzer"]) for row in findings}
+    )
     summary: list[dict[str, object]] = []
     for fuzzer in fuzzers:
-        fuzzer_runs = [run for run in runs if run.fuzzer == fuzzer]
+        fuzzer_replicates = [
+            replicate for replicate in replicates if replicate.fuzzer == fuzzer
+        ]
         fuzzer_findings = [row for row in findings if row["fuzzer"] == fuzzer]
         known_rows = [
             row for row in fuzzer_findings if row["finding_class"] == "known_bug"
@@ -521,26 +532,26 @@ def summarize_findings(
         )
         known_hits = {str(row["ground_truth_id"]) for row in known_rows}
         canary_hits = {str(row["ground_truth_id"]) for row in canary_rows}
-        known_opportunities = len(known_ids) * len(fuzzer_runs)
-        canary_opportunities = len(canary_ids) * len(fuzzer_runs)
+        known_opportunities = len(known_ids) * len(fuzzer_replicates)
+        canary_opportunities = len(canary_ids) * len(fuzzer_replicates)
 
         summary.append(
             {
                 "target_id": target["target_id"],
                 "target_commit": target["target_commit"],
                 "fuzzer": fuzzer,
-                "runs": len(fuzzer_runs),
+                "replicates": len(fuzzer_replicates),
                 "known_bugs": len(known_ids),
-                "known_bug_run_hits": len(known_rows),
-                "known_bug_run_opportunities": known_opportunities,
+                "known_bug_replicate_hits": len(known_rows),
+                "known_bug_replicate_opportunities": known_opportunities,
                 "known_bug_hit_rate": _rate(len(known_rows), known_opportunities),
                 "distinct_known_bugs_hit": len(known_hits),
                 "known_bug_catalog_coverage_rate": _rate(
                     len(known_hits), len(known_ids)
                 ),
                 "canaries": len(canary_ids),
-                "canary_run_hits": len(canary_rows),
-                "canary_run_opportunities": canary_opportunities,
+                "canary_replicate_hits": len(canary_rows),
+                "canary_replicate_opportunities": canary_opportunities,
                 "canary_hit_rate": _rate(len(canary_rows), canary_opportunities),
                 "distinct_canaries_hit": len(canary_hits),
                 "canary_catalog_coverage_rate": _rate(
@@ -624,7 +635,7 @@ def write_markdown_report(
             "",
             "## Per-fuzzer results",
             "",
-            "| Fuzzer | Runs | Known-bug run hits | Catalog coverage | Canary run hits | Unmapped event findings |",
+            "| Fuzzer | Replicates | Known-bug replicate hits | Catalog coverage | Canary replicate hits | Unmapped event findings |",
             "| --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
@@ -634,10 +645,10 @@ def write_markdown_report(
             + " | ".join(
                 [
                     _markdown_text(row["fuzzer"]),
-                    str(row["runs"]),
+                    str(row["replicates"]),
                     _ratio_cell(
-                        row["known_bug_run_hits"],
-                        row["known_bug_run_opportunities"],
+                        row["known_bug_replicate_hits"],
+                        row["known_bug_replicate_opportunities"],
                         row["known_bug_hit_rate"],
                     ),
                     _ratio_cell(
@@ -646,8 +657,8 @@ def write_markdown_report(
                         row["known_bug_catalog_coverage_rate"],
                     ),
                     _ratio_cell(
-                        row["canary_run_hits"],
-                        row["canary_run_opportunities"],
+                        row["canary_replicate_hits"],
+                        row["canary_replicate_opportunities"],
                         row["canary_hit_rate"],
                     ),
                     str(row["unmapped_event_findings"]),
@@ -703,7 +714,7 @@ def write_markdown_report(
     if unmapped:
         lines.extend(
             [
-                "| Fuzzer | Event identity | Runs observed |",
+                "| Fuzzer | Event identity | Replicates observed |",
                 "| --- | --- | ---: |",
             ]
         )
@@ -720,10 +731,11 @@ def write_markdown_report(
             "",
             "## Counting semantics",
             "",
-            "- A canonical known-bug ID counts at most once per run, even when several "
+            "- A canonical known-bug ID counts at most once per replicate, even when several "
             "event aliases or counterexamples reach it.",
-            "- Known-bug hit rate is `canonical bug/run hits ÷ (cataloged bugs × runs)`.",
-            "- Unmapped rows are distinct normalized event identities per run. They are "
+            "- A replicate is identified by `(run_id, instance_id, fuzzer)`.",
+            "- Known-bug hit rate is `canonical bug/replicate hits ÷ (cataloged bugs × replicates)`.",
+            "- Unmapped rows are distinct normalized event identities per replicate. They are "
             "triage candidates, not claimed bugs.",
             "- Crash inputs and corpus files are not used as bug identities.",
         ]
@@ -839,7 +851,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         or (run_manifest or {}).get("run_id")
         or next((event.run_id for event in events if event.run_id), "unknown")
     )
-    runs = build_runs(
+    replicates = build_replicates(
         events,
         logs_dir=args.logs_dir,
         default_run_id=default_run_id,
@@ -851,7 +863,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         target=target,
         excluded_fuzzers=excluded_fuzzers,
     )
-    summary = summarize_findings(findings, runs=runs, target=target)
+    summary = summarize_findings(
+        findings,
+        replicates=replicates,
+        target=target,
+    )
 
     write_csv(findings, args.findings_out, fields=FINDINGS_FIELDS)
     write_csv(summary, args.summary_out, fields=SUMMARY_FIELDS)
@@ -865,7 +881,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(
         f"Mapped {len(findings)} deduplicated finding(s) across "
-        f"{len(runs)} run(s) for {target['target_id']}"
+        f"{len(replicates)} replicate(s) for {target['target_id']}"
     )
     return 0
 

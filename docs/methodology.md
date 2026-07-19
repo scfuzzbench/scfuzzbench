@@ -134,7 +134,8 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - Medusa: parse elapsed markers and failed assertions/properties from textual logs.
   - Echidna and Recon Fuzzer: parse falsification markers from textual logs.
   - Unknown fuzzers: fall back to generic pattern parsing.
-- Event de-duplication is per run-instance stream (same event name counted once per run).
+- Event de-duplication is per run-instance stream (same event name counted once
+  per replicate).
   These are normalized failure identities, not crash inputs and not necessarily
   confirmed root-cause bugs.
 - Outputs:
@@ -164,15 +165,16 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   classifications.
 - Qualified names, Solidity signatures, assertion suffixes, and legacy Foundry
   assertion-wrapper prefixes are normalized before alias lookup.
-- Multiple aliases for one canonical bug count at most once per run. Crash
+- Multiple aliases for one canonical bug count at most once per replicate,
+  identified by `(run_id, instance_id, fuzzer)`. Crash
   inputs and corpus entries are never used as bug identities.
 - Health-check canaries have their own denominator and never contribute to the
   real known-bug hit rate.
 - Unknown event identities remain explicit `unmapped` rows. They are triage
   candidates, not claimed bugs.
-- Hit rate is computed per fuzzer as canonical known-bug/run hits divided by
-  `(known bugs discoverable by that fuzzer × configured runs)`. Configured runs
-  with missing logs remain in the denominator.
+- Hit rate is computed per fuzzer as canonical known-bug/replicate hits divided
+  by `(known bugs discoverable by that fuzzer × configured replicates)`.
+  Configured replicates with missing logs remain in the denominator.
 - Outputs:
   - `known_bug_report.md` (human-readable hit rates, catalog entries, and unmapped identities)
   - `known_bug_summary.csv` (per-fuzzer known-bug and canary hit rates)

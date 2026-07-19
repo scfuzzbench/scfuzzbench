@@ -92,18 +92,37 @@ class KnownBugCatalogValidationTests(unittest.TestCase):
                     )
                 )
 
-    def test_each_entry_requires_commit_pinned_evidence(self):
-        catalog = copy.deepcopy(self.catalog)
-        catalog["targets"][0]["canaries"][0]["evidence"] = [
-            {
-                "url": "https://example.com/unpinned",
-                "description": "Not tied to the target revision.",
-            }
-        ]
+    def test_each_entry_requires_exact_repo_commit_and_line_pinned_evidence(self):
+        target = self.catalog["targets"][0]
+        commit = target["target_commit"]
+        invalid_urls = (
+            f"https://example.com/source?revision={commit}",
+            (
+                "https://github.com/scfuzzbench/wrong-target/blob/"
+                f"{commit}/Properties.sol#L1"
+            ),
+            (
+                "https://github.com/scfuzzbench/aave-v4-scfuzzbench/blob/"
+                f"{commit}/tests/recon/Properties.sol"
+            ),
+        )
 
-        errors = self.module.validate_catalog(catalog, self.targets)
+        for url in invalid_urls:
+            with self.subTest(url=url):
+                catalog = copy.deepcopy(self.catalog)
+                catalog["targets"][0]["canaries"][0]["evidence"] = [
+                    {
+                        "url": url,
+                        "description": "Not tied to the exact target source.",
+                    }
+                ]
 
-        self.assertTrue(any("must include a URL pinned to target_commit" in error for error in errors))
+                errors = self.module.validate_catalog(catalog, self.targets)
+
+                self.assertTrue(
+                    any("must include an exact" in error for error in errors),
+                    errors,
+                )
 
 
 if __name__ == "__main__":

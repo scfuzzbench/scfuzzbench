@@ -8,5 +8,5 @@ run-1,i-a1,foundry,foundry,testUnexpected(uint256),5.0,foundry-handler-summary,/
 run-1,i-a2,echidna,echidna,assert_canary_ASSERTION_CANARY(uint256),1.0,echidna-failed,/logs/echidna.log
 run-1,i-a2,echidna,echidna,invariant_canary,0.0,falsified,/logs/echidna.log
 run-1,i-a2,echidna,echidna,"testSqueezableAmountCantBeWithdrawn(uint8,uint8)",7.0,echidna-failed,/logs/echidna.log
-run-2,i-a3,foundry,foundry,invariant_canary,0.0,foundry-invariant-failure,/logs/foundry-2.log
-run-2,i-a3,foundry,foundry,testUnexpected(uint256),8.0,foundry-handler-summary,/logs/foundry-2.log
+run-1,i-a3,foundry,foundry,invariant_canary,0.0,foundry-invariant-failure,/logs/foundry-2.log
+run-1,i-a3,foundry,foundry,testUnexpected(uint256),8.0,foundry-handler-summary,/logs/foundry-2.log
