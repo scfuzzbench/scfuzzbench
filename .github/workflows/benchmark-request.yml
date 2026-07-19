@@ -28,7 +28,19 @@ jobs:
       foundry_git_repo: ${{ steps.prepare.outputs.foundry_git_repo }}
       foundry_git_ref: ${{ steps.prepare.outputs.foundry_git_ref }}
       echidna_version: ${{ steps.prepare.outputs.echidna_version }}
+      echidna_ci_repo: ${{ steps.prepare.outputs.echidna_ci_repo }}
+      echidna_ci_run_id: ${{ steps.prepare.outputs.echidna_ci_run_id }}
+      echidna_ci_artifact_name: ${{ steps.prepare.outputs.echidna_ci_artifact_name }}
+      echidna_ci_artifact_sha256: ${{ steps.prepare.outputs.echidna_ci_artifact_sha256 }}
+      echidna_ci_commit: ${{ steps.prepare.outputs.echidna_ci_commit }}
+      echidna_ci_token_ssm_parameter_name: ${{ steps.prepare.outputs.echidna_ci_token_ssm_parameter_name }}
+      echidna_ci_token_kms_key_arn: ${{ steps.prepare.outputs.echidna_ci_token_kms_key_arn }}
       medusa_version: ${{ steps.prepare.outputs.medusa_version }}
+      medusa_git_repo: ${{ steps.prepare.outputs.medusa_git_repo }}
+      medusa_git_ref: ${{ steps.prepare.outputs.medusa_git_ref }}
+      medusa_git_commit: ${{ steps.prepare.outputs.medusa_git_commit }}
+      medusa_go_version: ${{ steps.prepare.outputs.medusa_go_version }}
+      medusa_go_sha256: ${{ steps.prepare.outputs.medusa_go_sha256 }}
       recon_version: ${{ steps.prepare.outputs.recon_version }}
       git_token_ssm_parameter_name: ${{ steps.prepare.outputs.git_token_ssm_parameter_name }}
       properties_path: ${{ steps.prepare.outputs.properties_path }}
@@ -171,6 +183,21 @@ jobs:
 
               const keys = Object.keys(obj);
               if (keys.length > 64) return fail("fuzzer_env_json has too many keys (max 64).");
+              const protectedToolKeys = new Set([
+                "ECHIDNA_CI_TOKEN",
+                "ECHIDNA_CI_TOKEN_SSM_PARAMETER",
+                "ECHIDNA_CI_REPO",
+                "ECHIDNA_CI_RUN_ID",
+                "ECHIDNA_CI_ARTIFACT_NAME",
+                "ECHIDNA_CI_ARTIFACT_SHA256",
+                "ECHIDNA_CI_COMMIT",
+                "ECHIDNA_CI_TOKEN_KMS_KEY_ARN",
+                "MEDUSA_GIT_REPO",
+                "MEDUSA_GIT_REF",
+                "MEDUSA_GIT_COMMIT",
+                "MEDUSA_GO_VERSION",
+                "MEDUSA_GO_SHA256",
+              ]);
               const reservedSeedKeys = new Set([
                 "SCFUZZBENCH_SEED_CORPUS_SOURCE",
                 "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
@@ -180,6 +207,9 @@ jobs:
 
               for (const k of keys) {
                 if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(k)) return fail(`Invalid fuzzer env key: ${k}`);
+                if (protectedToolKeys.has(k)) {
+                  return fail(`Use the dedicated benchmark request field instead of fuzzer_env_json for ${k}`);
+                }
                 if (reservedSeedKeys.has(k)) return fail(`fuzzer_env_json cannot override framework-owned seed variable: ${k}`);
                 const v = obj[k];
                 if (typeof v !== "string") return fail(`Env value for ${k} must be a string`);
@@ -338,8 +368,167 @@ jobs:
 
             const echidna_version = mustString(payload, "echidna_version", { required: false, maxLen: 32 });
             if (!echidna_version.ok) errors.push(echidna_version.message);
+
+            const echidna_ci_repo = mustString(payload, "echidna_ci_repo", { required: false, maxLen: 300 });
+            if (!echidna_ci_repo.ok) errors.push(echidna_ci_repo.message);
+            const echidna_ci_run_id = mustString(payload, "echidna_ci_run_id", { required: false, maxLen: 32 });
+            if (!echidna_ci_run_id.ok) errors.push(echidna_ci_run_id.message);
+            const echidna_ci_artifact_name = mustString(payload, "echidna_ci_artifact_name", { required: false, maxLen: 200 });
+            if (!echidna_ci_artifact_name.ok) errors.push(echidna_ci_artifact_name.message);
+            const echidna_ci_artifact_sha256 = mustString(payload, "echidna_ci_artifact_sha256", { required: false, maxLen: 64 });
+            if (!echidna_ci_artifact_sha256.ok) errors.push(echidna_ci_artifact_sha256.message);
+            const echidna_ci_commit = mustString(payload, "echidna_ci_commit", { required: false, maxLen: 40 });
+            if (!echidna_ci_commit.ok) errors.push(echidna_ci_commit.message);
+            const echidna_ci_token_ssm_parameter_name = mustString(
+              payload,
+              "echidna_ci_token_ssm_parameter_name",
+              { required: false, maxLen: 200 }
+            );
+            if (!echidna_ci_token_ssm_parameter_name.ok) errors.push(echidna_ci_token_ssm_parameter_name.message);
+            const echidna_ci_token_kms_key_arn = mustString(
+              payload,
+              "echidna_ci_token_kms_key_arn",
+              { required: false, maxLen: 200 }
+            );
+            if (!echidna_ci_token_kms_key_arn.ok) errors.push(echidna_ci_token_kms_key_arn.message);
+
+            const echidnaCiFields = [
+              echidna_ci_repo,
+              echidna_ci_run_id,
+              echidna_ci_artifact_name,
+              echidna_ci_artifact_sha256,
+              echidna_ci_commit,
+              echidna_ci_token_ssm_parameter_name,
+            ];
+            const echidnaCiCount = echidnaCiFields.filter((field) => field.ok && field.value).length;
+            if (echidnaCiCount !== 0 && echidnaCiCount !== echidnaCiFields.length) {
+              errors.push(
+                "Echidna CI mode requires echidna_ci_repo, run_id, artifact_name, artifact_sha256, commit, and token SSM parameter together"
+              );
+            }
+            if (echidnaCiCount === echidnaCiFields.length) {
+              if (echidna_version.ok && echidna_version.value) {
+                errors.push("echidna_version and Echidna CI artifact mode are mutually exclusive");
+              }
+              const repoMatch = mustMatch(
+                echidna_ci_repo.value,
+                "echidna_ci_repo",
+                githubRepoUrlRe,
+                "expected https://github.com/<org>/<repo>"
+              );
+              if (!repoMatch.ok) errors.push(repoMatch.message);
+              const runMatch = mustMatch(
+                echidna_ci_run_id.value,
+                "echidna_ci_run_id",
+                /^[1-9][0-9]*$/,
+                "expected a positive integer"
+              );
+              if (!runMatch.ok) errors.push(runMatch.message);
+              const artifactMatch = mustMatch(
+                echidna_ci_artifact_name.value,
+                "echidna_ci_artifact_name",
+                /^[A-Za-z0-9._-]+$/,
+                "letters, digits, dot, underscore, and dash only"
+              );
+              if (!artifactMatch.ok) errors.push(artifactMatch.message);
+              if (artifactMatch.ok && !echidna_ci_artifact_name.value.toLowerCase().includes("linux")) {
+                errors.push("echidna_ci_artifact_name must identify a Linux artifact");
+              }
+              const digestMatch = mustMatch(
+                echidna_ci_artifact_sha256.value,
+                "echidna_ci_artifact_sha256",
+                /^[A-Fa-f0-9]{64}$/,
+                "expected a 64-character SHA-256"
+              );
+              if (!digestMatch.ok) errors.push(digestMatch.message);
+              const commitMatch = mustMatch(
+                echidna_ci_commit.value,
+                "echidna_ci_commit",
+                /^[A-Fa-f0-9]{40}$/,
+                "expected a full 40-character commit SHA"
+              );
+              if (!commitMatch.ok) errors.push(commitMatch.message);
+              const tokenParameterMatch = mustMatch(
+                echidna_ci_token_ssm_parameter_name.value,
+                "echidna_ci_token_ssm_parameter_name",
+                /^\/scfuzzbench\/[A-Za-z0-9_./-]+$/,
+                "expected an SSM path under /scfuzzbench/"
+              );
+              if (!tokenParameterMatch.ok) errors.push(tokenParameterMatch.message);
+              if (echidna_ci_token_kms_key_arn.ok && echidna_ci_token_kms_key_arn.value) {
+                const kmsMatch = mustMatch(
+                  echidna_ci_token_kms_key_arn.value,
+                  "echidna_ci_token_kms_key_arn",
+                  /^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key\/[A-Fa-f0-9-]{36}$/,
+                  "expected an exact customer-managed KMS key ARN"
+                );
+                if (!kmsMatch.ok) errors.push(kmsMatch.message);
+              }
+            }
+            if (
+              echidna_ci_token_kms_key_arn.ok &&
+              echidna_ci_token_kms_key_arn.value &&
+              echidnaCiCount !== echidnaCiFields.length
+            ) {
+              errors.push("echidna_ci_token_kms_key_arn requires Echidna CI artifact mode");
+            }
+
             const medusa_version = mustString(payload, "medusa_version", { required: false, maxLen: 32 });
             if (!medusa_version.ok) errors.push(medusa_version.message);
+            const medusa_git_repo = mustString(payload, "medusa_git_repo", { required: false, maxLen: 300 });
+            if (!medusa_git_repo.ok) errors.push(medusa_git_repo.message);
+            const medusa_git_ref = mustString(payload, "medusa_git_ref", { required: false, maxLen: 200 });
+            if (!medusa_git_ref.ok) errors.push(medusa_git_ref.message);
+            const medusa_git_commit = mustString(payload, "medusa_git_commit", { required: false, maxLen: 40 });
+            if (!medusa_git_commit.ok) errors.push(medusa_git_commit.message);
+            const medusa_go_version = mustString(payload, "medusa_go_version", { required: false, maxLen: 32 });
+            if (!medusa_go_version.ok) errors.push(medusa_go_version.message);
+            const medusa_go_sha256 = mustString(payload, "medusa_go_sha256", { required: false, maxLen: 64 });
+            if (!medusa_go_sha256.ok) errors.push(medusa_go_sha256.message);
+            const medusaGoVersionValue = medusa_go_version.ok && medusa_go_version.value
+              ? medusa_go_version.value
+              : "1.24.0";
+            const medusaGoSha256Value = medusa_go_sha256.ok && medusa_go_sha256.value
+              ? medusa_go_sha256.value
+              : "dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858";
+            if (!/^[0-9]+\.[0-9]+(?:\.[0-9]+)?$/.test(medusaGoVersionValue)) {
+              errors.push("medusa_go_version must look like 1.24.0");
+            }
+            if (!/^[A-Fa-f0-9]{64}$/.test(medusaGoSha256Value)) {
+              errors.push("medusa_go_sha256 must be a 64-character SHA-256");
+            }
+            const medusaSourceFields = [medusa_git_repo, medusa_git_ref, medusa_git_commit];
+            const medusaSourceCount = medusaSourceFields.filter((field) => field.ok && field.value).length;
+            if (medusaSourceCount !== 0 && medusaSourceCount !== medusaSourceFields.length) {
+              errors.push("Medusa source mode requires medusa_git_repo, medusa_git_ref, and medusa_git_commit together");
+            }
+            if (medusaSourceCount === medusaSourceFields.length) {
+              if (medusa_version.ok && medusa_version.value) {
+                errors.push("medusa_version and Medusa source mode are mutually exclusive");
+              }
+              const repoMatch = mustMatch(
+                medusa_git_repo.value,
+                "medusa_git_repo",
+                githubRepoUrlRe,
+                "expected https://github.com/<org>/<repo>"
+              );
+              if (!repoMatch.ok) errors.push(repoMatch.message);
+              const refMatch = mustMatch(
+                medusa_git_ref.value,
+                "medusa_git_ref",
+                /^[A-Za-z0-9._/-]+$/,
+                "no spaces"
+              );
+              if (!refMatch.ok) errors.push(refMatch.message);
+              const commitMatch = mustMatch(
+                medusa_git_commit.value,
+                "medusa_git_commit",
+                /^[A-Fa-f0-9]{40}$/,
+                "expected a full 40-character commit SHA"
+              );
+              if (!commitMatch.ok) errors.push(commitMatch.message);
+            }
+
             const recon_version = mustString(payload, "recon_version", { required: false, maxLen: 32 });
             if (!recon_version.ok) errors.push(recon_version.message);
 
@@ -471,7 +660,25 @@ jobs:
               core.setOutput("foundry_git_repo", foundry_git_repo.ok ? foundry_git_repo.value : "");
               core.setOutput("foundry_git_ref", foundry_git_ref.ok ? foundry_git_ref.value : "");
               core.setOutput("echidna_version", echidna_version.ok ? echidna_version.value : "");
+              core.setOutput("echidna_ci_repo", echidna_ci_repo.ok ? echidna_ci_repo.value : "");
+              core.setOutput("echidna_ci_run_id", echidna_ci_run_id.ok ? echidna_ci_run_id.value : "");
+              core.setOutput("echidna_ci_artifact_name", echidna_ci_artifact_name.ok ? echidna_ci_artifact_name.value : "");
+              core.setOutput("echidna_ci_artifact_sha256", echidna_ci_artifact_sha256.ok ? echidna_ci_artifact_sha256.value : "");
+              core.setOutput("echidna_ci_commit", echidna_ci_commit.ok ? echidna_ci_commit.value : "");
+              core.setOutput(
+                "echidna_ci_token_ssm_parameter_name",
+                echidna_ci_token_ssm_parameter_name.ok ? echidna_ci_token_ssm_parameter_name.value : ""
+              );
+              core.setOutput(
+                "echidna_ci_token_kms_key_arn",
+                echidna_ci_token_kms_key_arn.ok ? echidna_ci_token_kms_key_arn.value : ""
+              );
               core.setOutput("medusa_version", medusa_version.ok ? medusa_version.value : "");
+              core.setOutput("medusa_git_repo", medusa_git_repo.ok ? medusa_git_repo.value : "");
+              core.setOutput("medusa_git_ref", medusa_git_ref.ok ? medusa_git_ref.value : "");
+              core.setOutput("medusa_git_commit", medusa_git_commit.ok ? medusa_git_commit.value : "");
+              core.setOutput("medusa_go_version", medusaGoVersionValue);
+              core.setOutput("medusa_go_sha256", medusaGoSha256Value);
               core.setOutput("recon_version", recon_version.ok ? recon_version.value : "");
               core.setOutput("git_token_ssm_parameter_name", git_token_ssm_parameter_name.ok ? git_token_ssm_parameter_name.value : "");
               core.setOutput("properties_path", properties_path.ok ? properties_path.value : "");
@@ -495,7 +702,19 @@ jobs:
       foundry_git_repo: ${{ needs.prepare.outputs.foundry_git_repo }}
       foundry_git_ref: ${{ needs.prepare.outputs.foundry_git_ref }}
       echidna_version: ${{ needs.prepare.outputs.echidna_version }}
+      echidna_ci_repo: ${{ needs.prepare.outputs.echidna_ci_repo }}
+      echidna_ci_run_id: ${{ needs.prepare.outputs.echidna_ci_run_id }}
+      echidna_ci_artifact_name: ${{ needs.prepare.outputs.echidna_ci_artifact_name }}
+      echidna_ci_artifact_sha256: ${{ needs.prepare.outputs.echidna_ci_artifact_sha256 }}
+      echidna_ci_commit: ${{ needs.prepare.outputs.echidna_ci_commit }}
+      echidna_ci_token_ssm_parameter_name: ${{ needs.prepare.outputs.echidna_ci_token_ssm_parameter_name }}
+      echidna_ci_token_kms_key_arn: ${{ needs.prepare.outputs.echidna_ci_token_kms_key_arn }}
       medusa_version: ${{ needs.prepare.outputs.medusa_version }}
+      medusa_git_repo: ${{ needs.prepare.outputs.medusa_git_repo }}
+      medusa_git_ref: ${{ needs.prepare.outputs.medusa_git_ref }}
+      medusa_git_commit: ${{ needs.prepare.outputs.medusa_git_commit }}
+      medusa_go_version: ${{ needs.prepare.outputs.medusa_go_version }}
+      medusa_go_sha256: ${{ needs.prepare.outputs.medusa_go_sha256 }}
       recon_version: ${{ needs.prepare.outputs.recon_version }}
       git_token_ssm_parameter_name: ${{ needs.prepare.outputs.git_token_ssm_parameter_name }}
       properties_path: ${{ needs.prepare.outputs.properties_path }}

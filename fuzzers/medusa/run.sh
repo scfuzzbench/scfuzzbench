@@ -11,8 +11,22 @@ if [[ -z "${HOME:-}" ]]; then
 fi
 export PATH="${HOME}/.foundry/bin:${PATH}"
 
-require_env MEDUSA_VERSION
-SCFUZZBENCH_FUZZER_LABEL="medusa-v${MEDUSA_VERSION}"
+if [[ -n "${MEDUSA_GIT_REPO:-}" ]]; then
+  commit_file="${SCFUZZBENCH_ROOT}/medusa_git_commit"
+  if [[ ! -f "${commit_file}" ]]; then
+    log "Missing resolved Medusa source commit provenance: ${commit_file}"
+    exit 1
+  fi
+  medusa_git_commit=$(<"${commit_file}")
+  if [[ ! "${medusa_git_commit}" =~ ^[A-Fa-f0-9]{40}$ ]]; then
+    log "Invalid resolved Medusa source commit provenance"
+    exit 1
+  fi
+  SCFUZZBENCH_FUZZER_LABEL="medusa-git-${medusa_git_commit:0:12}"
+else
+  require_env MEDUSA_VERSION
+  SCFUZZBENCH_FUZZER_LABEL="medusa-v${MEDUSA_VERSION}"
+fi
 export SCFUZZBENCH_FUZZER_LABEL
 
 clone_target

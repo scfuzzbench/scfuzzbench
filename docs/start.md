@@ -25,4 +25,6 @@ harness; use the manifest's pinned commit for a reproducible run.
 
 ::: warning
 Do not put secrets in the issue body. The request is intentionally public/auditable.
+For Echidna CI artifact mode, enter only the SSM SecureString parameter name;
+never paste its GitHub token.
 :::

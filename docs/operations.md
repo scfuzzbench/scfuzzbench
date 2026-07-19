@@ -11,6 +11,7 @@ Set inputs via `-var`/`tfvars` (`TF_VAR_*` also works):
 - `instance_type`, `instances_per_fuzzer`, `timeout_hours`
 - `fuzzers` (allowlist; empty means all available)
 - fuzzer versions (`foundry_git_repo`/`foundry_git_ref`, `echidna_version`, `medusa_version`, `recon_version`)
+- opt-in tool builds (`echidna_ci_*`, `medusa_git_*`, `medusa_go_*`; see below)
 - `git_token_ssm_parameter_name` (for private repos)
 - `shared_seed_corpus_source` (optional directory or `s3://bucket/prefix`; empty by default)
 - `fuzzer_env` values such as `SCFUZZBENCH_PROPERTIES_PATH`
@@ -104,6 +105,93 @@ Cloud benchmark requests do not expose `foundry_version`: setting only that rele
 non-empty git repository selects the source build. For a local release-binary run, use
 `scripts/local-run.sh --foundry-version <tag>` without `FOUNDRY_GIT_REPO`. Low-level Terraform callers can select the
 same fallback only by explicitly setting `foundry_git_repo` to an empty string.
+
+## Opt-in bleeding-edge tool builds
+
+Stable Echidna and Medusa releases remain the default. A bleeding-edge mode is
+enabled only when its complete input group is present. The runner never falls
+back to a stable binary after an opt-in install fails.
+
+### Echidna GitHub Actions artifact
+
+Provide all of:
+
+- `echidna_ci_repo`: public GitHub repository URL.
+- `echidna_ci_run_id`: completed, successful Actions run ID.
+- `echidna_ci_artifact_name`: exact Linux artifact name (upstream CI currently
+  publishes `echidna-Linux`).
+- `echidna_ci_artifact_sha256`: the artifact API `digest` without `sha256:`.
+- `echidna_ci_commit`: full 40-character run head commit.
+- `echidna_ci_token_ssm_parameter_name`: a SecureString containing a token with
+  Actions read access to that repository.
+- `echidna_ci_token_kms_key_arn` (optional): the exact customer-managed KMS key
+  ARN used by that SecureString. Leave blank for the account's AWS-managed
+  `alias/aws/ssm` key.
+
+GitHub Actions artifacts expire. Inspect the run before requesting a paid
+benchmark:
+
+```bash
+repo=crytic/echidna
+run_id=<run-id>
+artifact=echidna-Linux
+gh api "repos/$repo/actions/runs/$run_id" \
+  --jq '{status,conclusion,head_sha,repository:.repository.full_name}'
+gh api "repos/$repo/actions/runs/$run_id/artifacts?name=$artifact" \
+  --jq '.artifacts[] | {id,name,digest,expired,expires_at,size_in_bytes,workflow_run}'
+```
+
+Store the token separately; put only its parameter name in a public benchmark
+request:
+
+```bash
+aws ssm put-parameter \
+  --name /scfuzzbench/echidna/actions_token \
+  --type SecureString \
+  --value "$ECHIDNA_ACTIONS_TOKEN" \
+  --overwrite
+```
+
+Only Echidna artifact instances use the dedicated CI instance profile. It grants
+`ssm:GetParameter` only for the configured parameter ARN; stable Echidna and
+other fuzzer instances receive no access to that token. With a customer-managed
+KMS key, the profile grants `kms:Decrypt` only for the exact key ARN and only
+when the encryption context is the exact parameter ARN via regional SSM.
+Aliases and wildcard KMS permissions are rejected.
+At boot the installer re-checks repository, run success, head commit, artifact
+identity, expiry, API digest, downloaded ZIP digest, archive safety, and the
+binary's Linux x86-64 ELF identity. Authentication is held in a temporary
+mode-`0600` curl config that is deleted immediately after download. The
+canonical installed command is `echidna`.
+
+### Medusa source build
+
+Provide `medusa_git_repo`, `medusa_git_ref`, and the full
+`medusa_git_commit`. The ref is resolved before Terraform apply and again on
+every runner; movement away from the expected commit stops the run.
+
+Source builds use an official pinned Go Linux amd64 distribution. The defaults
+are Go `1.24.0` and SHA-256
+`dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858`.
+Override `medusa_go_version` and `medusa_go_sha256` together when the selected
+commit requires a different toolchain. The installer binds the configured
+digest and size to Go's official download metadata, stream-extracts with
+entry/depth/expanded-byte limits, verifies toolchain identity, disables
+automatic toolchain switching, runs `go mod verify`, preserves `go.mod` and
+`go.sum`, and builds with `-mod=readonly -trimpath`.
+
+Each opt-in leg writes `tool_provenance.json` into its log archive. It records
+the repository/ref/commit, artifact or Go distribution digest, module
+provenance, binary version, and binary SHA-256. The public benchmark manifest
+also carries the non-secret requested pins.
+
+Benchmark request issues expose the fields individually. GitHub's manual
+`workflow_dispatch` form has a fixed input-count limit, so that form groups the
+same fields into `echidna_ci_json` and `medusa_source_json`, for example:
+
+```json
+{"medusa_git_repo":"https://github.com/crytic/medusa","medusa_git_ref":"v1.4.1","medusa_git_commit":"3857153837ab90ed73adc484414b4b43703a54fb","medusa_go_version":"1.24.0","medusa_go_sha256":"dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858"}
+```
 
 ## One Run At A Time
 
@@ -199,7 +287,7 @@ You can run fuzzers locally without AWS infrastructure using `scripts/local-run.
 
 ### Prerequisites
 
-- The fuzzer binary must already be installed (e.g. `echidna` in `$PATH`)
+- The fuzzer binary must already be installed, or pass `--install`
 - Foundry must be installed (`forge`, `cast`)
 - `zip` must be available for result packaging
 
@@ -235,6 +323,12 @@ Optional flags:
 - `--medusa-prune-frequency`: positive pruning interval in minutes for an explicit Medusa experiment (default: `0`, disabled)
 
 All fuzzer-specific flags (`--echidna-*`, `--medusa-*`, `--foundry-*`) mirror the environment variables documented in `fuzzers/README.md`.
+
+For local Echidna artifact mode, export `ECHIDNA_CI_TOKEN` and pass the five
+non-secret `--echidna-ci-*` flags. There is intentionally no token flag, which
+keeps the credential out of shell history. Medusa source mode uses
+`--medusa-git-repo`, `--medusa-git-ref`, `--medusa-git-commit`, and optionally
+the two `--medusa-go-*` overrides.
 
 Echidna runs default to `--shrink-limit 1`, passed as a CLI option so it overrides any `shrinkLimit` in the target config. Supply one non-negative value through `--echidna-extra-args` when an experiment intentionally needs a different amount of shrinking. Extra arguments support shell-style quoting without shell evaluation; malformed quoting and duplicate shrink-limit options fail before Echidna starts.
 
