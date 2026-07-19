@@ -1,8 +1,30 @@
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
 from unittest import mock
+
+
+PROTECTED_RUNTIME_ENV_KEYS = (
+    "SCFUZZBENCH_AWS_CREDS_REFRESH_PID",
+    "SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS",
+    "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION",
+    "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH",
+    "SCFUZZBENCH_COMMON_SH",
+    "SCFUZZBENCH_CORPUS_DIR",
+    "SCFUZZBENCH_GIT_TOKEN",
+    "SCFUZZBENCH_INSTANCE_ID",
+    "SCFUZZBENCH_LOG_DIR",
+    "SCFUZZBENCH_PRELIMINARY_PID",
+    "SCFUZZBENCH_PRELIMINARY_PID_START_TICKS",
+    "SCFUZZBENCH_RUNNER_METRICS_PID",
+    "SCFUZZBENCH_SEED_CORPUS_MAX_BYTES",
+    "SCFUZZBENCH_SEED_CORPUS_MAX_FILES",
+    "SCFUZZBENCH_TIMEOUT_GRACE_SECONDS",
+    "SCFUZZBENCH_UPLOAD_DONE",
+    "SCFUZZBENCH_WORKERS_RESOLVED",
+)
 
 
 def load_module():
@@ -348,6 +370,8 @@ class BenchmarkRunStateTests(unittest.TestCase):
         for protected in (
             "SCFUZZBENCH_BENCHMARK_TYPE",
             "SCFUZZBENCH_PROPERTIES_PATH",
+            *PROTECTED_RUNTIME_ENV_KEYS,
+            "AWS_ENDPOINT_URL",
         ):
             with self.subTest(protected=protected):
                 with self.assertRaisesRegex(ValueError, "may not override"):
@@ -357,6 +381,128 @@ class BenchmarkRunStateTests(unittest.TestCase):
                             "FUZZER_ENV_JSON": f'{{"{protected}":"foreign"}}',
                         }
                     )
+
+    def test_framework_owned_runtime_env_is_protected_at_every_boundary(self):
+        root = Path(__file__).resolve().parents[2]
+        request = (root / ".github/workflows/benchmark-request.yml").read_text()
+        benchmark = (root / ".github/workflows/benchmark-run.yml").read_text()
+        terraform = (root / "infrastructure/variables.tf").read_text()
+
+        for key in PROTECTED_RUNTIME_ENV_KEYS:
+            with self.subTest(key=key):
+                self.assertIn(key, self.module.IMMUTABLE_FUZZER_ENV_KEYS)
+                self.assertIn(f'"{key}"', request)
+                self.assertIn(f'"{key}"', terraform)
+        self.assertIn(
+            "from scripts.benchmark_run_state import "
+            "validate_fuzzer_env_entry",
+            benchmark,
+        )
+        self.assertIn("SAFE_SCFUZZBENCH_FUZZER_ENV_KEYS", request)
+        self.assertIn('k.startsWith("AWS_")', request)
+        self.assertIn('key.startswith("AWS_")', Path(
+            self.module.__file__
+        ).read_text())
+        self.assertIn('!startswith(key, "AWS_")', terraform)
+        self.assertIn('!startswith(key, "SCFUZZBENCH_")', terraform)
+
+    def test_generic_framework_tunings_are_allowlisted_and_bounded(self):
+        base = {
+            "TARGET_REPO_URL": "https://github.com/example/target",
+            "TARGET_COMMIT": "a" * 40,
+            "BENCHMARK_TYPE": "property",
+            "INSTANCE_TYPE": "c6a.4xlarge",
+            "INSTANCES_PER_FUZZER": "1",
+            "TIMEOUT_HOURS": "4",
+            "FUZZERS_JSON": '["foundry"]',
+        }
+        safe = {
+            "SCFUZZBENCH_WORKERS": "256",
+            "SCFUZZBENCH_RUNNER_METRICS": "true",
+            "SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS": "300",
+            "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS": "1",
+            "SCFUZZBENCH_FOUNDRY_SHOWMAP": "no",
+            "SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS": "3600",
+        }
+        self.module.validate_benchmark_inputs(
+            {**base, "FUZZER_ENV_JSON": json.dumps(safe)}
+        )
+        for key, value in {
+            "SCFUZZBENCH_UNKNOWN_FUTURE_KEY": "1",
+            "SCFUZZBENCH_WORKERS": "257",
+            "SCFUZZBENCH_RUNNER_METRICS": "sometimes",
+            "SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS": "0",
+            "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS": "true",
+            "SCFUZZBENCH_FOUNDRY_SHOWMAP": "",
+            "SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS": "3601",
+        }.items():
+            with self.subTest(key=key, value=value):
+                with self.assertRaises(ValueError):
+                    self.module.validate_benchmark_inputs(
+                        {
+                            **base,
+                            "FUZZER_ENV_JSON": json.dumps({key: value}),
+                        }
+                    )
+
+    def test_corpus_overrides_must_be_safe_repo_relative_paths(self):
+        root = Path(__file__).resolve().parents[2]
+        request = (root / ".github/workflows/benchmark-request.yml").read_text()
+        benchmark = (root / ".github/workflows/benchmark-run.yml").read_text()
+        terraform = (root / "infrastructure/variables.tf").read_text()
+        base = {
+            "TARGET_REPO_URL": "https://github.com/example/target",
+            "TARGET_COMMIT": "a" * 40,
+            "BENCHMARK_TYPE": "property",
+            "INSTANCE_TYPE": "c6a.4xlarge",
+            "INSTANCES_PER_FUZZER": "1",
+            "TIMEOUT_HOURS": "4",
+            "FUZZERS_JSON": '["echidna","foundry","medusa","recon-fuzzer"]',
+        }
+        for key in self.module.CORPUS_OVERRIDE_ENV_KEYS:
+            self.assertIn(f'"{key}"', request)
+            self.assertIn(f'"{key}"', terraform)
+            with self.subTest(key=key, valid=True):
+                self.module.validate_benchmark_inputs(
+                    {
+                        **base,
+                        "FUZZER_ENV_JSON": f'{{"{key}":"corpus/custom-{key.lower()}"}}',
+                    }
+                )
+            for unsafe in ("/etc/ssh", "../outside", "corpus/../../outside", "bad path"):
+                with self.subTest(key=key, unsafe=unsafe):
+                    with self.assertRaisesRegex(ValueError, "repo-relative"):
+                        self.module.validate_benchmark_inputs(
+                            {
+                                **base,
+                                "FUZZER_ENV_JSON": json.dumps({key: unsafe}),
+                            }
+                        )
+        self.assertIn("validate_fuzzer_env_entry(k, v)", benchmark)
+
+    def test_docs_match_opaque_run_and_protected_env_contracts(self):
+        root = Path(__file__).resolve().parents[2]
+        operations = (root / "docs/operations.md").read_text()
+        methodology = (root / "docs/methodology.md").read_text()
+        fuzzer_docs = (root / "fuzzers/README.md").read_text()
+
+        self.assertIn("`properties_path`", operations)
+        self.assertNotIn(
+            "fuzzer_env` values such as `SCFUZZBENCH_PROPERTIES_PATH`",
+            operations,
+        )
+        self.assertIn(
+            "run_started_at_epoch + (timeout_hours * 3600) + 3600",
+            methodology,
+        )
+        self.assertNotIn("now >= run_id +", methodology)
+        self.assertNotIn("timestamp-first index", methodology)
+        self.assertIn(
+            'prefix "corpus/$RUN_ID/$BENCHMARK_UUID/"',
+            operations,
+        )
+        self.assertIn("safe allowlist", fuzzer_docs)
+        self.assertIn("repo-relative", fuzzer_docs)
 
     def test_cloud_input_validation_accepts_supported_request(self):
         values = {

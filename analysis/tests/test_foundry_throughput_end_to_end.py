@@ -39,6 +39,9 @@ class FoundryThroughputEndToEndTests(unittest.TestCase):
                     corpus_dir = "corpus/foundry"
                     TOML
                     }
+                    resolve_target_corpus_dir() {
+                      printf '%s/%s\\n' "${SCFUZZBENCH_WORKDIR}/target" "${1:-$2}"
+                    }
                     prepare_shared_seed_corpus() { :; }
                     clone_target() { :; }
                     apply_benchmark_type() { :; }

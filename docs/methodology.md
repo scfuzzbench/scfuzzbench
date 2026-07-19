@@ -100,7 +100,8 @@ Instances are intentionally one-shot:
 
 `benchmark_type` behavior is applied by `apply_benchmark_type` in `fuzzers/_shared/common.sh`:
 
-- Uses `SCFUZZBENCH_PROPERTIES_PATH` from `fuzzer_env` to locate the properties contract.
+- Uses the dedicated repo-relative `properties_path` input (exported internally as
+  `SCFUZZBENCH_PROPERTIES_PATH`) to locate the properties contract.
 - Applies deterministic `sed` transforms for `property` vs `optimization` mode.
 - If `optimization` is requested but required markers/files are missing, the run fails early.
 
@@ -112,7 +113,7 @@ Each instance uploads:
 - Optional corpus zip: `s3://<bucket>/corpus/<run_id>/<benchmark_uuid>/i-...-<fuzzer>.zip`
 - Benchmark manifest:
   - `logs/<run_id>/<benchmark_uuid>/manifest.json`
-  - `runs/<run_id>/<benchmark_uuid>/manifest.json` (timestamp-first index used by docs)
+  - `runs/<run_id>/<benchmark_uuid>/manifest.json` (opaque run index used by docs)
 - Per-leg `tool_provenance.json` inside the logs archive for opt-in binaries,
   including resolved commit and installed binary SHA-256
 - Shared-seed provenance, when configured:
@@ -128,12 +129,12 @@ manifest.
 
 Docs and release automation use the same completion rule:
 
-- `now >= run_id + (timeout_hours * 3600) + 3600`
+- `now >= run_started_at_epoch + (timeout_hours * 3600) + 3600`
 
 Notes:
 
-- `run_started_at_epoch` is used for isolated runs. Numeric legacy `run_id`
-  values remain a backward-compatible timestamp fallback.
+- `run_started_at_epoch` is required for opaque isolated run IDs. Numeric
+  legacy `run_id` values remain a backward-compatible timestamp fallback.
 - `timeout_hours` comes from `manifest.json` (default `24` if missing).
 - `3600` is a fixed 1-hour grace window.
 

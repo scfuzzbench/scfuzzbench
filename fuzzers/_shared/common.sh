@@ -281,17 +281,56 @@ prepare_workspace() {
   mkdir -p "${SCFUZZBENCH_ROOT}" "${SCFUZZBENCH_WORKDIR}" "${SCFUZZBENCH_LOG_DIR}"
 }
 
+resolve_target_corpus_dir() {
+  local configured=${1:-}
+  local default_relative=$2
+  local target_root
+  local candidate
+  if [[ -z "${configured}" ]]; then
+    configured="${default_relative}"
+  fi
+  if [[ "${configured}" == /* ]] \
+    || [[ ! "${configured}" =~ ^[A-Za-z0-9_.+/-]+$ ]] \
+    || [[ "/${configured}/" == *"/./"* ]] \
+    || [[ "/${configured}/" == *"/../"* ]]; then
+    log "Refusing unsafe corpus directory override: ${configured}"
+    return 1
+  fi
+  target_root=$(realpath -e -- "${SCFUZZBENCH_WORKDIR}/target") || {
+    log "Target workspace is missing while resolving corpus directory."
+    return 1
+  }
+  candidate=$(realpath -m -- "${target_root}/${configured}") || return 1
+  case "${candidate}" in
+    "${target_root}"/*)
+      printf '%s\n' "${candidate}"
+      ;;
+    *)
+      log "Refusing corpus directory outside target workspace: ${candidate}"
+      return 1
+      ;;
+  esac
+}
+
 prepare_shared_seed_corpus() {
   local corpus_dir="${SCFUZZBENCH_CORPUS_DIR:-}"
+  local target_root
   if [[ -z "${corpus_dir}" || "${corpus_dir}" != /* || "${corpus_dir}" == "/" ]]; then
     log "Refusing to reset unsafe corpus directory: ${corpus_dir:-<empty>}"
     return 1
   fi
-  corpus_dir=$(realpath -m -- "${corpus_dir}")
-  if [[ ! "${corpus_dir}" =~ ^/[^/]+/[^/]+ ]]; then
-    log "Refusing to reset unsafe corpus directory: ${corpus_dir}"
+  target_root=$(realpath -e -- "${SCFUZZBENCH_WORKDIR}/target") || {
+    log "Refusing corpus reset because target workspace is missing."
     return 1
-  fi
+  }
+  corpus_dir=$(realpath -m -- "${corpus_dir}")
+  case "${corpus_dir}" in
+    "${target_root}"/*) ;;
+    *)
+      log "Refusing corpus reset outside target workspace: ${corpus_dir}"
+      return 1
+      ;;
+  esac
   export SCFUZZBENCH_CORPUS_DIR="${corpus_dir}"
 
   local source="${SCFUZZBENCH_SEED_CORPUS_SOURCE:-}"

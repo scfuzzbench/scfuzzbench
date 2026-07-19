@@ -402,6 +402,8 @@ variable "fuzzer_env" {
         "SCFUZZBENCH_SEED_CORPUS_SOURCE",
         "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
         "SCFUZZBENCH_SEED_CORPUS_HELPER",
+        "SCFUZZBENCH_SEED_CORPUS_MAX_BYTES",
+        "SCFUZZBENCH_SEED_CORPUS_MAX_FILES",
         "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
         "SCFUZZBENCH_PROPERTIES_PATH",
       ], key)
@@ -417,30 +419,126 @@ variable "fuzzer_env" {
       "AWS_SECRET_ACCESS_KEY",
       "AWS_SESSION_TOKEN",
       "SCFUZZBENCH_AWS_CREDS_ENV_FILE",
+      "SCFUZZBENCH_AWS_CREDS_REFRESH_PID",
+      "SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS",
       "SCFUZZBENCH_BENCHMARK_MANIFEST_B64",
       "SCFUZZBENCH_BENCHMARK_TYPE",
       "SCFUZZBENCH_BENCHMARK_UUID",
       "SCFUZZBENCH_BIN_DIR",
+      "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION",
+      "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH",
       "SCFUZZBENCH_COMMIT",
+      "SCFUZZBENCH_COMMON_SH",
+      "SCFUZZBENCH_CORPUS_DIR",
       "SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE",
       "SCFUZZBENCH_FUZZER_KEY",
       "SCFUZZBENCH_FUZZER_LABEL",
+      "SCFUZZBENCH_GIT_TOKEN",
       "SCFUZZBENCH_GIT_TOKEN_SSM_PARAMETER",
+      "SCFUZZBENCH_INSTANCE_ID",
       "SCFUZZBENCH_LOCAL_MODE",
+      "SCFUZZBENCH_LOG_DIR",
       "SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS",
+      "SCFUZZBENCH_PRELIMINARY_PID",
+      "SCFUZZBENCH_PRELIMINARY_PID_START_TICKS",
       "SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT",
       "SCFUZZBENCH_REPO_URL",
       "SCFUZZBENCH_ROOT",
+      "SCFUZZBENCH_RUNNER_METRICS_PID",
       "SCFUZZBENCH_RUN_HEARTBEAT_SECONDS",
       "SCFUZZBENCH_RUN_ID",
       "SCFUZZBENCH_RUN_INDEX",
       "SCFUZZBENCH_RUN_STARTED_AT_EPOCH",
       "SCFUZZBENCH_S3_BUCKET",
       "SCFUZZBENCH_SHUTDOWN_GRACE_SECONDS",
+      "SCFUZZBENCH_TIMEOUT_GRACE_SECONDS",
       "SCFUZZBENCH_TIMEOUT_SECONDS",
+      "SCFUZZBENCH_UPLOAD_DONE",
       "SCFUZZBENCH_WORKDIR",
+      "SCFUZZBENCH_WORKERS_RESOLVED",
     ]))) == 0
     error_message = "fuzzer_env cannot override immutable runner identity, credentials, paths, or timing."
+  }
+
+  validation {
+    condition = alltrue([
+      for key in keys(var.fuzzer_env) : !startswith(key, "AWS_")
+    ])
+    error_message = "fuzzer_env cannot set AWS SDK credential, endpoint, or configuration variables."
+  }
+
+  validation {
+    condition = alltrue([
+      for key in keys(var.fuzzer_env) :
+      !startswith(key, "SCFUZZBENCH_") || contains([
+        "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS",
+        "SCFUZZBENCH_FOUNDRY_SHOWMAP",
+        "SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS",
+        "SCFUZZBENCH_RUNNER_METRICS",
+        "SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS",
+        "SCFUZZBENCH_WORKERS",
+      ], key)
+    ])
+    error_message = "fuzzer_env may set only the documented safe SCFUZZBENCH_* tuning variables."
+  }
+
+  validation {
+    condition = alltrue([
+      for key, value in var.fuzzer_env :
+      !contains([
+        "SCFUZZBENCH_FOUNDRY_SHOWMAP",
+        "SCFUZZBENCH_RUNNER_METRICS",
+        ], key) || contains(
+        ["0", "1", "false", "no", "off", "on", "true", "yes"],
+        lower(value),
+      )
+    ])
+    error_message = "SCFUZZBENCH_FOUNDRY_SHOWMAP and SCFUZZBENCH_RUNNER_METRICS must be boolean values."
+  }
+
+  validation {
+    condition = alltrue([
+      for key, value in var.fuzzer_env :
+      key != "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS" || contains(["0", "1"], value)
+    ])
+    error_message = "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS must be 0 or 1."
+  }
+
+  validation {
+    condition = alltrue([
+      for key, value in var.fuzzer_env :
+      !contains([
+        "SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS",
+        "SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS",
+        "SCFUZZBENCH_WORKERS",
+        ], key) || (
+        can(regex("^[0-9]+$", value)) &&
+        try(tonumber(value) >= 1, false) &&
+        try(tonumber(value) <= (
+          key == "SCFUZZBENCH_WORKERS" ? 256 :
+          key == "SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS" ? 300 :
+          3600
+        ), false)
+      )
+    ])
+    error_message = "Safe SCFUZZBENCH integer tunings are outside their allowed bounds."
+  }
+
+  validation {
+    condition = alltrue([
+      for key, value in var.fuzzer_env :
+      !contains([
+        "ECHIDNA_CORPUS_DIR",
+        "FOUNDRY_CORPUS_DIR",
+        "MEDUSA_CORPUS_DIR",
+        "RECON_CORPUS_DIR",
+        ], key) || value == "" || (
+        !startswith(value, "/") &&
+        can(regex("^[A-Za-z0-9_.+/-]+$", value)) &&
+        length(regexall("(^|/)\\.\\.?(/|$)", value)) == 0
+      )
+    ])
+    error_message = "Fuzzer corpus directory overrides must be safe repo-relative paths without '.' or '..' segments."
   }
 }
 

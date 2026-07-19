@@ -16,6 +16,9 @@ register_shutdown_trap() { :; }
 prepare_workspace() {
   mkdir -p "${SCFUZZBENCH_WORKDIR}/target" "${SCFUZZBENCH_LOG_DIR}"
 }
+resolve_target_corpus_dir() {
+  printf '%s/%s\\n' "${SCFUZZBENCH_WORKDIR}/target" "${1:-$2}"
+}
 prepare_shared_seed_corpus() { :; }
 clone_target() {
   printf 'shrinkLimit: 100000\\n' > "${SCFUZZBENCH_WORKDIR}/target/echidna.yaml"

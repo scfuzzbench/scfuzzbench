@@ -33,11 +33,9 @@ build_target
 
 repo_dir="${SCFUZZBENCH_WORKDIR}/target"
 log_file="${SCFUZZBENCH_LOG_DIR}/recon-fuzzer.log"
-default_corpus_dir="${repo_dir}/corpus/recon-fuzzer"
-corpus_dir="${RECON_CORPUS_DIR:-${ECHIDNA_CORPUS_DIR:-${default_corpus_dir}}}"
-if [[ "${corpus_dir}" != /* ]]; then
-  corpus_dir="${repo_dir}/${corpus_dir}"
-fi
+corpus_dir=$(resolve_target_corpus_dir \
+  "${RECON_CORPUS_DIR:-${ECHIDNA_CORPUS_DIR:-}}" \
+  "corpus/recon-fuzzer")
 export SCFUZZBENCH_CORPUS_DIR="${corpus_dir}"
 prepare_shared_seed_corpus
 

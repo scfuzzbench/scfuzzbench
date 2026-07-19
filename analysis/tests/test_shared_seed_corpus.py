@@ -190,9 +190,9 @@ else:
     ) -> subprocess.CompletedProcess[str]:
         workdir = root / "work"
         logdir = root / "logs"
-        corpus = root / "corpus"
         target = workdir / "target"
         target.mkdir(parents=True, exist_ok=True)
+        corpus = target / "corpus"
         corpus.mkdir(parents=True, exist_ok=True)
         env = {
             **os.environ,
@@ -217,8 +217,8 @@ else:
     def test_empty_default_resets_corpus_without_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            corpus = root / "corpus"
-            corpus.mkdir()
+            corpus = root / "work" / "target" / "corpus"
+            corpus.mkdir(parents=True)
             (corpus / ".stale").write_text("old")
 
             result = self.run_prepare(root)
@@ -226,6 +226,44 @@ else:
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual([], list(corpus.iterdir()))
             self.assertFalse((root / "logs" / "seed_corpus.json").exists())
+
+    def test_corpus_reset_refuses_paths_outside_target_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            protected = root / "protected"
+            protected.mkdir()
+            sentinel = protected / "do-not-delete"
+            sentinel.write_text("keep")
+
+            result = self.run_prepare(
+                root,
+                extra_env={"SCFUZZBENCH_CORPUS_DIR": str(protected)},
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("outside target workspace", result.stderr)
+            self.assertEqual("keep", sentinel.read_text())
+
+    def test_corpus_reset_refuses_symlink_escape_from_target_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "work" / "target"
+            target.mkdir(parents=True)
+            protected = root / "protected"
+            protected.mkdir()
+            sentinel = protected / "do-not-delete"
+            sentinel.write_text("keep")
+            escape = target / "corpus-escape"
+            escape.symlink_to(protected, target_is_directory=True)
+
+            result = self.run_prepare(
+                root,
+                extra_env={"SCFUZZBENCH_CORPUS_DIR": str(escape)},
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("outside target workspace", result.stderr)
+            self.assertEqual("keep", sentinel.read_text())
 
     def test_local_source_is_copied_and_recorded(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -240,11 +278,13 @@ else:
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual(
                 (source / "one.json").read_bytes(),
-                (root / "corpus" / "one.json").read_bytes(),
+                (root / "work" / "target" / "corpus" / "one.json").read_bytes(),
             )
             self.assertEqual(
                 (source / "nested" / "two.bin").read_bytes(),
-                (root / "corpus" / "nested" / "two.bin").read_bytes(),
+                (
+                    root / "work" / "target" / "corpus" / "nested" / "two.bin"
+                ).read_bytes(),
             )
             metadata = json.loads((root / "logs" / "seed_corpus.json").read_text())
             self.assertRegex(
@@ -299,7 +339,15 @@ else:
 
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual(
-                "{}\n", (root / "corpus" / "nested" / "seed.json").read_text()
+                "{}\n",
+                (
+                    root
+                    / "work"
+                    / "target"
+                    / "corpus"
+                    / "nested"
+                    / "seed.json"
+                ).read_text(),
             )
             metadata = json.loads((root / "logs" / "seed_corpus.json").read_text())
             self.assertEqual("s3://seed-bucket/corpora/v1", metadata["source"])
@@ -316,8 +364,8 @@ else:
             mock_source = root / "mock-s3"
             mock_source.mkdir()
             mock_bin = self.write_mock_aws(root)
-            corpus = root / "corpus"
-            corpus.mkdir()
+            corpus = root / "work" / "target" / "corpus"
+            corpus.mkdir(parents=True)
             (corpus / "existing").write_text("keep")
 
             result = self.run_prepare(
@@ -344,8 +392,8 @@ else:
             mock_source.mkdir()
             (mock_source / "seed").write_text("seed")
             mock_bin = self.write_mock_aws(root)
-            corpus = root / "corpus"
-            corpus.mkdir()
+            corpus = root / "work" / "target" / "corpus"
+            corpus.mkdir(parents=True)
             (corpus / "existing").write_text("keep")
 
             result = self.run_prepare(
@@ -372,8 +420,8 @@ else:
             source.mkdir()
             (source / "seed").write_text("seed")
             (source / "link").symlink_to(source / "seed")
-            corpus = root / "corpus"
-            corpus.mkdir()
+            corpus = root / "work" / "target" / "corpus"
+            corpus.mkdir(parents=True)
             (corpus / "existing").write_text("keep until valid input is staged")
 
             result = self.run_prepare(root, source=str(source))
@@ -468,13 +516,17 @@ else:
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual(
                 archive_bytes,
-                (root / "corpus" / "seeds.zip").read_bytes(),
+                (
+                    root / "work" / "target" / "corpus" / "seeds.zip"
+                ).read_bytes(),
             )
             self.assertEqual(
                 ["seeds.zip"],
                 [
                     entry.name
-                    for entry in (root / "corpus").iterdir()
+                    for entry in (
+                        root / "work" / "target" / "corpus"
+                    ).iterdir()
                 ],
             )
 
@@ -485,6 +537,11 @@ else:
                 1,
                 script.count("prepare_shared_seed_corpus"),
                 f"{fuzzer} must prepare the corpus exactly once",
+            )
+            self.assertEqual(
+                1,
+                script.count("resolve_target_corpus_dir"),
+                f"{fuzzer} must resolve corpus paths beneath the target",
             )
 
     def test_runtime_provenance_updates_manifest(self):

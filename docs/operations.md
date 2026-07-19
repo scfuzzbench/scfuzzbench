@@ -13,8 +13,9 @@ Set inputs via `-var`/`tfvars` (`TF_VAR_*` also works):
 - fuzzer versions (`foundry_git_repo`/`foundry_git_ref`, `echidna_version`, `medusa_version`, `recon_version`)
 - opt-in tool builds (`echidna_ci_*`, `medusa_git_*`, `medusa_go_*`; see below)
 - `git_token_ssm_parameter_name` (for private repos)
+- `properties_path` (optional repo-relative properties contract path)
 - `shared_seed_corpus_source` (optional directory or `s3://bucket/prefix`; empty by default)
-- `fuzzer_env` values such as `SCFUZZBENCH_PROPERTIES_PATH`
+- `fuzzer_env` (optional extra fuzzer settings; framework-owned, AWS, credential, path, and identity keys are rejected)
 
 Per-fuzzer environment variables are documented in `fuzzers/README.md`.
 
@@ -436,8 +437,8 @@ Peer-heuristic gaps are informational diagnostics rather than ground-truth failu
 Quick readiness checks:
 
 ```bash
-aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "logs/$BENCHMARK_UUID/$RUN_ID/" --max-keys 1000 --query 'KeyCount' --output text
-aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "corpus/$BENCHMARK_UUID/$RUN_ID/" --max-keys 1000 --query 'KeyCount' --output text
+aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "logs/$RUN_ID/$BENCHMARK_UUID/" --max-keys 1000 --query 'KeyCount' --output text
+aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "corpus/$RUN_ID/$BENCHMARK_UUID/" --max-keys 1000 --query 'KeyCount' --output text
 ```
 
 Download with explicit benchmark UUID when needed:

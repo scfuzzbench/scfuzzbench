@@ -36,11 +36,7 @@ rm -rf "${repo_dir}/cache/invariant" "${repo_dir}/cache/test-failures"
 
 # Expose the corpus dir so upload_results ships the foundry corpus like the other
 # legs (and so post-run showmap replays have something to replay downstream).
-default_corpus_dir="${repo_dir}/corpus/foundry"
-corpus_dir="${FOUNDRY_CORPUS_DIR:-${default_corpus_dir}}"
-if [[ "${corpus_dir}" != /* ]]; then
-  corpus_dir="${repo_dir}/${corpus_dir}"
-fi
+corpus_dir=$(resolve_target_corpus_dir "${FOUNDRY_CORPUS_DIR:-}" "corpus/foundry")
 export SCFUZZBENCH_CORPUS_DIR="${corpus_dir}"
 prepare_shared_seed_corpus
 

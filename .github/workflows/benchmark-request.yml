@@ -73,29 +73,60 @@ jobs:
               "AWS_SECRET_ACCESS_KEY",
               "AWS_SESSION_TOKEN",
               "SCFUZZBENCH_AWS_CREDS_ENV_FILE",
+              "SCFUZZBENCH_AWS_CREDS_REFRESH_PID",
+              "SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS",
               "SCFUZZBENCH_BENCHMARK_MANIFEST_B64",
               "SCFUZZBENCH_BENCHMARK_TYPE",
               "SCFUZZBENCH_BENCHMARK_UUID",
               "SCFUZZBENCH_BIN_DIR",
+              "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION",
+              "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH",
               "SCFUZZBENCH_COMMIT",
+              "SCFUZZBENCH_COMMON_SH",
+              "SCFUZZBENCH_CORPUS_DIR",
               "SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE",
               "SCFUZZBENCH_GIT_TOKEN_SSM_PARAMETER",
+              "SCFUZZBENCH_GIT_TOKEN",
               "SCFUZZBENCH_LOCAL_MODE",
               "SCFUZZBENCH_FUZZER_KEY",
               "SCFUZZBENCH_FUZZER_LABEL",
+              "SCFUZZBENCH_INSTANCE_ID",
+              "SCFUZZBENCH_LOG_DIR",
               "SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS",
+              "SCFUZZBENCH_PRELIMINARY_PID",
+              "SCFUZZBENCH_PRELIMINARY_PID_START_TICKS",
               "SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT",
               "SCFUZZBENCH_PROPERTIES_PATH",
               "SCFUZZBENCH_REPO_URL",
               "SCFUZZBENCH_ROOT",
+              "SCFUZZBENCH_RUNNER_METRICS_PID",
               "SCFUZZBENCH_RUN_HEARTBEAT_SECONDS",
               "SCFUZZBENCH_RUN_ID",
               "SCFUZZBENCH_RUN_INDEX",
               "SCFUZZBENCH_RUN_STARTED_AT_EPOCH",
               "SCFUZZBENCH_S3_BUCKET",
+              "SCFUZZBENCH_SEED_CORPUS_MAX_BYTES",
+              "SCFUZZBENCH_SEED_CORPUS_MAX_FILES",
               "SCFUZZBENCH_SHUTDOWN_GRACE_SECONDS",
+              "SCFUZZBENCH_TIMEOUT_GRACE_SECONDS",
               "SCFUZZBENCH_TIMEOUT_SECONDS",
+              "SCFUZZBENCH_UPLOAD_DONE",
               "SCFUZZBENCH_WORKDIR",
+              "SCFUZZBENCH_WORKERS_RESOLVED",
+            ]);
+            const SAFE_SCFUZZBENCH_FUZZER_ENV_KEYS = new Set([
+              "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS",
+              "SCFUZZBENCH_FOUNDRY_SHOWMAP",
+              "SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS",
+              "SCFUZZBENCH_RUNNER_METRICS",
+              "SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS",
+              "SCFUZZBENCH_WORKERS",
+            ]);
+            const CORPUS_OVERRIDE_ENV_KEYS = new Set([
+              "ECHIDNA_CORPUS_DIR",
+              "FOUNDRY_CORPUS_DIR",
+              "MEDUSA_CORPUS_DIR",
+              "RECON_CORPUS_DIR",
             ]);
 
             function uniq(arr) {
@@ -247,7 +278,13 @@ jobs:
 
               for (const k of keys) {
                 if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(k)) return fail(`Invalid fuzzer env key: ${k}`);
-                if (IMMUTABLE_FUZZER_ENV_KEYS.has(k)) return fail(`fuzzer_env_json may not override ${k}`);
+                if (
+                  k.startsWith("AWS_") ||
+                  (k.startsWith("SCFUZZBENCH_") && !SAFE_SCFUZZBENCH_FUZZER_ENV_KEYS.has(k)) ||
+                  IMMUTABLE_FUZZER_ENV_KEYS.has(k)
+                ) {
+                  return fail(`fuzzer_env_json may not override ${k}`);
+                }
                 if (protectedToolKeys.has(k)) {
                   return fail(`Use the dedicated benchmark request field instead of fuzzer_env_json for ${k}`);
                 }
@@ -258,6 +295,34 @@ jobs:
                 // Values are rendered into user-data as: export KEY="VALUE"
                 // Keep this conservative to avoid shell injection and quoting pitfalls.
                 if (/[\r\n"`$\\]/.test(v)) return fail(`Env value for ${k} contains a forbidden character`);
+                const booleanValues = new Set(["0", "1", "false", "no", "off", "on", "true", "yes"]);
+                if (
+                  (k === "SCFUZZBENCH_RUNNER_METRICS" || k === "SCFUZZBENCH_FOUNDRY_SHOWMAP") &&
+                  !booleanValues.has(v.toLowerCase())
+                ) return fail(`${k} must be a boolean value`);
+                if (k === "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS" && v !== "0" && v !== "1") {
+                  return fail(`${k} must be 0 or 1`);
+                }
+                const integerBounds = {
+                  SCFUZZBENCH_WORKERS: [1, 256],
+                  SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS: [1, 300],
+                  SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS: [1, 3600],
+                };
+                if (Object.hasOwn(integerBounds, k)) {
+                  const [minimum, maximum] = integerBounds[k];
+                  if (!/^[0-9]+$/.test(v) || Number(v) < minimum || Number(v) > maximum) {
+                    return fail(`${k} must be an integer in [${minimum}, ${maximum}]`);
+                  }
+                }
+                if (
+                  CORPUS_OVERRIDE_ENV_KEYS.has(k) &&
+                  v !== "" &&
+                  (
+                    v.startsWith("/") ||
+                    !/^[A-Za-z0-9_.+/-]+$/.test(v) ||
+                    /(^|\/)\.\.?(\/|$)/.test(v)
+                  )
+                ) return fail(`${k} must be a safe repo-relative path without dot segments`);
               }
               return ok(JSON.stringify(obj));
             }

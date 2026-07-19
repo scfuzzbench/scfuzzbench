@@ -1004,7 +1004,8 @@ jobs:
             python3 - <<'PY'
           import json
           import os
-          import re
+          from scripts.benchmark_run_state import validate_fuzzer_env_entry
+
           raw = os.environ["FUZZER_ENV_JSON"]
           try:
               obj = json.loads(raw)
@@ -1014,51 +1015,11 @@ jobs:
               raise SystemExit("fuzzer_env_json must be a JSON object")
           if len(obj) > 64:
               raise SystemExit("fuzzer_env_json has too many keys (max 64)")
-          key_re = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
-          forbidden = re.compile(r'[\r\n"`$\\\\]')
-          protected_tool_keys = {
-              "ECHIDNA_VERSION",
-              "ECHIDNA_CI_TOKEN",
-              "ECHIDNA_CI_TOKEN_SSM_PARAMETER",
-              "ECHIDNA_CI_REPO",
-              "ECHIDNA_CI_RUN_ID",
-              "ECHIDNA_CI_ARTIFACT_NAME",
-              "ECHIDNA_CI_ARTIFACT_SHA256",
-              "ECHIDNA_CI_COMMIT",
-              "ECHIDNA_CI_TOKEN_KMS_KEY_ARN",
-              "FOUNDRY_GIT_REPO",
-              "FOUNDRY_GIT_REF",
-              "FOUNDRY_VERSION",
-              "SCFUZZBENCH_FOUNDRY_SOURCE_PATCH",
-              "SCFUZZBENCH_BENCHMARK_TYPE",
-              "SCFUZZBENCH_PROPERTIES_PATH",
-              "MEDUSA_VERSION",
-              "MEDUSA_GIT_REPO",
-              "MEDUSA_GIT_REF",
-              "MEDUSA_GIT_COMMIT",
-              "MEDUSA_GO_VERSION",
-              "MEDUSA_GO_SHA256",
-              "RECON_VERSION",
-          }
-          reserved_seed_keys = {
-              "SCFUZZBENCH_SEED_CORPUS_SOURCE",
-              "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
-              "SCFUZZBENCH_SEED_CORPUS_HELPER",
-              "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
-          }
           for k, v in obj.items():
-              if not isinstance(k, str) or not key_re.match(k):
-                  raise SystemExit(f"Invalid env key: {k}")
-              if k in protected_tool_keys:
-                  raise SystemExit(f"Use the dedicated workflow input instead of fuzzer_env_json for {k}")
-              if k in reserved_seed_keys:
-                  raise SystemExit(f"fuzzer_env_json cannot override framework-owned seed variable: {k}")
-              if not isinstance(v, str):
-                  raise SystemExit(f"Env value for {k} must be a string")
-              if len(v) > 2000:
-                  raise SystemExit(f"Env value for {k} too long (max 2000 chars)")
-              if forbidden.search(v):
-                  raise SystemExit(f"Env value for {k} contains a forbidden character")
+              try:
+                  validate_fuzzer_env_entry(k, v)
+              except ValueError as exc:
+                  raise SystemExit(str(exc)) from exc
           PY
           fi
 

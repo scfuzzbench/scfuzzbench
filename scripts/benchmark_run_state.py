@@ -56,34 +56,65 @@ IMMUTABLE_FUZZER_ENV_KEYS = {
     "MEDUSA_VERSION",
     "RECON_VERSION",
     "SCFUZZBENCH_AWS_CREDS_ENV_FILE",
+    "SCFUZZBENCH_AWS_CREDS_REFRESH_PID",
+    "SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS",
     "SCFUZZBENCH_BENCHMARK_MANIFEST_B64",
     "SCFUZZBENCH_BENCHMARK_TYPE",
     "SCFUZZBENCH_BENCHMARK_UUID",
     "SCFUZZBENCH_BIN_DIR",
+    "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION",
+    "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH",
     "SCFUZZBENCH_COMMIT",
+    "SCFUZZBENCH_COMMON_SH",
+    "SCFUZZBENCH_CORPUS_DIR",
     "SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE",
     "SCFUZZBENCH_GIT_TOKEN_SSM_PARAMETER",
+    "SCFUZZBENCH_GIT_TOKEN",
     "SCFUZZBENCH_LOCAL_MODE",
     "SCFUZZBENCH_FUZZER_KEY",
     "SCFUZZBENCH_FUZZER_LABEL",
+    "SCFUZZBENCH_INSTANCE_ID",
+    "SCFUZZBENCH_LOG_DIR",
     "SCFUZZBENCH_FOUNDRY_SOURCE_PATCH",
     "SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS",
+    "SCFUZZBENCH_PRELIMINARY_PID",
+    "SCFUZZBENCH_PRELIMINARY_PID_START_TICKS",
     "SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT",
     "SCFUZZBENCH_PROPERTIES_PATH",
     "SCFUZZBENCH_REPO_URL",
     "SCFUZZBENCH_ROOT",
+    "SCFUZZBENCH_RUNNER_METRICS_PID",
     "SCFUZZBENCH_RUN_HEARTBEAT_SECONDS",
     "SCFUZZBENCH_RUN_ID",
     "SCFUZZBENCH_RUN_INDEX",
     "SCFUZZBENCH_RUN_STARTED_AT_EPOCH",
     "SCFUZZBENCH_S3_BUCKET",
     "SCFUZZBENCH_SEED_CORPUS_HELPER",
+    "SCFUZZBENCH_SEED_CORPUS_MAX_BYTES",
+    "SCFUZZBENCH_SEED_CORPUS_MAX_FILES",
     "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
     "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
     "SCFUZZBENCH_SEED_CORPUS_SOURCE",
     "SCFUZZBENCH_SHUTDOWN_GRACE_SECONDS",
+    "SCFUZZBENCH_TIMEOUT_GRACE_SECONDS",
     "SCFUZZBENCH_TIMEOUT_SECONDS",
+    "SCFUZZBENCH_UPLOAD_DONE",
     "SCFUZZBENCH_WORKDIR",
+    "SCFUZZBENCH_WORKERS_RESOLVED",
+}
+SAFE_SCFUZZBENCH_FUZZER_ENV_KEYS = {
+    "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS",
+    "SCFUZZBENCH_FOUNDRY_SHOWMAP",
+    "SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS",
+    "SCFUZZBENCH_RUNNER_METRICS",
+    "SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS",
+    "SCFUZZBENCH_WORKERS",
+}
+CORPUS_OVERRIDE_ENV_KEYS = {
+    "ECHIDNA_CORPUS_DIR",
+    "FOUNDRY_CORPUS_DIR",
+    "MEDUSA_CORPUS_DIR",
+    "RECON_CORPUS_DIR",
 }
 
 TAGGABLE_RUN_RESOURCE_TYPES = {
@@ -283,6 +314,54 @@ def normalize_tool_sources(values: dict[str, str]) -> dict[str, str]:
         or "dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858"
     )
     return output
+
+
+def validate_fuzzer_env_entry(key: Any, env_value: Any) -> None:
+    if not isinstance(key, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", key):
+        raise ValueError(f"invalid fuzzer environment key: {key!r}")
+    if key.startswith("AWS_"):
+        raise ValueError(f"fuzzer environment may not override {key}")
+    if (
+        key.startswith("SCFUZZBENCH_")
+        and key not in SAFE_SCFUZZBENCH_FUZZER_ENV_KEYS
+    ):
+        raise ValueError(f"fuzzer environment may not override {key}")
+    if key in IMMUTABLE_FUZZER_ENV_KEYS:
+        raise ValueError(f"fuzzer environment may not override {key}")
+    if not isinstance(env_value, str) or len(env_value) > 2000:
+        raise ValueError(f"invalid fuzzer environment value for {key}")
+    if re.search(r'[\r\n"`$\\]', env_value):
+        raise ValueError(f"invalid fuzzer environment value for {key}")
+
+    bool_values = {"0", "1", "false", "no", "off", "on", "true", "yes"}
+    if key in {
+        "SCFUZZBENCH_RUNNER_METRICS",
+        "SCFUZZBENCH_FOUNDRY_SHOWMAP",
+    } and env_value.lower() not in bool_values:
+        raise ValueError(f"{key} must be a boolean value")
+    if key == "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS" and env_value not in {"0", "1"}:
+        raise ValueError(f"{key} must be 0 or 1")
+    bounded_integers = {
+        "SCFUZZBENCH_WORKERS": (1, 256),
+        "SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS": (1, 300),
+        "SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS": (1, 3600),
+    }
+    if key in bounded_integers:
+        lower, upper = bounded_integers[key]
+        if (
+            not env_value.isdigit()
+            or not lower <= int(env_value) <= upper
+        ):
+            raise ValueError(f"{key} must be an integer in [{lower}, {upper}]")
+    if key in CORPUS_OVERRIDE_ENV_KEYS and env_value:
+        if (
+            env_value.startswith("/")
+            or not re.fullmatch(r"[A-Za-z0-9_.+/-]+", env_value)
+            or re.search(r"(^|/)\.\.?(/|$)", env_value)
+        ):
+            raise ValueError(
+                f"{key} must be a safe repo-relative path without dot segments"
+            )
 
 
 def validate_benchmark_inputs(values: dict[str, str]) -> dict[str, Any]:
@@ -519,20 +598,8 @@ def validate_benchmark_inputs(values: dict[str, str]) -> dict[str, Any]:
             raise ValueError(f"fuzzer_env_json must be valid JSON: {exc}") from exc
         if not isinstance(parsed_env, dict) or len(parsed_env) > 64:
             raise ValueError("fuzzer_env_json must be an object with at most 64 keys")
-        forbidden = re.compile(r'[\r\n"`$\\]')
         for key, env_value in parsed_env.items():
-            if not isinstance(key, str) or not re.fullmatch(
-                r"[A-Z][A-Z0-9_]{0,63}", key
-            ):
-                raise ValueError(f"invalid fuzzer environment key: {key!r}")
-            if key in IMMUTABLE_FUZZER_ENV_KEYS:
-                raise ValueError(f"fuzzer environment may not override {key}")
-            if (
-                not isinstance(env_value, str)
-                or len(env_value) > 2000
-                or forbidden.search(env_value)
-            ):
-                raise ValueError(f"invalid fuzzer environment value for {key}")
+            validate_fuzzer_env_entry(key, env_value)
         fuzzer_env = parsed_env
 
     return {
