@@ -151,8 +151,35 @@ variable "bucket_public_read" {
 
 variable "run_id" {
   type        = string
-  description = "Run identifier (defaults to unix timestamp at apply time)."
+  description = "Immutable run identifier. CI sets this before backend initialization."
   default     = ""
+
+  validation {
+    condition     = var.run_id == "" || can(regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$", var.run_id))
+    error_message = "run_id must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$."
+  }
+}
+
+variable "run_started_at_epoch" {
+  type        = number
+  description = "Unix timestamp generated with the immutable run identity before Terraform initialization."
+  default     = 0
+
+  validation {
+    condition     = var.run_started_at_epoch >= 0 && floor(var.run_started_at_epoch) == var.run_started_at_epoch
+    error_message = "run_started_at_epoch must be a non-negative integer."
+  }
+}
+
+variable "terraform_backend_key" {
+  type        = string
+  description = "Run-scoped remote-state key recorded in benchmark provenance."
+  default     = ""
+
+  validation {
+    condition     = var.terraform_backend_key == "" || can(regex("^runs/[A-Za-z0-9][A-Za-z0-9._-]{0,79}/terraform\\.tfstate$", var.terraform_backend_key))
+    error_message = "terraform_backend_key must use runs/<run_id>/terraform.tfstate."
+  }
 }
 
 variable "tags" {

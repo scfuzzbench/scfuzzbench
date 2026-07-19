@@ -25,13 +25,17 @@ In CI (`.github/workflows/benchmark-run.yml`), inputs are validated before apply
 
 ### 2) Compute run identity and benchmark identity
 
-Terraform computes two IDs used across the pipeline:
+CI creates run identity before Terraform initialization:
 
 - `run_id`:
-  - Explicit `var.run_id` if provided.
-  - Otherwise `time_static.run.unix` (state-stable; repeated applies can reuse it).
+  - Immutable `gh-<github_run_id>-<attempt>` for Actions dispatch.
+  - Used by state (`runs/<run_id>/terraform.tfstate`), AWS names/tags,
+    artifact prefixes, outputs, admission, and cleanup.
+- `run_started_at_epoch`:
+  - Explicit timestamp stored in the manifest because isolated run IDs are
+    opaque rather than timestamps.
 - `benchmark_uuid`:
-  - `md5(jsonencode(benchmark_manifest))` in `infrastructure/main.tf`.
+  - `md5(jsonencode(benchmark_definition))` in `infrastructure/main.tf`.
 
 `benchmark_manifest` includes pinned context such as:
 
@@ -40,7 +44,8 @@ Terraform computes two IDs used across the pipeline:
 - `aws_region`, `ubuntu_ami_id`
 - tool versions and selected `fuzzer_keys`
 
-This means changing any of those manifest fields changes `benchmark_uuid`.
+This means changing any benchmark-definition field changes `benchmark_uuid`;
+repeating the same definition under a new isolated run ID does not.
 
 ### 3) Provision equivalent runners
 
@@ -93,7 +98,8 @@ Docs and release automation use the same completion rule:
 
 Notes:
 
-- `run_id` is interpreted as a Unix timestamp.
+- `run_started_at_epoch` is used for isolated runs. Numeric legacy `run_id`
+  values remain a backward-compatible timestamp fallback.
 - `timeout_hours` comes from `manifest.json` (default `24` if missing).
 - `3600` is a fixed 1-hour grace window.
 
@@ -304,6 +310,8 @@ Suggested manifest fields per target:
   artifacts and are not directly comparable. Tracked in scfuzzbench#177; upstream support
   requested in Recon-Fuzz/recon-fuzzer.
 - `timeout_hours` applies to fuzzer execution; clone/build/setup occur before timed fuzzing starts.
-- Re-running Terraform without changing state can reuse `time_static` `run_id`; set explicit `run_id` for distinct runs.
+- CI retries use a new immutable run ID and backend key. Local runs should set
+  explicit `run_id`, `run_started_at_epoch`, and a matching dedicated backend
+  key.
 - Bucket defaults allow public object read (`bucket_public_read=true`) so docs/releases can link directly to S3 artifacts.
 - Keep secrets out of Terraform vars and docs; use SSM or environment-based secret handling.

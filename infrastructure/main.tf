@@ -1,15 +1,13 @@
 locals {
-  name_prefix = "scfuzzbench"
-  tags        = merge({ Project = "scfuzzbench" }, var.tags)
-
-  timeout_seconds = var.timeout_hours * 3600
-  run_id          = var.run_id != "" ? var.run_id : time_static.run.unix
+  timeout_seconds      = var.timeout_hours * 3600
+  run_id               = var.run_id != "" ? var.run_id : time_static.run.unix
+  run_started_at_epoch = var.run_started_at_epoch != 0 ? var.run_started_at_epoch : time_static.run.unix
 
   # Pick an AZ that supports the requested instance type to avoid flaky applies
   # when AWS auto-selects an AZ where the type isn't offered.
   subnet_availability_zone = var.availability_zone != "" ? var.availability_zone : sort(data.aws_ec2_instance_type_offerings.fuzzer.locations)[0]
 
-  benchmark_manifest = {
+  benchmark_definition = {
     scfuzzbench_commit   = var.scfuzzbench_commit
     target_repo_url      = var.target_repo_url
     target_commit        = var.target_commit
@@ -28,9 +26,27 @@ locals {
     fuzzer_keys          = sort([for fuzzer in local.fuzzer_definitions : fuzzer.key])
   }
 
+  benchmark_definition_json = jsonencode(local.benchmark_definition)
+  benchmark_uuid            = md5(local.benchmark_definition_json)
+  benchmark_manifest = merge(local.benchmark_definition, {
+    run_id                 = local.run_id
+    run_started_at_epoch   = local.run_started_at_epoch
+    terraform_backend_key  = var.terraform_backend_key
+    artifact_prefix        = "logs/${local.run_id}/${local.benchmark_uuid}"
+    run_state_metadata_key = "run-state/runs/${local.run_id}/metadata.json"
+  })
   benchmark_manifest_json = jsonencode(local.benchmark_manifest)
   benchmark_manifest_b64  = base64encode(local.benchmark_manifest_json)
-  benchmark_uuid          = md5(local.benchmark_manifest_json)
+
+  run_name_token = substr(replace(lower(tostring(local.run_id)), "/[^a-z0-9-]/", "-"), 0, 36)
+  name_prefix    = "scfuzzbench-${local.run_name_token}"
+  tags = merge(var.tags, {
+    Project       = "scfuzzbench"
+    RunId         = tostring(local.run_id)
+    BenchmarkUuid = local.benchmark_uuid
+    TargetRepo    = substr(var.target_repo_url, 0, 256)
+    TargetCommit  = substr(var.target_commit, 0, 256)
+  })
 
   default_fuzzer_env = {
     ECHIDNA_CONFIG     = "echidna.yaml"
@@ -120,6 +136,16 @@ resource "aws_vpc" "main" {
   enable_dns_support   = true
   enable_dns_hostnames = true
 
+  lifecycle {
+    precondition {
+      condition = (
+        var.terraform_backend_key == "" ||
+        var.terraform_backend_key == "runs/${local.run_id}/terraform.tfstate"
+      )
+      error_message = "terraform_backend_key must be derived from the same run_id."
+    }
+  }
+
   tags = merge(local.tags, {
     Name = "${local.name_prefix}-vpc"
   })
@@ -197,9 +223,9 @@ resource "aws_s3_bucket" "logs" {
 }
 
 resource "aws_s3_bucket_public_access_block" "logs" {
-  count = local.bucket_name != "" ? 1 : 0
+  count = length(aws_s3_bucket.logs)
 
-  bucket                  = local.bucket_name
+  bucket                  = aws_s3_bucket.logs[count.index].id
   block_public_acls       = !var.bucket_public_read
   block_public_policy     = !var.bucket_public_read
   ignore_public_acls      = !var.bucket_public_read
@@ -277,14 +303,33 @@ data "aws_iam_policy_document" "s3_access" {
     actions = [
       "s3:PutObject",
       "s3:AbortMultipartUpload",
-      "s3:ListBucket",
-      "s3:GetBucketLocation",
     ]
 
     resources = [
-      "arn:aws:s3:::${local.bucket_name}",
-      "arn:aws:s3:::${local.bucket_name}/*",
+      "arn:aws:s3:::${local.bucket_name}/logs/${local.run_id}/${local.benchmark_uuid}/*",
+      "arn:aws:s3:::${local.bucket_name}/corpus/${local.run_id}/${local.benchmark_uuid}/*",
+      "arn:aws:s3:::${local.bucket_name}/runs/${local.run_id}/${local.benchmark_uuid}/*",
     ]
+  }
+
+  statement {
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::${local.bucket_name}"]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values = [
+        "logs/${local.run_id}/${local.benchmark_uuid}/*",
+        "corpus/${local.run_id}/${local.benchmark_uuid}/*",
+        "runs/${local.run_id}/${local.benchmark_uuid}/*",
+      ]
+    }
+  }
+
+  statement {
+    actions   = ["s3:GetBucketLocation"]
+    resources = ["arn:aws:s3:::${local.bucket_name}"]
   }
 
   dynamic "statement" {
@@ -315,9 +360,9 @@ data "aws_iam_policy_document" "public_read" {
 }
 
 resource "aws_s3_bucket_policy" "public_read" {
-  count = var.bucket_public_read ? 1 : 0
+  count = var.bucket_public_read && length(aws_s3_bucket.logs) > 0 ? 1 : 0
 
-  bucket = local.bucket_name
+  bucket = aws_s3_bucket.logs[0].id
   policy = data.aws_iam_policy_document.public_read[0].json
 }
 
@@ -330,6 +375,7 @@ resource "aws_iam_role_policy" "s3_access" {
 resource "aws_iam_instance_profile" "fuzzer" {
   name = "${local.name_prefix}-profile-${random_id.suffix.hex}"
   role = aws_iam_role.fuzzer.name
+  tags = local.tags
 }
 
 resource "aws_instance" "fuzzer" {
@@ -372,6 +418,9 @@ resource "aws_instance" "fuzzer" {
   root_block_device {
     volume_size = var.root_volume_size_gb
     volume_type = "gp3"
+    tags = merge(local.tags, {
+      Name = "${local.name_prefix}-${each.value.fuzzer.key}-${each.value.run_index}-root"
+    })
   }
 
   metadata_options {

@@ -1,8 +1,9 @@
 # Copy to backend.hcl (ignored by git) and fill values.
-# Use a dedicated bucket/table for state.
+# Use a dedicated bucket/table for state. CI overrides `key` with
+# runs/<run_id>/terraform.tfstate after generating the immutable run ID.
 
 bucket         = "scfuzzbench-terraform-state"
-key            = "scfuzzbench/terraform.tfstate"
+key            = "runs/local-example/terraform.tfstate"
 region         = "us-east-1"
 dynamodb_table = "scfuzzbench-terraform-locks"
 encrypt        = true

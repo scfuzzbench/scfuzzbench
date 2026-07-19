@@ -174,7 +174,7 @@ on:
         required: false
     outputs:
       run_id:
-        description: "Run ID (Unix timestamp)."
+        description: "Immutable run ID generated before Terraform init."
         value: ${{ jobs.benchmark-run.outputs.run_id }}
       benchmark_uuid:
         description: "Benchmark UUID (derived from manifest)."
@@ -183,12 +183,193 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: scfuzzbench-shared-terraform
-
 jobs:
-  benchmark-run:
+  prepare-run:
     runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.identity.outputs.run_id }}
+      run_started_at_epoch: ${{ steps.identity.outputs.run_started_at_epoch }}
+      terraform_backend_key: ${{ steps.identity.outputs.terraform_backend_key }}
+      reservation_key: ${{ steps.identity.outputs.reservation_key }}
+      metadata_key: ${{ steps.identity.outputs.metadata_key }}
+      cleanup_tfvars_key: ${{ steps.identity.outputs.cleanup_tfvars_key }}
+    steps:
+      - name: Checkout (tarball)
+        timeout-minutes: 5
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          url="https://codeload.github.com/${REPO}/tar.gz/${SHA}"
+          curl -fsSL "${url}" -o repo.tar.gz
+          topdir="$(tar -tzf repo.tar.gz | sed -n '1p' | cut -d/ -f1)"
+          tar -xzf repo.tar.gz
+          shopt -s dotglob
+          mv "${topdir}"/* .
+          rm -rf "${topdir}" repo.tar.gz
+
+      - name: Generate immutable run identity
+        id: identity
+        env:
+          GITHUB_RUN_ATTEMPT_VALUE: ${{ github.run_attempt }}
+          GITHUB_RUN_ID_VALUE: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py identity \
+            --github-run-id "${GITHUB_RUN_ID_VALUE}" \
+            --github-run-attempt "${GITHUB_RUN_ATTEMPT_VALUE}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Require external shared infrastructure
+        if: ${{ !inputs.dry_run }}
+        env:
+          SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
+          TF_BACKEND_CONFIG: ${{ secrets.TF_BACKEND_CONFIG }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SCFUZZBENCH_BUCKET}" ]]; then
+            echo "SCFUZZBENCH_BUCKET must name a pre-existing shared artifact bucket." >&2
+            exit 1
+          fi
+          if [[ -z "${TF_BACKEND_CONFIG}" ]]; then
+            echo "TF_BACKEND_CONFIG must configure the pre-existing state bucket and lock table." >&2
+            exit 1
+          fi
+
+  admission:
+    needs: prepare-run
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: scfuzzbench-run-admission
+      cancel-in-progress: false
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
+      MAX_CONCURRENT_RUNS: ${{ vars.SCFUZZBENCH_MAX_CONCURRENT_RUNS || '1' }}
+      SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
+    steps:
+      - name: Checkout (tarball)
+        timeout-minutes: 5
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          url="https://codeload.github.com/${REPO}/tar.gz/${SHA}"
+          curl -fsSL "${url}" -o repo.tar.gz
+          topdir="$(tar -tzf repo.tar.gz | sed -n '1p' | cut -d/ -f1)"
+          tar -xzf repo.tar.gz
+          shopt -s dotglob
+          mv "${topdir}"/* .
+          rm -rf "${topdir}" repo.tar.gz
+
+      - name: Configure AWS credentials (keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Prepare recoverable run metadata
+        env:
+          BENCHMARK_TYPE: ${{ inputs.benchmark_type }}
+          CLEANUP_TFVARS_KEY: ${{ needs.prepare-run.outputs.cleanup_tfvars_key }}
+          FUZZERS_JSON: ${{ inputs.fuzzers_json }}
+          INSTANCE_TYPE: ${{ inputs.instance_type }}
+          INSTANCES_PER_FUZZER: ${{ inputs.instances_per_fuzzer }}
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+          RUN_STARTED_AT_EPOCH: ${{ needs.prepare-run.outputs.run_started_at_epoch }}
+          TARGET_COMMIT: ${{ inputs.target_commit }}
+          TARGET_REPO_URL: ${{ inputs.target_repo_url }}
+          TERRAFORM_BACKEND_KEY: ${{ needs.prepare-run.outputs.terraform_backend_key }}
+          TIMEOUT_HOURS: ${{ inputs.timeout_hours }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          fuzzers_raw = os.environ.get("FUZZERS_JSON", "").strip()
+          fuzzers = json.loads(fuzzers_raw or '["echidna","medusa","foundry","recon-fuzzer"]')
+          started = int(os.environ["RUN_STARTED_AT_EPOCH"])
+          timeout_hours = float(os.environ["TIMEOUT_HOURS"])
+          reservation = {
+              "schema_version": 1,
+              "status": "reserved",
+              "run_id": os.environ["RUN_ID"],
+              "run_started_at_epoch": started,
+              "terraform_backend_key": os.environ["TERRAFORM_BACKEND_KEY"],
+              "target_repo_url": os.environ["TARGET_REPO_URL"],
+              "target_commit": os.environ["TARGET_COMMIT"],
+              "benchmark_type": os.environ["BENCHMARK_TYPE"],
+              "instance_type": os.environ["INSTANCE_TYPE"],
+              "instances_per_fuzzer": int(os.environ["INSTANCES_PER_FUZZER"]),
+              "timeout_hours": timeout_hours,
+              "fuzzers": fuzzers,
+              "benchmark_uuid": "",
+              "github_repository": os.environ["GITHUB_REPOSITORY"],
+              "github_run_id": os.environ["GITHUB_RUN_ID"],
+              "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "workflow_url": (
+                  f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+                  f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+              ),
+              # The normal path cleans as soon as all final archives exist and
+              # instances are terminal. This deadline is only orphan recovery.
+              "orphan_after_epoch": started + math.ceil(timeout_hours * 3600) + 3 * 3600,
+          }
+          cleanup_tfvars = {
+              "aws_region": os.environ["AWS_REGION"],
+              "existing_bucket_name": os.environ["SCFUZZBENCH_BUCKET"],
+              "target_repo_url": os.environ["TARGET_REPO_URL"],
+              "target_commit": os.environ["TARGET_COMMIT"],
+              "benchmark_type": os.environ["BENCHMARK_TYPE"],
+              "instance_type": os.environ["INSTANCE_TYPE"],
+              "instances_per_fuzzer": int(os.environ["INSTANCES_PER_FUZZER"]),
+              "timeout_hours": timeout_hours,
+              "fuzzers": fuzzers,
+              "run_id": os.environ["RUN_ID"],
+              "run_started_at_epoch": started,
+              "terraform_backend_key": os.environ["TERRAFORM_BACKEND_KEY"],
+              "scfuzzbench_commit": os.environ["GITHUB_SHA"],
+          }
+          Path("reservation.json").write_text(
+              json.dumps(reservation, indent=2, sort_keys=True) + "\n"
+          )
+          Path("cleanup.auto.tfvars.json").write_text(
+              json.dumps(cleanup_tfvars, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+          aws s3 cp cleanup.auto.tfvars.json \
+            "s3://${SCFUZZBENCH_BUCKET}/${CLEANUP_TFVARS_KEY}" \
+            --only-show-errors --content-type application/json
+
+      - name: Atomically reserve repository run capacity
+        env:
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py admit \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --max-concurrent-runs "${MAX_CONCURRENT_RUNS}" \
+            --reservation-file reservation.json
+          {
+            echo "Run admission reserved."
+            echo ""
+            echo "- Run ID: ${RUN_ID}"
+            echo "- Maximum concurrent runs: ${MAX_CONCURRENT_RUNS}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  benchmark-run:
+    needs: [prepare-run, admission]
+    if: ${{ always() && needs.prepare-run.result == 'success' && (inputs.dry_run || needs.admission.result == 'success') }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: scfuzzbench-run-${{ needs.prepare-run.outputs.run_id }}
+      cancel-in-progress: false
     outputs:
       run_id: ${{ steps.tf_outputs.outputs.run_id }}
       benchmark_uuid: ${{ steps.tf_outputs.outputs.benchmark_uuid }}
@@ -241,18 +422,21 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Ensure no benchmark instances are active
+      - name: Ensure this run identity has no active instances
         if: ${{ !inputs.dry_run }}
+        env:
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
         run: |
           set -euo pipefail
           active_instances=$(aws ec2 describe-instances \
             --filters \
               "Name=tag:Project,Values=scfuzzbench" \
+              "Name=tag:RunId,Values=${RUN_ID}" \
               "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped" \
             --query 'Reservations[].Instances[].InstanceId' \
             --output json)
           if [[ "$(jq 'length' <<<"${active_instances}")" != "0" ]]; then
-            echo "Another benchmark still has active instances:" >&2
+            echo "Run identity ${RUN_ID} already has active instances:" >&2
             jq -r '.[]' <<<"${active_instances}" >&2
             exit 1
           fi
@@ -277,7 +461,31 @@ jobs:
 
       - name: Terraform init (remote backend)
         if: ${{ !inputs.dry_run }}
-        run: make terraform-init-backend BACKEND_CONFIG=backend.hcl
+        env:
+          TERRAFORM_BACKEND_KEY: ${{ needs.prepare-run.outputs.terraform_backend_key }}
+        run: |
+          set -euo pipefail
+          make terraform-init-backend \
+            BACKEND_CONFIG=backend.hcl \
+            BACKEND_KEY="${TERRAFORM_BACKEND_KEY}" \
+            BACKEND_INIT_FLAGS="-reconfigure -input=false"
+
+      - name: Require a fresh run state
+        if: ${{ !inputs.dry_run }}
+        env:
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          existing_state=$(terraform -chdir=infrastructure state list 2>state-list.err || true)
+          if [[ -n "${existing_state}" ]]; then
+            echo "Fresh run ${RUN_ID} unexpectedly has existing Terraform resources:" >&2
+            printf '%s\n' "${existing_state}" >&2
+            exit 1
+          fi
+          if [[ -s state-list.err ]] && ! grep -q "No state file was found" state-list.err; then
+            cat state-list.err >&2
+            exit 1
+          fi
 
       - name: Validate inputs
         env:
@@ -483,9 +691,11 @@ jobs:
           GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
           FUZZER_ENV_JSON: ${{ inputs.fuzzer_env_json }}
           PROPERTIES_PATH: ${{ inputs.properties_path }}
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+          RUN_STARTED_AT_EPOCH: ${{ needs.prepare-run.outputs.run_started_at_epoch }}
+          TERRAFORM_BACKEND_KEY: ${{ needs.prepare-run.outputs.terraform_backend_key }}
         run: |
           set -euo pipefail
-          run_id=$(date +%s)
           fuzzers="${FUZZERS_JSON:-}"
           if [[ -z "${fuzzers}" ]]; then
             fuzzers='["echidna","medusa","foundry","recon-fuzzer"]'
@@ -500,7 +710,9 @@ jobs:
             -var "instances_per_fuzzer=${INSTANCES_PER_FUZZER}"
             -var "timeout_hours=${TIMEOUT_HOURS}"
             -var "fuzzers=${fuzzers}"
-            -var "run_id=${run_id}"
+            -var "run_id=${RUN_ID}"
+            -var "run_started_at_epoch=${RUN_STARTED_AT_EPOCH}"
+            -var "terraform_backend_key=${TERRAFORM_BACKEND_KEY}"
             -var "scfuzzbench_commit=${GITHUB_SHA}"
           )
 
@@ -544,27 +756,78 @@ jobs:
             tf_args+=(-var "fuzzer_env=${merged}")
           fi
 
-          terraform -chdir=infrastructure apply -auto-approve "${tf_args[@]}"
-          echo "run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+          terraform -chdir=infrastructure plan \
+            -input=false \
+            -out=run.tfplan \
+            "${tf_args[@]}"
+          terraform -chdir=infrastructure show -json run.tfplan > run.tfplan.json
+          python3 scripts/benchmark_run_state.py validate-plan \
+            --plan-json run.tfplan.json \
+            --mode apply \
+            --run-id "${RUN_ID}"
+          terraform -chdir=infrastructure apply -auto-approve -input=false run.tfplan
+          echo "run_id=${RUN_ID}" >> "${GITHUB_OUTPUT}"
 
       - name: Collect Terraform outputs
         id: tf_outputs
         if: ${{ !inputs.dry_run }}
+        env:
+          EXPECTED_BACKEND_KEY: ${{ needs.prepare-run.outputs.terraform_backend_key }}
+          EXPECTED_RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
         run: |
+          set -euo pipefail
           terraform -chdir=infrastructure output -json > run_metadata.json
           run_id=$(jq -r '.run_id.value' run_metadata.json)
           benchmark_uuid=$(jq -r '.benchmark_uuid.value' run_metadata.json)
+          backend_key=$(jq -r '.terraform_backend_key.value' run_metadata.json)
+          if [[ "${run_id}" != "${EXPECTED_RUN_ID}" ]]; then
+            echo "Terraform output run_id ${run_id} does not match ${EXPECTED_RUN_ID}." >&2
+            exit 1
+          fi
+          if [[ "${backend_key}" != "${EXPECTED_BACKEND_KEY}" ]]; then
+            echo "Terraform output backend key ${backend_key} does not match ${EXPECTED_BACKEND_KEY}." >&2
+            exit 1
+          fi
           {
             echo "run_id=${run_id}"
             echo "benchmark_uuid=${benchmark_uuid}"
           } >> "${GITHUB_OUTPUT}"
 
+      - name: Record running state and recovery outputs
+        if: ${{ !inputs.dry_run }}
+        env:
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py mark-running \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${RUN_ID}" \
+            --terraform-outputs run_metadata.json \
+            --output run-state-metadata.json
+
+      - name: Record recoverable provisioning failure
+        if: ${{ failure() && !inputs.dry_run && needs.admission.result == 'success' }}
+        env:
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e
+          if [[ -f scripts/benchmark_run_state.py ]]; then
+            python3 scripts/benchmark_run_state.py mark-failed \
+              --bucket "${SCFUZZBENCH_BUCKET}" \
+              --run-id "${RUN_ID}" \
+              --workflow-url "${WORKFLOW_URL}" \
+              --output run-state-metadata.json
+          fi
+
       - name: Upload run metadata
         if: ${{ !inputs.dry_run }}
         uses: actions/upload-artifact@v4
         with:
-          name: run-metadata
-          path: run_metadata.json
+          name: run-metadata-${{ needs.prepare-run.outputs.run_id }}
+          path: |
+            run_metadata.json
+            run-state-metadata.json
 
       - name: Summary
         run: |
@@ -581,5 +844,7 @@ jobs:
               echo ""
               echo "- Run ID: ${{ steps.tf_outputs.outputs.run_id }}"
               echo "- Benchmark UUID: ${{ steps.tf_outputs.outputs.benchmark_uuid }}"
+              echo "- Terraform backend key: ${{ needs.prepare-run.outputs.terraform_backend_key }}"
+              echo "- Cleanup is asynchronous; this job does not wait for the fuzzing duration."
             } >> "${GITHUB_STEP_SUMMARY}"
           fi

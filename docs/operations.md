@@ -46,19 +46,60 @@ v1.7.1 predate #14482, so keep the commit pin until a stable release ships both.
 consumes upstream's `event: failure` JSON pulse events. Override `TF_VAR_foundry_git_repo` /
 `TF_VAR_foundry_git_ref` only for experiments.
 
-## One Run At A Time
+## Isolated Runs And Admission
 
-All benchmark dispatches share a single Terraform state and the same
-`aws_instance.fuzzer["<fuzzer>-<index>"]` resource addresses with
-`user_data_replace_on_change = true`. Applying a new run while a previous run's
-instances are still fuzzing plans a destroy/recreate of those instances and
-kills the in-flight run. **Dispatch runs strictly sequentially**: wait until a
-run's instances have self-terminated (timeout + upload, plus the Foundry source
-build before the fuzz window) before approving or dispatching the next one.
+Each approved [benchmark request](start.md) remains one target and one short
+dispatch workflow. Before Terraform initializes, the workflow creates an
+immutable ID such as `gh-123456789-1` and forces the backend key to
+`runs/<run_id>/terraform.tfstate`. `terraform init` uses `-reconfigure`; it
+never migrates or copies the legacy `scfuzzbench/terraform.tfstate`.
 
-Create one [benchmark request](start.md) per target and apply
-`benchmark/03-approved` to only one request at a time. The shared-state CI guard
-rejects a new apply while benchmark instances remain active.
+The artifact bucket and state backend are pre-existing shared infrastructure.
+Cloud dispatch hard-requires `SCFUZZBENCH_BUCKET` and `TF_BACKEND_CONFIG`.
+Because `existing_bucket_name` is always set, a run plan owns no S3 bucket,
+bucket policy, or public-access configuration. A plan guard rejects shared S3
+resources before apply or cleanup.
+
+Admission is intentionally conservative:
+
+- Repository variable `SCFUZZBENCH_MAX_CONCURRENT_RUNS` sets the limit; unset
+  means `1`, and supported values are `1` through `20`.
+- A short job-level concurrency group serializes only the capacity decision.
+  Inside it, the workflow counts active S3 reservations and active
+  `Project=scfuzzbench` EC2 instances, then writes one reservation object.
+- The admission job releases its Actions lock immediately. It does not wait for
+  provisioning or fuzzing.
+- Active legacy instances without `RunId` are each counted conservatively.
+
+Keep the default at `1` until AWS vCPU quota and the full per-run EC2 cost have
+been reviewed. Increasing the variable is the explicit parallel-run opt-in.
+Run-owned AWS resources use run-scoped names and carry `Project`, `RunId`,
+`BenchmarkUuid`, `TargetRepo`, and `TargetCommit` tags where AWS supports tags.
+
+### Asynchronous cleanup and recovery
+
+`Benchmark Run Cleanup` runs hourly and can be dispatched manually. It cleans a
+run when all expected final log archives exist and its instances are terminal.
+After timeout plus a three-hour recovery margin, the same workflow treats an
+unfinished reservation as an orphan and attempts cleanup.
+
+Cleanup initializes only the backend key recorded for that run. Before destroy
+it verifies the state output (when present), rejects create/update or shared-S3
+changes, and checks every taggable resource in the plan has the same `RunId`.
+Only the saved, verified destroy plan is applied. Capacity is released only
+after no same-run EC2 instance remains.
+
+Recovery metadata is retained at:
+
+```text
+run-state/runs/<run_id>/metadata.json
+run-state/runs/<run_id>/cleanup.auto.tfvars.json
+```
+
+The empty post-destroy state remains at its versioned backend key. Failed
+provisioning keeps its active reservation and recovery inputs, so a maintainer
+can use `Benchmark Run Cleanup` (force orphan cleanup when justified) or
+`Terraform Run Recovery`. Neither workflow targets another run's key.
 
 ## Foundry Log Visibility
 
@@ -74,13 +115,10 @@ emit named `event: failure` JSON records mid-campaign either way.
 
 ## Re-run A Benchmark
 
-Runners are one-shot. To execute again with a fresh run prefix:
-
-```bash
-export TF_VAR_run_id="$(date +%s)"
-make terraform-destroy-infra TF_ARGS="-auto-approve -input=false"
-make terraform-deploy TF_ARGS="-auto-approve -input=false"
-```
+Runners are one-shot. In CI, approve a new benchmark-request issue (or retry as
+a new Actions attempt); it receives a new immutable run ID and state key.
+For local-only Terraform use, set a distinct `TF_VAR_run_id` and
+`TF_VAR_run_started_at_epoch` before initializing its dedicated backend key.
 
 ## Remote State Backend
 
@@ -102,15 +140,21 @@ aws dynamodb create-table \
 cp infrastructure/backend.hcl.template infrastructure/backend.hcl
 ```
 
-3. Initialize and migrate:
+3. Initialize a dedicated run key:
 
 ```bash
-make terraform-init-backend
+RUN_ID="local-$(date +%s)"
+make terraform-init-backend BACKEND_KEY="runs/${RUN_ID}/terraform.tfstate"
 ```
+
+The default init flags are `-reconfigure -input=false`. State migration is
+never implicit. If the legacy key exists, leave it and its shared resources
+untouched; do not pass `-migrate-state` for a new run key.
 
 ## Bucket Reuse
 
-To reuse a long-lived logs bucket, set `EXISTING_BUCKET=<bucket-name>`.
+Cloud runs always reuse a long-lived logs bucket. For local runs, set
+`EXISTING_BUCKET=<bucket-name>` so the run state cannot own that bucket.
 
 If state still tracks bucket resources from an older deployment, remove them before switching:
 

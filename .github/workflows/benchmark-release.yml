@@ -147,8 +147,10 @@ jobs:
                   except Exception:
                       timeout_hours = 24.0
                   try:
-                      run_start = int(run_id)
-                  except ValueError:
+                      run_start = int(manifest.get("run_started_at_epoch", run_id))
+                  except (TypeError, ValueError):
+                      # New isolated run IDs are opaque; their manifests must
+                      # carry the timestamp. Numeric legacy IDs remain valid.
                       continue
                   if now >= run_start + int(timeout_hours * 3600) + grace:
                       runs.append(

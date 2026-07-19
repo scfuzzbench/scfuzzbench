@@ -1,4 +1,4 @@
-name: Terraform CD
+name: Terraform Run Recovery
 
 on:
   workflow_dispatch:
@@ -9,30 +9,32 @@ on:
         type: choice
         options:
           - plan
-          - apply
           - destroy
         default: plan
+      run_id:
+        description: "Immutable run ID to inspect or clean up."
+        required: true
       tf_args:
         description: "Extra Terraform arguments passed via TF_ARGS"
         required: false
         default: ""
       existing_bucket:
-        description: "Existing S3 bucket name (optional)"
-        required: false
-        default: ""
+        description: "Pre-existing shared artifact bucket."
+        required: true
 
 permissions:
   contents: read
 
-concurrency:
-  group: scfuzzbench-shared-terraform
-
 jobs:
   terraform:
     runs-on: ubuntu-latest
-    environment: ${{ (inputs.action == 'apply' || inputs.action == 'destroy') && 'production' || 'plan' }}
+    environment: ${{ inputs.action == 'destroy' && 'production' || 'plan' }}
+    concurrency:
+      group: scfuzzbench-run-${{ inputs.run_id }}
+      cancel-in-progress: false
     env:
       AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
+      SCFUZZBENCH_BUCKET: ${{ inputs.existing_bucket }}
     steps:
       - name: Checkout (tarball)
         timeout-minutes: 5
@@ -68,24 +70,6 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Ensure no benchmark instances are active
-        if: ${{ inputs.action == 'apply' }}
-        run: |
-          set -euo pipefail
-          active_instances=$(aws ec2 describe-instances \
-            --filters \
-              "Name=tag:Project,Values=scfuzzbench" \
-              "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped" \
-            --query 'Reservations[].Instances[].InstanceId' \
-            --output json)
-          if [[ "$(jq 'length' <<<"${active_instances}")" != "0" ]]; then
-            echo "A benchmark still has active instances; refusing Terraform ${INPUT_ACTION}." >&2
-            jq -r '.[]' <<<"${active_instances}" >&2
-            exit 1
-          fi
-        env:
-          INPUT_ACTION: ${{ inputs.action }}
-
       - name: Write backend config from secret
         env:
           TF_BACKEND_CONFIG: ${{ secrets.TF_BACKEND_CONFIG }}
@@ -103,21 +87,82 @@ jobs:
           fi
 
       - name: Terraform init (remote backend)
-        run: make terraform-init-backend BACKEND_CONFIG=backend.hcl
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          backend_key=$(python3 - "${RUN_ID}" <<'PY'
+          import sys
+          from scripts.benchmark_run_state import backend_key_for
 
-      - name: Terraform ${{ inputs.action }}
+          print(backend_key_for(sys.argv[1]))
+          PY
+          )
+          make terraform-init-backend \
+            BACKEND_CONFIG=backend.hcl \
+            BACKEND_KEY="${backend_key}" \
+            BACKEND_INIT_FLAGS="-reconfigure -input=false"
+
+      - name: Fetch same-run recovery inputs
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          aws s3 cp \
+            "s3://${SCFUZZBENCH_BUCKET}/run-state/runs/${RUN_ID}/cleanup.auto.tfvars.json" \
+            infrastructure/cleanup.auto.tfvars.json \
+            --only-show-errors
+
+      - name: Terraform ${{ inputs.action }} for this run
         env:
           TF_ARGS: ${{ inputs.tf_args }}
-          EXISTING_BUCKET: ${{ inputs.existing_bucket }}
+          RUN_ID: ${{ inputs.run_id }}
         run: |
+          set -euo pipefail
+          read -r -a extra_args <<< "${TF_ARGS}"
           case "${{ inputs.action }}" in
             plan)
-              make terraform-plan
-              ;;
-            apply)
-              make terraform-deploy
+              terraform -chdir=infrastructure plan \
+                -input=false \
+                -var-file=cleanup.auto.tfvars.json \
+                "${extra_args[@]}"
               ;;
             destroy)
-              make terraform-destroy
+              terraform -chdir=infrastructure plan \
+                -destroy \
+                -input=false \
+                -var-file=cleanup.auto.tfvars.json \
+                -out=cleanup.tfplan \
+                "${extra_args[@]}"
+              terraform -chdir=infrastructure show -json cleanup.tfplan > cleanup.tfplan.json
+              python3 scripts/benchmark_run_state.py validate-plan \
+                --plan-json cleanup.tfplan.json \
+                --mode cleanup \
+                --run-id "${RUN_ID}"
+              terraform -chdir=infrastructure apply -auto-approve -input=false cleanup.tfplan
               ;;
           esac
+
+      - name: Release recovered run capacity
+        if: ${{ inputs.action == 'destroy' }}
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          remaining=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Project,Values=scfuzzbench" \
+              "Name=tag:RunId,Values=${RUN_ID}" \
+              "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output json)
+          if [[ "$(jq 'length' <<<"${remaining}")" != "0" ]]; then
+            echo "Run ${RUN_ID} still has active instances; preserving its reservation." >&2
+            jq -r '.[]' <<<"${remaining}" >&2
+            exit 1
+          fi
+          python3 scripts/benchmark_run_state.py mark-cleaned \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${RUN_ID}" \
+            --reason manual-recovery \
+            --output run-state-metadata.json

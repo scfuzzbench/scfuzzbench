@@ -99,6 +99,12 @@ jobs:
       - name: Python syntax check
         run: python -m compileall analysis scripts
 
+      - name: Run benchmark state isolation regression tests
+        run: |
+          python -m unittest \
+            analysis.tests.test_benchmark_run_state \
+            analysis.tests.test_generate_docs_site
+
   docs:
     runs-on: ubuntu-latest
     steps:

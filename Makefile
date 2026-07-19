@@ -1,7 +1,8 @@
 TF_DIR := infrastructure
 TF_ARGS ?=
 BACKEND_CONFIG ?= backend.hcl
-BACKEND_INIT_FLAGS ?= -migrate-state -force-copy -input=false
+BACKEND_KEY ?=
+BACKEND_INIT_FLAGS ?= -reconfigure -input=false
 LOGS_DIR ?= logs
 OUT_DIR ?= analysis_out
 ANALYSIS_VENV ?= .venv-analysis
@@ -86,6 +87,10 @@ PROFILE_ARG :=
 ifneq ($(strip $(AWS_PROFILE)),)
 PROFILE_ARG := --profile $(AWS_PROFILE)
 endif
+BACKEND_KEY_ARG :=
+ifneq ($(strip $(BACKEND_KEY)),)
+BACKEND_KEY_ARG := -backend-config='key=$(BACKEND_KEY)'
+endif
 NO_UNZIP ?=
 NO_UNZIP_ARG :=
 ifneq ($(strip $(NO_UNZIP)),)
@@ -108,7 +113,7 @@ terraform-init:
 	terraform -chdir=$(TF_DIR) init
 
 terraform-init-backend:
-	terraform -chdir=$(TF_DIR) init -backend-config=$(BACKEND_CONFIG) $(BACKEND_INIT_FLAGS)
+	terraform -chdir=$(TF_DIR) init -backend-config=$(BACKEND_CONFIG) $(BACKEND_KEY_ARG) $(BACKEND_INIT_FLAGS)
 
 terraform-fmt:
 	terraform -chdir=$(TF_DIR) fmt -recursive
