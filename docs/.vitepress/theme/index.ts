@@ -3,19 +3,17 @@ import DefaultTheme from "vitepress/theme";
 import "./custom.css";
 
 import CustomLayout from "../components/CustomLayout.vue";
-import CostTransparencyDashboard from "../components/CostTransparencyDashboard.vue";
-import GrantTransparencyTracker from "../components/GrantTransparencyTracker.vue";
 import StartBenchmark from "../components/StartBenchmark.vue";
 import TargetManifest from "../components/TargetManifest.vue";
+import TransparencyDashboard from "../components/TransparencyDashboard.vue";
 
 export default {
   extends: DefaultTheme,
   Layout: CustomLayout,
   enhanceApp(ctx) {
     DefaultTheme.enhanceApp?.(ctx);
-    ctx.app.component("CostTransparencyDashboard", CostTransparencyDashboard);
-    ctx.app.component("GrantTransparencyTracker", GrantTransparencyTracker);
     ctx.app.component("StartBenchmark", StartBenchmark);
     ctx.app.component("TargetManifest", TargetManifest);
+    ctx.app.component("TransparencyDashboard", TransparencyDashboard);
   },
 } satisfies Theme;
