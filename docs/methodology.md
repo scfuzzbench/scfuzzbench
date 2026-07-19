@@ -230,6 +230,15 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - late discovery share
   - time-to-k median + reach rate
   - final distribution (median + IQR)
+- Compares each fuzzer pair's end-of-budget bug counts with a two-sided
+  Mann-Whitney U test, applies a Bonferroni correction, and reports the
+  Vargha-Delaney A12 effect size. A12 is expressed as the probability that
+  Fuzzer A outperforms Fuzzer B (ties count as half); values above `0.5` favor
+  A and values below `0.5` favor B. Effect magnitudes are classified by
+  distance from `0.5` as negligible (`<0.06`), small (`<0.14`), medium
+  (`<0.21`), or large (`>=0.21`). These magnitude thresholds are descriptive
+  rules of thumb; neither A12 nor statistical significance establishes
+  practical importance, causation, or performance beyond the observed runs.
 - Note: these report scorecards use normalized event-identity counts. They do
   not count crash inputs, but they also do not establish severity or root-cause
   uniqueness. Use `known_bug_report.md` and its CSVs for ground-truth hit rates.
