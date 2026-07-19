@@ -152,6 +152,8 @@ class PairwiseResult:
     fuzzer_a: str
     fuzzer_b: str
     u_stat: float
+    a12: float
+    effect_magnitude: str
     p_value: float
     p_corrected: float
     significant: bool
@@ -1237,6 +1239,8 @@ def compute_statistical_tests(
                     fuzzer_a=m_a.fuzzer,
                     fuzzer_b=m_b.fuzzer,
                     u_stat=float(len(a) * len(b)) / 2.0,
+                    a12=0.5,
+                    effect_magnitude="negligible",
                     p_value=1.0,
                     p_corrected=1.0,
                     significant=False,
@@ -1248,12 +1252,13 @@ def compute_statistical_tests(
             continue
 
         u_stat, p_value = stats.mannwhitneyu(a, b, alternative="two-sided")
+        a12 = float(u_stat) / float(len(a) * len(b))
         p_corrected = min(p_value * n_comparisons, 1.0)
         significant = p_corrected < alpha
 
-        if median_a > median_b:
+        if a12 > 0.5:
             direction = ">"
-        elif median_a < median_b:
+        elif a12 < 0.5:
             direction = "<"
         else:
             direction = "="
@@ -1263,6 +1268,8 @@ def compute_statistical_tests(
                 fuzzer_a=m_a.fuzzer,
                 fuzzer_b=m_b.fuzzer,
                 u_stat=float(u_stat),
+                a12=a12,
+                effect_magnitude=classify_a12_magnitude(a12),
                 p_value=float(p_value),
                 p_corrected=float(p_corrected),
                 significant=significant,
@@ -1275,21 +1282,40 @@ def compute_statistical_tests(
     return results, warn
 
 
+def classify_a12_magnitude(a12: float) -> str:
+    """Classify Vargha-Delaney A12 by its distance from equal tendency."""
+    if not 0.0 <= a12 <= 1.0:
+        raise ValueError("A12 must be between 0 and 1")
+
+    symmetric_a12 = max(a12, 1.0 - a12)
+    if symmetric_a12 < 0.56:
+        return "negligible"
+    if symmetric_a12 < 0.64:
+        return "small"
+    if symmetric_a12 < 0.71:
+        return "medium"
+    return "large"
+
+
 def format_statistical_report(
     results: List[PairwiseResult],
     warnings_list: List[str],
     alpha: float = 0.05,
 ) -> List[str]:
     lines: List[str] = []
-    lines.append("## Statistical comparison (Mann-Whitney U test)")
+    lines.append(
+        "## Statistical comparison (Mann-Whitney U and Vargha-Delaney A12)"
+    )
     lines.append("")
 
     n_comparisons = len(results)
     lines.append(
-        "Pairwise Mann-Whitney U tests on end-of-budget bug counts (two-sided)."
+        "Pairwise Mann-Whitney U tests and Vargha-Delaney A12 effect sizes on "
+        "end-of-budget bug counts."
     )
     lines.append(
-        f"Bonferroni correction applied for {n_comparisons} comparison(s). "
+        f"The tests are two-sided, with Bonferroni correction applied for "
+        f"{n_comparisons} comparison(s). "
         f"Significance level: alpha = {alpha}."
     )
     lines.append("")
@@ -1307,6 +1333,8 @@ def format_statistical_report(
             "Median A",
             "Median B",
             "U statistic",
+            "A12 (A over B)",
+            "Effect magnitude",
             "p-value",
             "p (corrected)",
             "Significant",
@@ -1327,7 +1355,8 @@ def format_statistical_report(
             sig_str = "yes" if r.significant else "no"
             lines.append(
                 f"| {r.fuzzer_a} | {r.fuzzer_b} | {med_a} | {med_b} "
-                f"| {r.u_stat:.1f} | {r.p_value:.4f} | {r.p_corrected:.4f} | {sig_str} |"
+                f"| {r.u_stat:.1f} | {r.a12:.3f} | {r.effect_magnitude} "
+                f"| {r.p_value:.4f} | {r.p_corrected:.4f} | {sig_str} |"
             )
         lines.append("")
 
@@ -1349,17 +1378,21 @@ def format_statistical_report(
                 if r.direction == ">":
                     lines.append(
                         f"- With p < {alpha}, {r.fuzzer_a} finds significantly more bugs "
-                        f"than {r.fuzzer_b} (median {med_a} vs {med_b})."
+                        f"than {r.fuzzer_b} (median {med_a} vs {med_b}; "
+                        f"A12={r.a12:.3f}, {r.effect_magnitude} effect)."
                     )
                 elif r.direction == "<":
                     lines.append(
                         f"- With p < {alpha}, {r.fuzzer_b} finds significantly more bugs "
-                        f"than {r.fuzzer_a} (median {med_b} vs {med_a})."
+                        f"than {r.fuzzer_a} (median {med_b} vs {med_a}; "
+                        f"A12={r.a12:.3f} for {r.fuzzer_a} over {r.fuzzer_b}, "
+                        f"{r.effect_magnitude} effect)."
                     )
                 else:
                     lines.append(
                         f"- With p < {alpha}, {r.fuzzer_a} and {r.fuzzer_b} differ significantly "
-                        f"(both median {med_a}), likely due to distributional differences."
+                        f"(both median {med_a}; A12={r.a12:.3f}, "
+                        f"{r.effect_magnitude} effect), likely due to distributional differences."
                     )
             lines.append("")
         else:
@@ -1369,15 +1402,23 @@ def format_statistical_report(
             lines.append("")
 
     lines.append(
-        "> **Note:** The Mann-Whitney U test assesses whether one fuzzer tends to find"
+        "> **Note:** A12 is the probability that a randomly selected Fuzzer A run"
     )
     lines.append(
-        "> more bugs than another across runs. It does not measure effect size or"
+        "> has a higher final bug count than a randomly selected Fuzzer B run,"
     )
     lines.append(
-        "> practical importance. Small sample sizes (fewer than 5 runs) reduce"
+        "> counting ties as half. Values above 0.5 favor A, values below 0.5 favor B,"
     )
-    lines.append("> statistical power.")
+    lines.append(
+        "> and 0.5 means equal tendency. Magnitude thresholds by distance from 0.5"
+    )
+    lines.append(
+        "> are negligible (<0.06), small (<0.14), medium (<0.21), and large"
+    )
+    lines.append(
+        "> (>=0.21). Small sample sizes (fewer than 5 runs) reduce statistical power."
+    )
     lines.append("")
 
     return lines
