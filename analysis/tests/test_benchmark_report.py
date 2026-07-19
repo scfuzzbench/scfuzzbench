@@ -118,6 +118,8 @@ class BenchmarkReportTests(unittest.TestCase):
             self.assertIn("count-based", report)
             self.assertIn("broken_invariants.md", report)
             self.assertIn("broken_invariants.csv", report)
+            self.assertIn("known_bug_report.md", report)
+            self.assertIn("not confirmed root-cause bug counts", report)
 
     def test_write_report_includes_throughput_section(self):
         metrics = [

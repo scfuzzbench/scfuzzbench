@@ -1,6 +1,6 @@
 ---
 name: target-onboarding
-description: Create and execute onboarding for a new scfuzzbench benchmark target end-to-end, including target repo setup, validation, and PR with /start payload.
+description: Create and execute onboarding for a new scfuzzbench benchmark target end-to-end, including target repo setup, validation, manifest registration, and /start payload.
 metadata:
   short-description: Onboard a benchmark target end-to-end
 ---
@@ -13,7 +13,8 @@ This skill covers:
 - creating/maintaining `pre-target` and `main` branches in the target repo
 - porting recon harness/config files
 - running local validation
-- opening `harness -> main` PR with exact `/start` request JSON
+- opening and merging a `harness -> main` PR
+- registering the merged commit and preparing an exact `/start` request
 
 ## Branch convention (mandatory)
 
@@ -22,12 +23,14 @@ two long-lived branches:
 
 - **`pre-target`**: the pristine upstream state at the vulnerable baseline commit,
   before any harness is added. Never rebased or amended.
-- **`main`** (default branch): `pre-target` plus the harness. This is the only ref the
-  benchmark consumes; `/start` requests always use `target_commit: "main"`.
+- **`main`** (default branch): `pre-target` plus the harness. After the harness PR
+  merges, resolve `main` to an immutable commit SHA and register that SHA in
+  `benchmarks/targets.json` in `scfuzzbench/scfuzzbench`.
 
 Seeing what the harness adds is always `compare pre-target...main` on GitHub — no other
 branch/ref bookkeeping is allowed. Work branches (e.g. `harness`) are temporary and merge
-into `main` via PR.
+into `main` via PR. Benchmark requests consume the registered commit, not the mutable
+branch name.
 
 ## Inputs
 
@@ -281,14 +284,19 @@ PR description must include:
 4. local smoke test summary
 5. 2-minute canary trial summary per fuzzer (must show both canaries found)
 6. canary validation summary (assertion canary + global invariant canary)
-7. exact `/start` request JSON for `scfuzzbench`
+7. proposed target manifest metadata and `/start` request template for `scfuzzbench`
 8. any target-specific overrides and why
 
-### 9) Final `/start` request JSON guidance
+### 9) Register the target and prepare the final `/start` request
+
+After the harness PR merges, resolve the target repository's `main` branch to its
+full commit SHA. Add or update its entry in
+`scfuzzbench/scfuzzbench/benchmarks/targets.json`, run `make targets-validate`,
+and use that same SHA and `properties_path` in the final request.
 
 Typical fields:
 1. `target_repo_url`: destination repo URL (under the scfuzzbench org)
-2. `target_commit`: always `main` (after the harness PR is merged)
+2. `target_commit`: full commit SHA resolved from `main` after the harness PR is merged
 3. `benchmark_type`: `property` or `optimization`
 4. `instance_type`
 5. `instances_per_fuzzer`
@@ -336,13 +344,13 @@ Typical fields:
 Done means all are true:
 1. destination repo is created/updated in the `scfuzzbench` org
 2. `pre-target` and `main` branches are pushed (`main` is the default branch)
-3. harness PR is open with required validation details
+3. harness PR is merged with required validation details
 4. no `AGENTS.md`/`CLAUDE.md` or other agent-instruction files exist in the target repo
 5. canary assertion + canary `invariant_` global failure are present and intentionally failing
 6. no parameterized function is prefixed `invariant_` (use `global_*` for parameterized globals)
 7. naming rules are satisfied across inherited recon property contracts, not only `Properties.sol`
 8. each fuzzer reports at least 2 canary bugs (assertion + global invariant) within 2 minutes
-9. exact `/start` JSON is provided
+9. the pinned target is registered in `benchmarks/targets.json` and exact `/start` JSON is provided
 10. PR URL is recorded in final report; include tracking issue URL only if one was explicitly requested
 11. all assertion failure reasons are constants in `Properties.sol`; `!!!` prefix is recommended for consistent parser extraction
 12. every assertion handler `targetFunctionName_ASSERTION_<ASSERTION_CONSTANT_SUFFIX>` has exactly one referenced `ASSERTION_*` constant
