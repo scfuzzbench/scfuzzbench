@@ -66,7 +66,7 @@ if [[ -n "${ECHIDNA_TARGET:-}" && "${ECHIDNA_TARGET}" != /* && ! -f "${repo_dir}
   fi
 fi
 
-cmd=(echidna-test)
+cmd=(echidna)
 if [[ -n "${ECHIDNA_CONFIG:-}" ]]; then
   cmd+=(--config "${ECHIDNA_CONFIG}")
 fi

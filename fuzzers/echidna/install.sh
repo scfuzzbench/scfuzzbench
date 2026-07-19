@@ -20,13 +20,18 @@ curl -L "${url}" -o "${tmp_dir}/${archive}"
 mkdir -p "${tmp_dir}/echidna"
 tar -xzf "${tmp_dir}/${archive}" -C "${tmp_dir}/echidna"
 
-bin_path=$(find "${tmp_dir}/echidna" -type f \( -name "echidna-test" -o -name "echidna" \) | head -n 1)
+bin_path=$(find "${tmp_dir}/echidna" -type f -name "echidna" -print -quit)
+if [[ -z "${bin_path}" ]]; then
+  # Older release archives used the legacy executable name. Accept those
+  # artifacts at install time, but normalize the installed command to echidna.
+  bin_path=$(find "${tmp_dir}/echidna" -type f -name "echidna-test" -print -quit)
+fi
 if [[ -z "${bin_path}" ]]; then
   log "echidna binary not found in archive"
   exit 1
 fi
-install -m 0755 "${bin_path}" "${SCFUZZBENCH_BIN_DIR}/echidna-test"
+install -m 0755 "${bin_path}" "${SCFUZZBENCH_BIN_DIR}/echidna"
 
 rm -rf "${tmp_dir}"
 
-command -v echidna-test
+command -v echidna

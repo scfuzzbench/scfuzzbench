@@ -41,7 +41,7 @@ Optional – echidna / recon-fuzzer:
       --echidna-config  PATH    Echidna YAML config (relative to target repo)
       --echidna-target  PATH    Solidity target file    (e.g. test/recon/CryticTester.sol)
       --echidna-contract NAME   Target contract name    (e.g. CryticTester)
-      --echidna-extra-args ARGS Extra args for echidna-test
+      --echidna-extra-args ARGS Extra args for echidna
 
 Optional – medusa:
       --medusa-config   PATH    Medusa TOML/JSON config (relative to target repo)

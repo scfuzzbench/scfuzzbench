@@ -41,12 +41,12 @@ class RunnerCommandSanitizationTests(unittest.TestCase):
 
     def test_redacts_bare_url_arguments(self):
         rendered = self.sanitize(
-            "echidna-test",
+            "echidna",
             "https://rpc.example.test",
             "--workers",
             "16",
         )
-        self.assertIn("echidna-test *** --workers 16", rendered)
+        self.assertIn("echidna *** --workers 16", rendered)
 
 
 if __name__ == "__main__":
