@@ -174,6 +174,23 @@ class GenerateDocsSiteTests(unittest.TestCase):
         self.assertIn("![PRELIMINARY — Bugs Over Time]", rendered)
         self.assertIn("### Benchmark report", rendered)
 
+    def test_preliminary_report_sanitizer_neutralizes_html_vue_and_active_links(self):
+        module = load_generate_docs_site()
+        report = (
+            "> **PRELIMINARY — INCOMPLETE — DO NOT COMPARE OR STOP**\n"
+            "# Report\n"
+            "<script>alert(1)</script>\n"
+            "{{ constructor.constructor('alert(2)')() }}\n"
+            "[click](javascript:alert(3))\n"
+        )
+
+        sanitized = module.sanitize_preliminary_markdown(report)
+
+        self.assertNotIn("<script>", sanitized)
+        self.assertNotIn("{{", sanitized)
+        self.assertNotIn("javascript:", sanitized.lower())
+        self.assertIn("&lt;script&gt;", sanitized)
+
 
 if __name__ == "__main__":
     unittest.main()

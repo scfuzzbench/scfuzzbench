@@ -17,7 +17,6 @@ on:
     - cron: "15 * * * *"
 
 permissions:
-  actions: write
   contents: read
 
 concurrency:
@@ -27,6 +26,7 @@ concurrency:
 jobs:
   discover:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       has_runs: ${{ steps.discover.outputs.has_runs }}
       matrix: ${{ steps.discover.outputs.matrix }}
@@ -85,6 +85,7 @@ jobs:
     needs: discover
     if: ${{ needs.discover.outputs.has_runs == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
@@ -199,8 +200,12 @@ jobs:
 
   refresh-docs:
     needs: [discover, analyze]
-    if: ${{ needs.discover.outputs.has_runs == 'true' && needs.analyze.result == 'success' }}
+    if: ${{ always() && needs.discover.result == 'success' && (needs.analyze.result == 'success' || needs.analyze.result == 'skipped') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
     steps:
       - name: Refresh preliminary pages
         env:

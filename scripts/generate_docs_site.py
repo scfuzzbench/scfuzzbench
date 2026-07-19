@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
+import html
 import json
 import os
 from pathlib import Path
@@ -12,6 +14,7 @@ import subprocess
 import sys
 import time
 from urllib.parse import urljoin
+from urllib.parse import quote
 from dataclasses import dataclass
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +31,7 @@ from scripts.preliminary_results import (  # noqa: E402
     RESULT_SCHEMA,
     RUN_KEY_RE as PRELIMINARY_RUN_KEY_RE,
     format_duration,
+    validate_result_metadata,
     validate_run_manifest,
 )
 
@@ -495,6 +499,79 @@ def preliminary_warning_lines(metadata: dict) -> list[str]:
     ]
 
 
+def preliminary_object_head(
+    bucket: str,
+    key: str,
+    *,
+    profile: str | None,
+    max_bytes: int,
+    expected_sha256: str = "",
+) -> dict:
+    head = aws_json(
+        ["s3api", "head-object", "--bucket", bucket, "--key", key],
+        profile=profile,
+    )
+    try:
+        size = int(head.get("ContentLength"))
+    except (TypeError, ValueError):
+        raise ValueError(f"{key} has invalid ContentLength") from None
+    digest = str(head.get("Metadata", {}).get("sha256", ""))
+    if size < 0 or size > max_bytes:
+        raise ValueError(f"{key} exceeds its docs byte cap")
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError(f"{key} is missing immutable SHA-256 metadata")
+    if expected_sha256 and digest != expected_sha256:
+        raise ValueError(f"{key} SHA-256 metadata disagrees with its analysis manifest")
+    return head
+
+
+def preliminary_text(
+    bucket: str,
+    key: str,
+    *,
+    profile: str | None,
+    max_bytes: int,
+    expected_sha256: str = "",
+) -> str:
+    head = preliminary_object_head(
+        bucket,
+        key,
+        profile=profile,
+        max_bytes=max_bytes,
+        expected_sha256=expected_sha256,
+    )
+    value = aws_text(["s3", "cp", f"s3://{bucket}/{key}", "-"], profile=profile)
+    encoded = value.encode("utf-8")
+    if len(encoded) != int(head["ContentLength"]):
+        raise ValueError(f"{key} downloaded size disagrees with S3 metadata")
+    actual = hashlib.sha256(encoded).hexdigest()
+    expected = str(head["Metadata"]["sha256"])
+    if actual != expected:
+        raise ValueError(f"{key} downloaded SHA-256 disagrees with S3 metadata")
+    return value
+
+
+def sanitize_preliminary_markdown(value: str) -> str:
+    if len(value.encode("utf-8")) > 2 * 1024 * 1024:
+        raise ValueError("preliminary report exceeds its docs byte cap")
+    if "PRELIMINARY — INCOMPLETE — DO NOT COMPARE OR STOP" not in value:
+        raise ValueError("preliminary report is missing its required warning")
+    # Reports contain target-controlled invariant names. Preserve Markdown
+    # structure while neutralizing raw HTML/Vue templates and active URL schemes.
+    sanitized = html.escape(value.replace("\x00", ""), quote=False)
+    sanitized = sanitized.replace("{", "&#123;").replace("}", "&#125;")
+    sanitized = re.sub(
+        r"(?i)(!?\[[^\]\r\n]*\]\()\s*(?:javascript|data|vbscript):",
+        r"\1blocked:",
+        sanitized,
+    )
+    return sanitized
+
+
+def preliminary_s3_url(bucket: str, region: str, key: str) -> str:
+    return f"https://{bucket}.s3.{region}.amazonaws.com/{quote(key, safe='/')}"
+
+
 def render_preliminary_page(
     *,
     manifest: dict,
@@ -575,7 +652,12 @@ def generate_preliminary_pages(
         run_id, uuid = match["run"], match["uuid"]
         try:
             manifest = json.loads(
-                aws_text(["s3", "cp", f"s3://{bucket}/{key}", "-"], profile=profile)
+                preliminary_text(
+                    bucket,
+                    key,
+                    profile=profile,
+                    max_bytes=1024 * 1024,
+                )
             )
             manifest = validate_run_manifest(
                 manifest, run_id=run_id, benchmark_uuid=uuid
@@ -599,32 +681,59 @@ def generate_preliminary_pages(
             checkpoint, metadata_key = max(checkpoints)
             try:
                 metadata = json.loads(
-                    aws_text(
-                        ["s3", "cp", f"s3://{bucket}/{metadata_key}", "-"],
+                    preliminary_text(
+                        bucket,
+                        metadata_key,
                         profile=profile,
+                        max_bytes=2 * 1024 * 1024,
                     )
                 )
-                if (
-                    metadata.get("schema") != RESULT_SCHEMA
-                    or metadata.get("run_id") != run_id
-                    or metadata.get("benchmark_uuid") != uuid
-                    or int(metadata.get("checkpoint", -1)) != checkpoint
-                ):
-                    raise ValueError("analysis metadata disagrees with its key")
+                metadata = validate_result_metadata(
+                    metadata,
+                    run_id=run_id,
+                    benchmark_uuid=uuid,
+                    checkpoint=checkpoint,
+                )
                 prefix = metadata_key.removesuffix("/preliminary.json")
                 report_key = f"{prefix}/data/REPORT.md"
-                if head_exists(bucket, report_key, profile=profile):
-                    report_markdown = aws_text(
-                        ["s3", "cp", f"s3://{bucket}/{report_key}", "-"],
-                        profile=profile,
+                published_hashes = metadata["published_file_sha256"]
+                report_digest = str(published_hashes.get("data/REPORT.md", ""))
+                if report_digest:
+                    report_markdown = sanitize_preliminary_markdown(
+                        preliminary_text(
+                            bucket,
+                            report_key,
+                            profile=profile,
+                            max_bytes=2 * 1024 * 1024,
+                            expected_sha256=report_digest,
+                        )
                     )
+                chart_prefix = f"{prefix}/images/"
                 for chart_key in sorted(
                     item
                     for item in keys
-                    if item.startswith(f"{prefix}/") and item.endswith(".png")
+                    if item.startswith(chart_prefix) and item.endswith(".png")
                 ):
+                    relative = chart_key.removeprefix(f"{prefix}/")
+                    if not re.fullmatch(
+                        r"images/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.png",
+                        relative,
+                    ):
+                        continue
+                    expected_digest = str(published_hashes.get(relative, ""))
+                    if not expected_digest:
+                        continue
+                    preliminary_object_head(
+                        bucket,
+                        chart_key,
+                        profile=profile,
+                        max_bytes=64 * 1024 * 1024,
+                        expected_sha256=expected_digest,
+                    )
                     label = Path(chart_key).stem.replace("_", " ").title()
-                    chart_urls.append((label, s3_url(bucket, region, chart_key)))
+                    chart_urls.append(
+                        (label, preliminary_s3_url(bucket, region, chart_key))
+                    )
             except Exception as exc:
                 print(
                     f"WARNING: skipping malformed preliminary analysis {metadata_key}: {exc}",

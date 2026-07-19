@@ -46,6 +46,7 @@ class PreliminaryRunnerShellTests(unittest.TestCase):
                 export SCFUZZBENCH_BENCHMARK_UUID={'a' * 32}
                 export SCFUZZBENCH_FUZZER_KEY=foundry
                 export SCFUZZBENCH_RUN_INDEX=0
+                export SCFUZZBENCH_TIMEOUT_SECONDS=86400
                 export SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS=3600
                 export SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT={shlex.quote(str(SNAPSHOT_HELPER))}
                 source {shlex.quote(str(COMMON_SH))}
@@ -98,7 +99,32 @@ class PreliminaryRunnerShellTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(0, divergent.returncode)
-            self.assertIn("Refusing to overwrite divergent", divergent.stderr)
+            self.assertIn("Refusing to overwrite preliminary object", divergent.stderr)
+
+    def test_stop_kills_entire_inflight_checkpoint_process_group_promptly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bash(
+                f"""
+                export SCFUZZBENCH_ROOT={shlex.quote(tmp)}
+                source {shlex.quote(str(COMMON_SH))}
+                mkdir -p {shlex.quote(str(root / "preliminary-checkpoints"))}
+                setsid bash -c 'sleep 30' >/dev/null 2>&1 &
+                capture_pid=$!
+                sleep 30 >/dev/null 2>&1 &
+                loop_pid=$!
+                export SCFUZZBENCH_PRELIMINARY_PID="$loop_pid"
+                printf '%s %s\n' "$loop_pid" "$capture_pid" \
+                  > {shlex.quote(str(root / "preliminary-checkpoints" / "active.pid"))}
+                stop_preliminary_snapshots
+                if kill -0 -- "-${{capture_pid}}" 2>/dev/null; then
+                  echo capture-still-running
+                  exit 1
+                fi
+                echo stopped-group
+                """
+            )
+        self.assertEqual("stopped-group", result.stdout.strip())
 
 
 if __name__ == "__main__":

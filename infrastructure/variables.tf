@@ -54,10 +54,13 @@ variable "preliminary_interval_seconds" {
   validation {
     condition = (
       var.preliminary_interval_seconds == floor(var.preliminary_interval_seconds) &&
-      var.preliminary_interval_seconds >= 0 &&
+      (
+        var.preliminary_interval_seconds == 0 ||
+        var.preliminary_interval_seconds >= 60
+      ) &&
       var.preliminary_interval_seconds <= 86400
     )
-    error_message = "preliminary_interval_seconds must be a whole number in [0, 86400]."
+    error_message = "preliminary_interval_seconds must be zero or a whole number in [60, 86400]."
   }
 }
 
@@ -176,7 +179,13 @@ variable "run_started_at_epoch" {
   default     = ""
 
   validation {
-    condition     = var.run_started_at_epoch == "" || can(regex("^[0-9]+$", var.run_started_at_epoch))
+    condition = (
+      var.run_started_at_epoch == "" ||
+      (
+        can(regex("^[0-9]+$", var.run_started_at_epoch)) &&
+        try(tonumber(var.run_started_at_epoch), 0) > 0
+      )
+    )
     error_message = "run_started_at_epoch must be empty or a positive Unix timestamp."
   }
 }

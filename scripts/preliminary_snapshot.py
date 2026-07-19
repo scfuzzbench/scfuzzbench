@@ -18,6 +18,14 @@ import zipfile
 SCHEMA = "scfuzzbench-preliminary-snapshot/v1"
 UUID_RE = re.compile(r"^[0-9a-f]{32}$")
 COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
+INSTANCE_ID_RE = re.compile(r"^i-[0-9a-f]+$")
+SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$")
+MAX_CAPTURE_LATENESS_SECONDS = 300
+MAX_SNAPSHOT_FILES = 512
+MAX_SCANNED_ENTRIES = 4096
+MAX_SNAPSHOT_FILE_BYTES = 512 * 1024 * 1024
+MAX_SNAPSHOT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+COPY_CHUNK_BYTES = 1024 * 1024
 
 
 def utc_iso(epoch: int) -> str:
@@ -29,7 +37,7 @@ def utc_iso(epoch: int) -> str:
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        for chunk in iter(lambda: handle.read(COPY_CHUNK_BYTES), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -59,23 +67,37 @@ def _truncate_partial_final_line(path: Path) -> bool:
     return True
 
 
-def copy_prefix_complete_lines(source: Path, destination: Path, captured_size: int) -> dict:
+def copy_prefix_complete_lines(
+    source: Path,
+    destination: Path,
+    captured_size: int,
+    *,
+    max_bytes: int = MAX_SNAPSHOT_FILE_BYTES,
+) -> dict:
     """Copy exactly captured_size bytes and remove a partial trailing record."""
     if captured_size < 0:
         raise ValueError("captured_size must be non-negative")
+    if captured_size > max_bytes:
+        raise ValueError("snapshot source exceeds its byte cap")
     destination.parent.mkdir(parents=True, exist_ok=True)
     copied = 0
-    with source.open("rb") as src, destination.open("xb") as dst:
-        remaining = captured_size
-        while remaining:
-            chunk = src.read(min(1024 * 1024, remaining))
-            if not chunk:
-                break
-            dst.write(chunk)
-            copied += len(chunk)
-            remaining -= len(chunk)
-        dst.flush()
-        os.fsync(dst.fileno())
+    try:
+        with source.open("rb") as src, destination.open("xb") as dst:
+            remaining = captured_size
+            while remaining:
+                chunk = src.read(min(COPY_CHUNK_BYTES, remaining))
+                if not chunk:
+                    break
+                dst.write(chunk)
+                copied += len(chunk)
+                remaining -= len(chunk)
+            dst.flush()
+            os.fsync(dst.fileno())
+        if copied != captured_size:
+            raise ValueError("snapshot source shrank during frozen-prefix copy")
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
     partial_removed = _truncate_partial_final_line(destination)
     return {
         "source_size_at_capture": captured_size,
@@ -86,7 +108,12 @@ def copy_prefix_complete_lines(source: Path, destination: Path, captured_size: i
     }
 
 
-def snapshot_one_file(source: Path, destination: Path) -> dict:
+def snapshot_one_file(
+    source: Path,
+    destination: Path,
+    *,
+    max_bytes: int = MAX_SNAPSHOT_FILE_BYTES,
+) -> dict:
     """Open without following symlinks, freeze the size, then copy that prefix."""
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
@@ -97,21 +124,29 @@ def snapshot_one_file(source: Path, destination: Path) -> dict:
         if not stat.S_ISREG(info.st_mode):
             raise ValueError(f"snapshot source is not a regular file: {source}")
         captured_size = info.st_size
+        if captured_size > max_bytes:
+            raise ValueError("snapshot source exceeds its byte cap")
         destination.parent.mkdir(parents=True, exist_ok=True)
         copied = 0
-        with os.fdopen(os.dup(fd), "rb", closefd=True) as src, destination.open(
-            "xb"
-        ) as dst:
-            remaining = captured_size
-            while remaining:
-                chunk = src.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                dst.write(chunk)
-                copied += len(chunk)
-                remaining -= len(chunk)
-            dst.flush()
-            os.fsync(dst.fileno())
+        try:
+            with os.fdopen(os.dup(fd), "rb", closefd=True) as src, destination.open(
+                "xb"
+            ) as dst:
+                remaining = captured_size
+                while remaining:
+                    chunk = src.read(min(COPY_CHUNK_BYTES, remaining))
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    copied += len(chunk)
+                    remaining -= len(chunk)
+                dst.flush()
+                os.fsync(dst.fileno())
+            if copied != captured_size:
+                raise ValueError("snapshot source shrank during frozen-prefix copy")
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
         partial_removed = _truncate_partial_final_line(destination)
         return {
             "source_size_at_capture": captured_size,
@@ -124,16 +159,43 @@ def snapshot_one_file(source: Path, destination: Path) -> dict:
         os.close(fd)
 
 
-def _candidate_files(log_dir: Path) -> list[Path]:
-    if not log_dir.is_dir():
-        return []
-    return sorted(
-        path
-        for path in log_dir.rglob("*")
-        if path.is_file()
-        and not path.is_symlink()
-        and path.suffix.lower() in {".log", ".csv"}
-    )
+def _candidate_files(log_dir: Path) -> tuple[list[Path], list[dict]]:
+    """Walk without following links and report skipped link entries."""
+    if not log_dir.is_dir() or log_dir.is_symlink():
+        return [], [{"path": ".", "reason": "unsafe-log-directory"}]
+    candidates: list[Path] = []
+    skipped: list[dict] = []
+    scanned = 0
+    for root, directory_names, file_names in os.walk(log_dir, followlinks=False):
+        root_path = Path(root)
+        scanned += len(directory_names) + len(file_names)
+        if scanned > MAX_SCANNED_ENTRIES:
+            raise ValueError(
+                f"snapshot log tree contains more than {MAX_SCANNED_ENTRIES} entries"
+            )
+        safe_directories: list[str] = []
+        for name in sorted(directory_names):
+            path = root_path / name
+            relative = path.relative_to(log_dir).as_posix()
+            if path.is_symlink():
+                skipped.append({"path": relative, "reason": "symlink"})
+            else:
+                safe_directories.append(name)
+        directory_names[:] = safe_directories
+        for name in sorted(file_names):
+            path = root_path / name
+            if path.suffix.lower() not in {".log", ".csv"}:
+                continue
+            relative = path.relative_to(log_dir).as_posix()
+            if path.is_symlink():
+                skipped.append({"path": relative, "reason": "symlink"})
+                continue
+            candidates.append(path)
+            if len(candidates) > MAX_SNAPSHOT_FILES:
+                raise ValueError(
+                    f"snapshot contains more than {MAX_SNAPSHOT_FILES} candidate files"
+                )
+    return sorted(candidates), sorted(skipped, key=lambda item: item["path"])
 
 
 def _zip_tree(root: Path, archive_path: Path, *, epoch: int) -> None:
@@ -152,7 +214,9 @@ def _zip_tree(root: Path, archive_path: Path, *, epoch: int) -> None:
                 info = zipfile.ZipInfo(relative, date_time=date_time)
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = 0o100600 << 16
-                archive.writestr(info, path.read_bytes())
+                with path.open("rb") as source, archive.open(info, "w") as destination:
+                    for chunk in iter(lambda: source.read(COPY_CHUNK_BYTES), b""):
+                        destination.write(chunk)
         with tmp_path.open("rb") as handle:
             os.fsync(handle.fileno())
         os.replace(tmp_path, archive_path)
@@ -161,19 +225,26 @@ def _zip_tree(root: Path, archive_path: Path, *, epoch: int) -> None:
 
 
 def _validate_identity(
-    *, run_id: str, benchmark_uuid: str, instance_id: str, fuzzer_key: str, run_index: str
+    *,
+    run_id: str,
+    benchmark_uuid: str,
+    instance_id: str,
+    fuzzer_key: str,
+    run_index: str,
+    fuzzer_label: str,
 ) -> None:
     if not COMPONENT_RE.fullmatch(run_id):
         raise ValueError("run_id is not a safe object-key component")
     if not UUID_RE.fullmatch(benchmark_uuid):
         raise ValueError("benchmark_uuid must be 32 lowercase hexadecimal characters")
-    for name, value in (
-        ("instance_id", instance_id),
-        ("fuzzer_key", fuzzer_key),
-        ("run_index", run_index),
-    ):
-        if not COMPONENT_RE.fullmatch(value):
-            raise ValueError(f"{name} is not a safe object-key component")
+    if not INSTANCE_ID_RE.fullmatch(instance_id):
+        raise ValueError("instance_id must be an EC2 instance identifier")
+    if not COMPONENT_RE.fullmatch(fuzzer_key):
+        raise ValueError("fuzzer_key is not a safe object-key component")
+    if not run_index.isdigit():
+        raise ValueError("run_index must be a non-negative integer")
+    if not SAFE_LABEL_RE.fullmatch(fuzzer_label):
+        raise ValueError("fuzzer_label is unsafe")
 
 
 def capture_snapshot(
@@ -199,6 +270,7 @@ def capture_snapshot(
         instance_id=instance_id,
         fuzzer_key=fuzzer_key,
         run_index=run_index,
+        fuzzer_label=fuzzer_label,
     )
     if checkpoint < 1:
         raise ValueError("checkpoint must be positive")
@@ -211,6 +283,14 @@ def capture_snapshot(
         raise ValueError("scheduled checkpoint is inconsistent")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
+    if scheduled_at_epoch >= run_started_at_epoch + timeout_seconds:
+        raise ValueError("checkpoint must precede the terminal benchmark deadline")
+    if not (
+        scheduled_at_epoch
+        <= captured_at_epoch
+        <= scheduled_at_epoch + MAX_CAPTURE_LATENESS_SECONDS
+    ):
+        raise ValueError("checkpoint capture is outside the allowed settle window")
 
     object_identity = f"{fuzzer_key}-{run_index}-{instance_id}"
     if not COMPONENT_RE.fullmatch(object_identity):
@@ -219,15 +299,24 @@ def capture_snapshot(
     with tempfile.TemporaryDirectory(prefix="scfuzzbench-preliminary-") as tmp:
         root = Path(tmp)
         copied_files: list[dict] = []
-        skipped_files: list[dict] = []
-        for source in _candidate_files(log_dir):
+        candidates, skipped_files = _candidate_files(log_dir)
+        total_bytes = 0
+        for source in candidates:
             relative = source.relative_to(log_dir)
             destination = root / "logs" / relative
             try:
-                details = snapshot_one_file(source, destination)
+                details = snapshot_one_file(
+                    source,
+                    destination,
+                    max_bytes=min(
+                        MAX_SNAPSHOT_FILE_BYTES,
+                        MAX_SNAPSHOT_TOTAL_BYTES - total_bytes,
+                    ),
+                )
             except (FileNotFoundError, OSError, ValueError) as exc:
                 skipped_files.append({"path": relative.as_posix(), "reason": type(exc).__name__})
                 continue
+            total_bytes += int(details["snapshot_size"])
             copied_files.append({"path": f"logs/{relative.as_posix()}", **details})
 
         metadata = {
@@ -250,7 +339,12 @@ def capture_snapshot(
             "fuzzer_label": fuzzer_label,
             "object_identity": object_identity,
             "files": copied_files,
-            "skipped_files": skipped_files,
+            "skipped_files": sorted(skipped_files, key=lambda item: item["path"]),
+            "snapshot_limits": {
+                "max_files": MAX_SNAPSHOT_FILES,
+                "max_file_bytes": MAX_SNAPSHOT_FILE_BYTES,
+                "max_total_bytes": MAX_SNAPSHOT_TOTAL_BYTES,
+            },
         }
         (root / "checkpoint.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"

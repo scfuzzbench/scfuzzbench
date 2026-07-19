@@ -13,6 +13,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,7 @@ RUN_SCHEMA = "scfuzzbench-preliminary-run/v1"
 SNAPSHOT_SCHEMA = "scfuzzbench-preliminary-snapshot/v1"
 RESULT_SCHEMA = "scfuzzbench-preliminary-analysis/v1"
 FINALIZED_SCHEMA = "scfuzzbench-preliminary-finalized/v1"
+SNAPSHOT_SET_SCHEMA = "scfuzzbench-preliminary-snapshot-set/v1"
 RUN_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}"
 UUID_PATTERN = r"[0-9a-f]{32}"
 RUN_KEY_RE = re.compile(
@@ -41,6 +43,14 @@ FINALIZED_KEY_RE = re.compile(
     rf"^preliminary/(?P<run>{RUN_ID_PATTERN})/(?P<uuid>{UUID_PATTERN})/finalized\.json$"
 )
 SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$")
+MAX_JSON_BYTES = 1024 * 1024
+MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_SNAPSHOT_FILES = 512
+MAX_SNAPSHOT_FILE_BYTES = 512 * 1024 * 1024
+MAX_SNAPSHOT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+MAX_CAPTURE_LATENESS_SECONDS = 300
+MAX_PUBLISHED_FILES = 2_048
+COPY_CHUNK_BYTES = 1024 * 1024
 
 
 def utc_iso(epoch: int) -> str:
@@ -52,7 +62,7 @@ def utc_iso(epoch: int) -> str:
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        for chunk in iter(lambda: handle.read(COPY_CHUNK_BYTES), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -100,10 +110,15 @@ def list_keys(bucket: str, prefix: str) -> list[str]:
 
 def read_s3_json(bucket: str, key: str) -> dict:
     assert_preliminary_key(key)
-    output = subprocess.check_output(
-        ["aws", "s3", "cp", f"s3://{bucket}/{key}", "-"], text=True
-    )
-    value = json.loads(output)
+    with tempfile.TemporaryDirectory(prefix="scfuzzbench-preliminary-json-") as tmp:
+        path = Path(tmp) / "object.json"
+        _download_verified_object(
+            bucket,
+            key,
+            path,
+            max_bytes=MAX_JSON_BYTES,
+        )
+        value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError(f"{key} must contain a JSON object")
     return value
@@ -121,7 +136,20 @@ def _positive_int(value: object, name: str) -> int:
     return parsed
 
 
+def _nonnegative_int(value: object, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a non-negative integer")
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a non-negative integer") from None
+    if parsed < 0 or str(value).strip() not in {str(parsed), f"{parsed}.0"}:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return parsed
+
+
 def validate_run_manifest(manifest: dict, *, run_id: str, benchmark_uuid: str) -> dict:
+    run_prefix(run_id, benchmark_uuid)
     if manifest.get("schema") != RUN_SCHEMA:
         raise ValueError("invalid preliminary run schema")
     if manifest.get("run_id") != run_id:
@@ -133,8 +161,8 @@ def validate_run_manifest(manifest: dict, *, run_id: str, benchmark_uuid: str) -
         timeout_hours = float(manifest.get("timeout_hours"))
     except (TypeError, ValueError):
         raise ValueError("timeout_hours must be positive") from None
-    if not math.isfinite(timeout_hours) or timeout_hours <= 0:
-        raise ValueError("timeout_hours must be positive")
+    if not math.isfinite(timeout_hours) or timeout_hours < 0.25 or timeout_hours > 72:
+        raise ValueError("timeout_hours must be in [0.25, 72]")
     preliminary = manifest.get("preliminary")
     if not isinstance(preliminary, dict):
         raise ValueError("run manifest is missing preliminary settings")
@@ -145,6 +173,10 @@ def validate_run_manifest(manifest: dict, *, run_id: str, benchmark_uuid: str) -
     interval_raw = preliminary.get("interval_seconds", 0)
     if enabled:
         interval = _positive_int(interval_raw, "preliminary.interval_seconds")
+        if interval < 60 or interval > 86400:
+            raise ValueError(
+                "enabled preliminary.interval_seconds must be in [60, 86400]"
+            )
     else:
         try:
             interval = int(interval_raw)
@@ -160,11 +192,15 @@ def validate_run_manifest(manifest: dict, *, run_id: str, benchmark_uuid: str) -
     fuzzers = manifest.get("fuzzer_keys")
     if not isinstance(fuzzers, list) or not fuzzers:
         raise ValueError("fuzzer_keys must be a non-empty list")
+    if len(fuzzers) > 64:
+        raise ValueError("fuzzer_keys contains too many entries")
     if any(not isinstance(item, str) or not SAFE_LABEL_RE.fullmatch(item) for item in fuzzers):
         raise ValueError("fuzzer_keys contains an unsafe value")
     if len(fuzzers) != len(set(fuzzers)):
         raise ValueError("fuzzer_keys must be unique")
     instances = _positive_int(manifest.get("instances_per_fuzzer"), "instances_per_fuzzer")
+    if instances > 20:
+        raise ValueError("instances_per_fuzzer must be in [1, 20]")
     return {
         **manifest,
         "run_started_at_epoch": started,
@@ -198,6 +234,10 @@ def select_active_checkpoints(
 ) -> list[dict]:
     if bool(requested_run_id) != bool(requested_benchmark_uuid):
         raise ValueError("run_id and benchmark_uuid must be supplied together")
+    if requested_run_id:
+        run_prefix(requested_run_id, requested_benchmark_uuid)
+    if settle_seconds < 0 or settle_seconds > 3600:
+        raise ValueError("settle_seconds must be in [0, 3600]")
     snapshots: dict[tuple[str, str], set[int]] = {}
     published: set[tuple[str, str, int]] = set()
     finalized: set[tuple[str, str]] = set()
@@ -275,8 +315,10 @@ def build_run_manifest(terraform_outputs: dict) -> dict:
     started = _positive_int(output("run_started_at_epoch"), "run_started_at_epoch")
     run_prefix(run_id, uuid)
     interval = int(manifest.get("preliminary_interval_seconds", 3600))
-    if interval < 0:
-        raise ValueError("preliminary interval cannot be negative")
+    if interval != 0 and not 60 <= interval <= 86400:
+        raise ValueError(
+            "preliminary interval must be zero or in [60, 86400] seconds"
+        )
     result = {
         **manifest,
         "schema": RUN_SCHEMA,
@@ -344,10 +386,10 @@ def put_immutable(
         remote = str(head.get("Metadata", {}).get("sha256", ""))
         if remote == digest:
             return digest
-        if remote:
+        if head:
             raise RuntimeError(
                 f"refusing to overwrite divergent immutable object {key}: "
-                f"local {digest}, remote {remote}"
+                f"local {digest}, remote {remote or 'missing SHA-256'}"
             )
         if attempt == max_attempts:
             raise RuntimeError(
@@ -367,27 +409,57 @@ def publish_run_manifest(*, bucket: str, manifest_path: Path) -> str:
     return key
 
 
-def _safe_zip_names(bundle: zipfile.ZipFile) -> list[str]:
-    names = bundle.namelist()
-    if len(names) > 10_000:
+def _safe_zip_entries(bundle: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
+    infos = bundle.infolist()
+    if len(infos) > MAX_SNAPSHOT_FILES + 1:
         raise ValueError("snapshot archive contains too many entries")
-    for name in names:
+    entries: dict[str, zipfile.ZipInfo] = {}
+    total_size = 0
+    for info in infos:
+        name = info.filename
+        if name in entries:
+            raise ValueError(f"duplicate snapshot archive member: {name}")
+        if len(name.encode("utf-8")) > 1024:
+            raise ValueError("snapshot archive member name is too long")
         path = PurePosixPath(name)
         if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
             raise ValueError(f"unsafe snapshot archive member: {name}")
         if name != "checkpoint.json" and not name.startswith("logs/"):
             raise ValueError(f"unexpected snapshot archive member: {name}")
-    if names.count("checkpoint.json") != 1:
+        if info.is_dir() or info.flag_bits & 0x1:
+            raise ValueError(f"unsupported snapshot archive member: {name}")
+        mode = (info.external_attr >> 16) & 0o170000
+        if mode not in {0, stat.S_IFREG}:
+            raise ValueError(f"non-regular snapshot archive member: {name}")
+        if info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+            raise ValueError(f"unsupported compression for snapshot member: {name}")
+        limit = MAX_JSON_BYTES if name == "checkpoint.json" else MAX_SNAPSHOT_FILE_BYTES
+        if info.file_size < 0 or info.file_size > limit:
+            raise ValueError(f"snapshot archive member exceeds its byte cap: {name}")
+        total_size += info.file_size
+        if total_size > MAX_SNAPSHOT_TOTAL_BYTES + MAX_JSON_BYTES:
+            raise ValueError("snapshot archive exceeds its total uncompressed byte cap")
+        entries[name] = info
+    if "checkpoint.json" not in entries:
         raise ValueError("snapshot archive must contain one checkpoint.json")
-    return names
+    return entries
 
 
-def _download_verified_object(bucket: str, key: str, destination: Path) -> None:
+def _download_verified_object(
+    bucket: str,
+    key: str,
+    destination: Path,
+    *,
+    max_bytes: int = MAX_ARCHIVE_BYTES,
+) -> None:
     assert_preliminary_key(key)
     head = aws_json(["s3api", "head-object", "--bucket", bucket, "--key", key])
     expected_sha = str(head.get("Metadata", {}).get("sha256", ""))
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
         raise ValueError(f"{key} is missing immutable SHA-256 metadata")
+    size = _positive_int(head.get("ContentLength"), "S3 ContentLength")
+    if size > max_bytes:
+        raise ValueError(f"{key} exceeds its download byte cap")
     destination.parent.mkdir(parents=True, exist_ok=True)
     subprocess.check_call(
         [
@@ -405,6 +477,8 @@ def _download_verified_object(bucket: str, key: str, destination: Path) -> None:
     actual_sha = sha256_file(destination)
     if actual_sha != expected_sha:
         raise ValueError(f"downloaded checksum mismatch for {key}")
+    if destination.stat().st_size != size:
+        raise ValueError(f"downloaded size mismatch for {key}")
 
 
 def verify_and_extract_snapshot(
@@ -424,15 +498,22 @@ def verify_and_extract_snapshot(
         or int(match["checkpoint"]) != checkpoint
     ):
         raise ValueError("snapshot object key disagrees with requested run/checkpoint")
+    if archive_path.stat().st_size > MAX_ARCHIVE_BYTES:
+        raise ValueError("snapshot archive exceeds its byte cap")
     with zipfile.ZipFile(archive_path) as bundle:
-        names = _safe_zip_names(bundle)
-        metadata = json.loads(bundle.read("checkpoint.json"))
+        entries = _safe_zip_entries(bundle)
+        with bundle.open(entries["checkpoint.json"]) as checkpoint_file:
+            checkpoint_bytes = checkpoint_file.read(MAX_JSON_BYTES + 1)
+        if len(checkpoint_bytes) > MAX_JSON_BYTES:
+            raise ValueError("snapshot checkpoint metadata exceeds its byte cap")
+        metadata = json.loads(checkpoint_bytes)
         if not isinstance(metadata, dict) or metadata.get("schema") != SNAPSHOT_SCHEMA:
             raise ValueError("invalid snapshot checkpoint metadata")
         expected_schedule = (
             run_manifest["run_started_at_epoch"]
             + checkpoint * run_manifest["preliminary"]["interval_seconds"]
         )
+        expected_timeout = int(run_manifest["timeout_hours"] * 3600)
         required_matches = {
             "run_id": run_manifest["run_id"],
             "run_started_at_epoch": run_manifest["run_started_at_epoch"],
@@ -440,6 +521,10 @@ def verify_and_extract_snapshot(
             "checkpoint": checkpoint,
             "interval_seconds": run_manifest["preliminary"]["interval_seconds"],
             "scheduled_at_epoch": expected_schedule,
+            "scheduled_at_utc": utc_iso(expected_schedule),
+            "elapsed_seconds": expected_schedule
+            - run_manifest["run_started_at_epoch"],
+            "planned_timeout_seconds": expected_timeout,
             "object_identity": match["identity"],
             "complete": False,
         }
@@ -458,30 +543,85 @@ def verify_and_extract_snapshot(
             raise ValueError("snapshot instance_id is invalid")
         if not SAFE_LABEL_RE.fullmatch(fuzzer_label):
             raise ValueError("snapshot fuzzer_label is invalid")
+        if metadata["object_identity"] != f"{fuzzer_key}-{run_index}-{instance_id}":
+            raise ValueError("snapshot object identity is not derived from its replicate")
+        captured_at = _positive_int(
+            metadata.get("captured_at_epoch"), "captured_at_epoch"
+        )
+        if not (
+            expected_schedule
+            <= captured_at
+            <= expected_schedule + MAX_CAPTURE_LATENESS_SECONDS
+        ):
+            raise ValueError("snapshot capture is outside the allowed settle window")
+        if metadata.get("captured_at_utc") != utc_iso(captured_at):
+            raise ValueError("snapshot captured_at_utc is inconsistent")
+        if expected_schedule >= run_manifest["run_started_at_epoch"] + expected_timeout:
+            raise ValueError("snapshot checkpoint is at or after the terminal deadline")
 
         declared: dict[str, dict] = {}
-        for entry in metadata.get("files", []):
+        files = metadata.get("files")
+        if not isinstance(files, list) or len(files) > MAX_SNAPSHOT_FILES:
+            raise ValueError("invalid checkpoint file inventory")
+        declared_total = 0
+        for entry in files:
             if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
                 raise ValueError("invalid checkpoint file entry")
             path = entry["path"]
             if path in declared:
                 raise ValueError(f"duplicate checkpoint file entry: {path}")
+            source_size = _nonnegative_int(
+                entry.get("source_size_at_capture"), f"{path} source size"
+            )
+            captured_size = _nonnegative_int(
+                entry.get("captured_bytes_before_line_trim"),
+                f"{path} captured size",
+            )
+            snapshot_size = _nonnegative_int(
+                entry.get("snapshot_size"), f"{path} snapshot size"
+            )
+            if source_size > MAX_SNAPSHOT_FILE_BYTES:
+                raise ValueError(f"declared source exceeds its byte cap: {path}")
+            if captured_size != source_size or snapshot_size > captured_size:
+                raise ValueError(f"declared frozen-prefix sizes are inconsistent: {path}")
+            if not isinstance(entry.get("partial_final_line_removed"), bool):
+                raise ValueError(f"invalid partial-line marker: {path}")
+            if not re.fullmatch(r"[0-9a-f]{64}", str(entry.get("sha256", ""))):
+                raise ValueError(f"invalid checkpoint file SHA-256: {path}")
+            declared_total += snapshot_size
+            if declared_total > MAX_SNAPSHOT_TOTAL_BYTES:
+                raise ValueError("declared checkpoint files exceed the total byte cap")
             declared[path] = entry
-        actual_files = {name for name in names if name != "checkpoint.json"}
+        skipped_files = metadata.get("skipped_files")
+        if not isinstance(skipped_files, list) or len(skipped_files) > MAX_SNAPSHOT_FILES:
+            raise ValueError("invalid skipped-file inventory")
+        actual_files = set(entries) - {"checkpoint.json"}
         if actual_files != set(declared):
             raise ValueError("checkpoint file inventory does not match archive members")
         instance_dir = output_dir / f"{instance_id}-{fuzzer_label}"
         for name in sorted(actual_files):
-            data = bundle.read(name)
             entry = declared[name]
-            if len(data) != entry.get("snapshot_size"):
+            if entries[name].file_size != entry["snapshot_size"]:
                 raise ValueError(f"snapshot size mismatch for {name}")
-            if hashlib.sha256(data).hexdigest() != entry.get("sha256"):
-                raise ValueError(f"snapshot checksum mismatch for {name}")
             relative = PurePosixPath(name).relative_to("logs")
             destination = instance_dir / "logs" / Path(*relative.parts)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(data)
+            digest = hashlib.sha256()
+            copied = 0
+            with bundle.open(entries[name]) as source, destination.open("xb") as target:
+                while True:
+                    chunk = source.read(COPY_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    copied += len(chunk)
+                    if copied > entry["snapshot_size"]:
+                        raise ValueError(f"snapshot size mismatch for {name}")
+                    digest.update(chunk)
+                    target.write(chunk)
+            if copied != entry["snapshot_size"]:
+                raise ValueError(f"snapshot size mismatch for {name}")
+            if digest.hexdigest() != entry["sha256"]:
+                raise ValueError(f"snapshot checksum mismatch for {name}")
     return metadata
 
 
@@ -507,6 +647,9 @@ def materialize_checkpoint(
     )
     if not keys:
         raise ValueError(f"no snapshot bundles found under {prefix}")
+    expected = expected_legs(manifest)
+    if len(keys) > len(expected):
+        raise ValueError("checkpoint contains more snapshot objects than expected legs")
     destination.mkdir(parents=True, exist_ok=False)
     zips_dir = destination / "zips"
     unzipped_dir = destination / "unzipped"
@@ -529,20 +672,28 @@ def materialize_checkpoint(
         seen_legs.add(leg)
         captures.append(metadata)
 
-    expected = expected_legs(manifest)
     missing = sorted(expected - seen_legs)
     scheduled = (
         manifest["run_started_at_epoch"]
         + checkpoint * manifest["preliminary"]["interval_seconds"]
     )
+    captured_epochs = [
+        _positive_int(item.get("captured_at_epoch"), "captured_at_epoch")
+        for item in captures
+    ]
+    as_of = max(captured_epochs)
     summary = {
-        "schema": "scfuzzbench-preliminary-snapshot-set/v1",
+        "schema": SNAPSHOT_SET_SCHEMA,
         "run_id": run_id,
         "benchmark_uuid": benchmark_uuid,
         "checkpoint": checkpoint,
-        "as_of_epoch": scheduled,
-        "as_of_utc": utc_iso(scheduled),
-        "elapsed_seconds": scheduled - manifest["run_started_at_epoch"],
+        "scheduled_at_epoch": scheduled,
+        "scheduled_at_utc": utc_iso(scheduled),
+        "capture_window_start_epoch": min(captured_epochs),
+        "capture_window_end_epoch": as_of,
+        "as_of_epoch": as_of,
+        "as_of_utc": utc_iso(as_of),
+        "elapsed_seconds": as_of - manifest["run_started_at_epoch"],
         "planned_timeout_seconds": int(manifest["timeout_hours"] * 3600),
         "expected_snapshots": len(expected),
         "present_snapshots": len(seen_legs),
@@ -565,6 +716,83 @@ def format_duration(seconds: int) -> str:
     hours, remainder = divmod(max(0, seconds), 3600)
     minutes = remainder // 60
     return f"{hours}h {minutes}m"
+
+
+def validate_snapshot_set(context: dict) -> dict:
+    if not isinstance(context, dict) or context.get("schema") != SNAPSHOT_SET_SCHEMA:
+        raise ValueError("invalid preliminary snapshot-set schema")
+    run_id = str(context.get("run_id", ""))
+    uuid = str(context.get("benchmark_uuid", ""))
+    run_prefix(run_id, uuid)
+    checkpoint = _positive_int(context.get("checkpoint"), "checkpoint")
+    if checkpoint > 999999:
+        raise ValueError("checkpoint is out of range")
+    scheduled = _positive_int(
+        context.get("scheduled_at_epoch"), "scheduled_at_epoch"
+    )
+    capture_start = _positive_int(
+        context.get("capture_window_start_epoch"), "capture_window_start_epoch"
+    )
+    capture_end = _positive_int(
+        context.get("capture_window_end_epoch"), "capture_window_end_epoch"
+    )
+    as_of = _positive_int(context.get("as_of_epoch"), "as_of_epoch")
+    elapsed = _positive_int(context.get("elapsed_seconds"), "elapsed_seconds")
+    planned = _positive_int(
+        context.get("planned_timeout_seconds"), "planned_timeout_seconds"
+    )
+    expected = _positive_int(
+        context.get("expected_snapshots"), "expected_snapshots"
+    )
+    present = _nonnegative_int(
+        context.get("present_snapshots"), "present_snapshots"
+    )
+    if present > expected:
+        raise ValueError("present snapshots cannot exceed expected snapshots")
+    if not scheduled <= capture_start <= capture_end == as_of:
+        raise ValueError("snapshot-set capture window is inconsistent")
+    if capture_end - capture_start > MAX_CAPTURE_LATENESS_SECONDS:
+        raise ValueError("snapshot-set capture window is too wide")
+    if elapsed > planned:
+        raise ValueError("preliminary elapsed time cannot exceed the planned budget")
+    if context.get("scheduled_at_utc") != utc_iso(scheduled):
+        raise ValueError("snapshot-set scheduled_at_utc is inconsistent")
+    if context.get("as_of_utc") != utc_iso(as_of):
+        raise ValueError("snapshot-set as_of_utc is inconsistent")
+    missing = context.get("missing_replicates")
+    if not isinstance(missing, list) or len(missing) != expected - present:
+        raise ValueError("snapshot-set missing-replicate accounting is inconsistent")
+    seen_missing: set[tuple[str, str]] = set()
+    for item in missing:
+        if not isinstance(item, dict):
+            raise ValueError("invalid missing-replicate entry")
+        fuzzer = str(item.get("fuzzer_key", ""))
+        index = str(item.get("run_index", ""))
+        if not SAFE_LABEL_RE.fullmatch(fuzzer) or not index.isdigit():
+            raise ValueError("unsafe missing-replicate entry")
+        if (fuzzer, index) in seen_missing:
+            raise ValueError("duplicate missing-replicate entry")
+        seen_missing.add((fuzzer, index))
+    for field, expected_value in (
+        ("incomplete", True),
+        ("non_terminal", True),
+        ("comparative_decisions_allowed", False),
+        ("optional_stopping_allowed", False),
+    ):
+        if context.get(field) is not expected_value:
+            raise ValueError(f"snapshot-set field {field} is invalid")
+    return {
+        **context,
+        "checkpoint": checkpoint,
+        "scheduled_at_epoch": scheduled,
+        "capture_window_start_epoch": capture_start,
+        "capture_window_end_epoch": capture_end,
+        "as_of_epoch": as_of,
+        "elapsed_seconds": elapsed,
+        "planned_timeout_seconds": planned,
+        "expected_snapshots": expected,
+        "present_snapshots": present,
+    }
 
 
 def preliminary_banner(context: dict) -> str:
@@ -601,13 +829,31 @@ def _watermark_png(path: Path, text_lines: list[str]) -> None:
     output.convert("RGB").save(path, format="PNG")
 
 
+def _tree_hashes(root: Path, *, exclude: set[str] | None = None) -> dict[str, str]:
+    excluded = exclude or set()
+    files = sorted(path for path in root.rglob("*") if path.is_file())
+    if len(files) > MAX_PUBLISHED_FILES:
+        raise ValueError("preliminary output tree contains too many files")
+    hashes: dict[str, str] = {}
+    for path in files:
+        relative = path.relative_to(root).as_posix()
+        if relative in excluded:
+            continue
+        if path.is_symlink():
+            raise ValueError("preliminary output tree must not contain symlinks")
+        hashes[relative] = sha256_file(path)
+    return hashes
+
+
 def watermark_tree(*, source: Path, destination: Path, snapshot_set: dict) -> dict:
+    snapshot_set = validate_snapshot_set(snapshot_set)
     if source.resolve() == destination.resolve():
         raise ValueError("preliminary watermarking requires a copied output tree")
     if destination.exists():
         raise FileExistsError(destination)
     if any(path.is_symlink() for path in source.rglob("*")):
         raise ValueError("preliminary output source must not contain symlinks")
+    source_hashes = _tree_hashes(source)
     shutil.copytree(source, destination)
     # Wall-clock performance of the Actions analysis job is operational debug
     # data, not benchmark data, and is intentionally nondeterministic. Keep it
@@ -630,33 +876,80 @@ def watermark_tree(*, source: Path, destination: Path, snapshot_set: dict) -> di
     for path in sorted(destination.rglob("*.png")):
         _watermark_png(path, chart_lines)
         watermarked.append(path.relative_to(destination).as_posix())
-    metadata = {
-        **snapshot_set,
-        "schema": RESULT_SCHEMA,
-        "watermarked_files": sorted(watermarked),
-    }
-    (destination / "preliminary.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    (destination / "PRELIMINARY.md").write_text(
+    preliminary_path = destination / "PRELIMINARY.md"
+    preliminary_path.write_text(
         banner
         + "\nNo preliminary result is a terminal benchmark result. "
         "Wait for the canonical release before comparing fuzzers.\n",
         encoding="utf-8",
     )
+    watermarked.append("PRELIMINARY.md")
+    if _tree_hashes(source) != source_hashes:
+        raise RuntimeError("source analysis tree changed during preliminary watermarking")
+    published_hashes = _tree_hashes(destination)
+    metadata = {
+        **snapshot_set,
+        "schema": RESULT_SCHEMA,
+        "watermarked_files": sorted(watermarked),
+        "source_file_sha256": source_hashes,
+        "published_file_sha256": published_hashes,
+    }
+    (destination / "preliminary.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return metadata
+
+
+def validate_result_metadata(
+    metadata: dict,
+    *,
+    run_id: str | None = None,
+    benchmark_uuid: str | None = None,
+    checkpoint: int | None = None,
+) -> dict:
+    if not isinstance(metadata, dict) or metadata.get("schema") != RESULT_SCHEMA:
+        raise ValueError("missing preliminary analysis metadata")
+    normalized = validate_snapshot_set({**metadata, "schema": SNAPSHOT_SET_SCHEMA})
+    if run_id is not None and normalized["run_id"] != run_id:
+        raise ValueError("preliminary analysis run_id disagrees with its key")
+    if benchmark_uuid is not None and normalized["benchmark_uuid"] != benchmark_uuid:
+        raise ValueError("preliminary analysis benchmark_uuid disagrees with its key")
+    if checkpoint is not None and normalized["checkpoint"] != checkpoint:
+        raise ValueError("preliminary analysis checkpoint disagrees with its key")
+    watermarked = metadata.get("watermarked_files")
+    if not isinstance(watermarked, list) or len(watermarked) > MAX_PUBLISHED_FILES:
+        raise ValueError("invalid preliminary watermark inventory")
+    for value in watermarked:
+        if not isinstance(value, str):
+            raise ValueError("invalid preliminary watermark path")
+        path = PurePosixPath(value)
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+            raise ValueError("unsafe preliminary watermark path")
+    for field in ("source_file_sha256", "published_file_sha256"):
+        hashes = metadata.get(field)
+        if not isinstance(hashes, dict) or len(hashes) > MAX_PUBLISHED_FILES:
+            raise ValueError(f"invalid {field} inventory")
+        for value, digest in hashes.items():
+            if not isinstance(value, str) or not re.fullmatch(
+                r"[0-9a-f]{64}", str(digest)
+            ):
+                raise ValueError(f"invalid {field} entry")
+            path = PurePosixPath(value)
+            if path.is_absolute() or any(
+                part in {"", ".", ".."} for part in path.parts
+            ):
+                raise ValueError(f"unsafe {field} path")
+    return {**metadata, **normalized, "schema": RESULT_SCHEMA}
 
 
 def validate_watermarked_tree(root: Path) -> dict:
     metadata_path = root / "preliminary.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if metadata.get("schema") != RESULT_SCHEMA:
-        raise ValueError("missing preliminary analysis metadata")
+    metadata = validate_result_metadata(metadata)
     actual = sorted(
         path.relative_to(root).as_posix()
         for path in root.rglob("*")
         if path.is_file() and path.suffix.lower() in {".md", ".png"}
-        and path.name != "PRELIMINARY.md"
     )
     if actual != sorted(metadata.get("watermarked_files", [])):
         raise ValueError("watermark inventory does not cover every Markdown/PNG result")
@@ -664,6 +957,12 @@ def validate_watermarked_tree(root: Path) -> dict:
     for path in root.rglob("*.md"):
         if marker not in path.read_text(encoding="utf-8"):
             raise ValueError(f"Markdown result is missing its preliminary warning: {path}")
+    expected_hashes = metadata.get("published_file_sha256")
+    if not isinstance(expected_hashes, dict):
+        raise ValueError("preliminary publication is missing its file hashes")
+    actual_hashes = _tree_hashes(root, exclude={"preliminary.json"})
+    if actual_hashes != expected_hashes:
+        raise ValueError("preliminary publication file hashes do not match")
     return metadata
 
 
@@ -677,6 +976,10 @@ def publish_tree(*, bucket: str, source: Path) -> str:
     # Publish metadata last. Its existence is the atomic discovery marker that
     # tells docs and future workflow runs the whole immutable tree is available.
     files = sorted(path for path in source.rglob("*") if path.is_file())
+    if len(files) > MAX_PUBLISHED_FILES:
+        raise ValueError("preliminary publication contains too many files")
+    if any(path.is_symlink() for path in files):
+        raise ValueError("preliminary publication must not contain symlinks")
     files.sort(key=lambda path: path.name == "preliminary.json")
     for path in files:
         relative = path.relative_to(source).as_posix()

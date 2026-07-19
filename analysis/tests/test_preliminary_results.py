@@ -121,6 +121,25 @@ class PreliminaryResultsTests(unittest.TestCase):
 
         self.assertEqual([], selected)
 
+    def test_s3_key_listing_follows_every_continuation_page(self):
+        pages = [
+            {
+                "Contents": [{"Key": "preliminary/a"}],
+                "IsTruncated": True,
+                "NextContinuationToken": "next-token",
+            },
+            {
+                "Contents": [{"Key": "preliminary/b"}],
+                "IsTruncated": False,
+            },
+        ]
+        with mock.patch.object(self.module, "aws_json", side_effect=pages) as aws_json:
+            keys = self.module.list_keys("bucket", "preliminary/")
+
+        self.assertEqual(["preliminary/a", "preliminary/b"], keys)
+        self.assertIn("--continuation-token", aws_json.call_args_list[1].args[0])
+        self.assertIn("next-token", aws_json.call_args_list[1].args[0])
+
     def test_prefix_guard_refuses_canonical_artifact_paths(self):
         for key in (
             "logs/gh-1/abc/snapshot.zip",
@@ -161,13 +180,38 @@ class PreliminaryResultsTests(unittest.TestCase):
             self.assertIn("--if-none-match", call.args[0])
             self.assertIn("*", call.args[0])
 
+    def test_immutable_put_rejects_existing_object_without_checksum_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "object.json"
+            source.write_text('{"ok":true}\n', encoding="utf-8")
+            failed = SimpleNamespace(returncode=1, stderr="precondition failed")
+            with mock.patch.object(
+                self.module.subprocess, "run", return_value=failed
+            ) as run, mock.patch.object(
+                self.module,
+                "aws_json",
+                return_value={"ContentLength": source.stat().st_size, "Metadata": {}},
+            ), self.assertRaisesRegex(RuntimeError, "missing SHA-256"):
+                self.module.put_immutable(
+                    bucket="bucket",
+                    key="preliminary/gh-1/" + "a" * 32 + "/run.json",
+                    source=source,
+                    retry_delay=0,
+                )
+            self.assertEqual(1, run.call_count)
+
     def test_watermark_covers_all_markdown_and_chart_paths_in_copy_only(self):
         from PIL import Image
 
         context = {
+            "schema": self.module.SNAPSHOT_SET_SCHEMA,
             "run_id": "gh-24680-1",
             "benchmark_uuid": "b" * 32,
             "checkpoint": 2,
+            "scheduled_at_epoch": 1_800_007_200,
+            "scheduled_at_utc": "2027-01-15T10:00:00Z",
+            "capture_window_start_epoch": 1_800_007_200,
+            "capture_window_end_epoch": 1_800_007_200,
             "as_of_epoch": 1_800_007_200,
             "as_of_utc": "2027-01-15T10:00:00Z",
             "elapsed_seconds": 7200,
@@ -214,6 +258,7 @@ class PreliminaryResultsTests(unittest.TestCase):
             self.assertEqual(before, after_source)
             self.assertEqual(
                 [
+                    "PRELIMINARY.md",
                     "data/REPORT.md",
                     "images/bugs_over_time.png",
                     "images/nested/optional.png",
@@ -284,6 +329,56 @@ class PreliminaryResultsTests(unittest.TestCase):
                     object_key=key,
                     checkpoint=1,
                 )
+
+    def test_zip_inventory_rejects_duplicate_and_oversize_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "snapshot.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("checkpoint.json", b"{}")
+                bundle.writestr("logs/run.log", b"one\n")
+                bundle.writestr("logs/run.log", b"two\n")
+            with zipfile.ZipFile(archive) as bundle, self.assertRaisesRegex(
+                ValueError, "duplicate"
+            ):
+                self.module._safe_zip_entries(bundle)
+
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("checkpoint.json", b"{}")
+                bundle.writestr("logs/run.log", b"12345")
+            with mock.patch.object(self.module, "MAX_SNAPSHOT_FILE_BYTES", 4):
+                with zipfile.ZipFile(archive) as bundle, self.assertRaisesRegex(
+                    ValueError, "byte cap"
+                ):
+                    self.module._safe_zip_entries(bundle)
+
+    def test_result_metadata_rejects_missing_noncomparative_guards(self):
+        metadata = {
+            "schema": self.module.RESULT_SCHEMA,
+            "run_id": "gh-24680-1",
+            "benchmark_uuid": "b" * 32,
+            "checkpoint": 1,
+            "scheduled_at_epoch": 1_800_003_600,
+            "scheduled_at_utc": self.module.utc_iso(1_800_003_600),
+            "capture_window_start_epoch": 1_800_003_601,
+            "capture_window_end_epoch": 1_800_003_601,
+            "as_of_epoch": 1_800_003_601,
+            "as_of_utc": self.module.utc_iso(1_800_003_601),
+            "elapsed_seconds": 3601,
+            "planned_timeout_seconds": 86400,
+            "expected_snapshots": 1,
+            "present_snapshots": 1,
+            "missing_replicates": [],
+            "incomplete": True,
+            "non_terminal": True,
+            "comparative_decisions_allowed": True,
+            "optional_stopping_allowed": False,
+            "watermarked_files": ["PRELIMINARY.md"],
+            "source_file_sha256": {},
+            "published_file_sha256": {"PRELIMINARY.md": "a" * 64},
+        }
+
+        with self.assertRaisesRegex(ValueError, "comparative_decisions_allowed"):
+            self.module.validate_result_metadata(metadata)
 
 
 if __name__ == "__main__":

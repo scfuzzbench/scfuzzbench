@@ -293,6 +293,13 @@ data "aws_iam_policy_document" "s3_access" {
     ]
   }
 
+  statement {
+    actions = ["s3:GetObject"]
+    resources = [
+      "arn:aws:s3:::${local.bucket_name}/preliminary/${local.run_id}/${local.benchmark_uuid}/*",
+    ]
+  }
+
   dynamic "statement" {
     for_each = local.ssm_parameter_arns
 

@@ -221,7 +221,7 @@ aws ec2 get-console-output --instance-id i-0123456789abcdef0 --latest --output j
 Cloud runs publish immutable checkpoints every 60 minutes by default. Set
 `preliminary_interval_minutes` in the benchmark request:
 
-- Use a positive value to change the interval.
+- Use a value from 1 to 1440 minutes to change the interval.
 - Use `0` to disable preliminary results.
 
 The scheduled **Benchmark Preliminary Results** workflow selects one settled

@@ -407,6 +407,8 @@ jobs:
           seconds = minutes * 60
           if minutes < 0 or minutes > 1440:
               raise SystemExit("preliminary_interval_minutes must be in [0, 1440]")
+          if minutes != 0 and minutes < 1:
+              raise SystemExit("preliminary_interval_minutes must be 0 or at least 1")
           if not seconds.is_integer():
               raise SystemExit("preliminary_interval_minutes must resolve to whole seconds")
           PY

@@ -263,6 +263,9 @@ jobs:
             if (!Number.isInteger(preliminaryIntervalMinutes * 60)) {
               errors.push("preliminary_interval_minutes must resolve to whole seconds");
             }
+            if (preliminaryIntervalMinutes !== 0 && preliminaryIntervalMinutes < 1) {
+              errors.push("preliminary_interval_minutes must be 0 or at least 1");
+            }
 
             let fuzzers = payload["fuzzers"];
             if (fuzzers === undefined || fuzzers === null) {
