@@ -4,6 +4,11 @@ locals {
 
   timeout_seconds = var.timeout_hours * 3600
   run_id          = var.run_id != "" ? var.run_id : time_static.run.unix
+  run_started_at_epoch = (
+    var.run_started_at_epoch != "" ? var.run_started_at_epoch :
+    can(regex("^[0-9]+$", local.run_id)) ? local.run_id :
+    time_static.run.unix
+  )
 
   echidna_ci_inputs = [
     var.echidna_ci_repo,
@@ -63,6 +68,7 @@ locals {
     instance_type                = var.instance_type
     instances_per_fuzzer         = var.instances_per_fuzzer
     timeout_hours                = var.timeout_hours
+    preliminary_interval_seconds = var.preliminary_interval_seconds
     aws_region                   = var.aws_region
     ubuntu_ami_id                = data.aws_ssm_parameter.ubuntu_ami.value
     foundry_version              = local.foundry_release_version
@@ -345,25 +351,33 @@ resource "aws_iam_role" "fuzzer" {
 
 data "aws_iam_policy_document" "s3_access" {
   statement {
+    sid       = "ReadArtifactBucketLocation"
+    actions   = ["s3:GetBucketLocation"]
+    resources = ["arn:aws:s3:::${local.bucket_name}"]
+  }
+
+  statement {
+    sid = "WriteOwnBenchmarkArtifacts"
     actions = [
       "s3:PutObject",
       "s3:AbortMultipartUpload",
-      "s3:ListBucket",
-      "s3:GetBucketLocation",
     ]
-
     resources = [
-      "arn:aws:s3:::${local.bucket_name}",
-      "arn:aws:s3:::${local.bucket_name}/*",
+      "arn:aws:s3:::${local.bucket_name}/logs/${local.run_id}/${local.benchmark_uuid}/*",
+      "arn:aws:s3:::${local.bucket_name}/corpus/${local.run_id}/${local.benchmark_uuid}/*",
+      "arn:aws:s3:::${local.bucket_name}/runs/${local.run_id}/${local.benchmark_uuid}/manifest.json",
+      "arn:aws:s3:::${local.bucket_name}/preliminary/${local.run_id}/${local.benchmark_uuid}/snapshots/*",
     ]
   }
 
   statement {
-    sid     = "VerifyImmutableBenchmarkManifests"
+    sid     = "VerifyOwnImmutableArtifacts"
     actions = ["s3:GetObject"]
     resources = [
-      "arn:aws:s3:::${local.bucket_name}/logs/*/manifest.json",
-      "arn:aws:s3:::${local.bucket_name}/runs/*/manifest.json",
+      "arn:aws:s3:::${local.bucket_name}/logs/${local.run_id}/${local.benchmark_uuid}/*",
+      "arn:aws:s3:::${local.bucket_name}/corpus/${local.run_id}/${local.benchmark_uuid}/*",
+      "arn:aws:s3:::${local.bucket_name}/runs/${local.run_id}/${local.benchmark_uuid}/manifest.json",
+      "arn:aws:s3:::${local.bucket_name}/preliminary/${local.run_id}/${local.benchmark_uuid}/snapshots/*",
     ]
   }
 
@@ -518,6 +532,7 @@ resource "aws_instance" "fuzzer" {
     seed_corpus_helper                  = file("${path.module}/../fuzzers/_shared/prepare_seed_corpus.py")
     install_sh                          = file(each.value.fuzzer.install_path)
     run_sh                              = file(each.value.fuzzer.run_path)
+    preliminary_snapshot_py             = file("${path.module}/../scripts/preliminary_snapshot.py")
     echidna_ci_enabled                  = each.value.fuzzer.key == "echidna" && local.echidna_ci_enabled
     echidna_ci_extractor                = each.value.fuzzer.key == "echidna" && local.echidna_ci_enabled ? file("${path.module}/../fuzzers/echidna/extract_ci_artifact.py") : ""
     medusa_source_enabled               = each.value.fuzzer.key == "medusa" && local.medusa_source_enabled
@@ -525,12 +540,15 @@ resource "aws_instance" "fuzzer" {
     aws_region                          = var.aws_region
     s3_bucket                           = local.bucket_name
     run_id                              = local.run_id
+    run_started_at_epoch                = local.run_started_at_epoch
     benchmark_uuid                      = local.benchmark_uuid
     benchmark_manifest_b64              = local.benchmark_manifest_b64
     timeout_seconds                     = local.timeout_seconds
     repo_url                            = var.target_repo_url
     repo_commit                         = var.target_commit
     benchmark_type                      = var.benchmark_type
+    preliminary_interval_seconds        = var.preliminary_interval_seconds
+    run_index                           = each.value.run_index
     foundry_version                     = local.foundry_release_version
     foundry_git_repo                    = var.foundry_git_repo
     foundry_git_ref                     = var.foundry_git_ref

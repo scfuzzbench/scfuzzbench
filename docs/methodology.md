@@ -372,6 +372,15 @@ If input CSV is empty, the report explicitly records the no-data condition and e
 
 ## Publication and Release
 
+### Preliminary checkpoints
+
+Active cloud runs may expose hourly, point-in-time copies of runner logs and
+metrics under the separate `preliminary/` prefix. A checkpoint is a monitoring
+aid, not a benchmark result: it is incomplete, may omit late replicas, and
+cannot support comparisons, pass/fail decisions, or optional stopping. Every
+preliminary report and chart carries that warning plus the fixed checkpoint
+time and elapsed budget. Final reports use the unchanged canonical pipeline.
+
 `Benchmark Release` workflow:
 
 - Discovers complete runs automatically (or accepts explicit `benchmark_uuid` + `run_id`).

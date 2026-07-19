@@ -8,9 +8,19 @@ output "run_id" {
   value       = local.run_id
 }
 
+output "run_started_at_epoch" {
+  description = "Unix epoch used to align preliminary checkpoints."
+  value       = local.run_started_at_epoch
+}
+
 output "benchmark_uuid" {
   description = "Benchmark UUID used for S3 prefixes."
   value       = nonsensitive(local.benchmark_uuid)
+}
+
+output "benchmark_manifest" {
+  description = "Non-secret benchmark manifest used by preliminary analysis discovery."
+  value       = local.benchmark_manifest
 }
 
 output "ssh_private_key_path" {

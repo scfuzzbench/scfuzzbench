@@ -34,6 +34,12 @@ SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE=${SCFUZZBENCH_SEED_CORPUS_PROVENANCE_S
 SCFUZZBENCH_SEED_CORPUS_HELPER=${SCFUZZBENCH_SEED_CORPUS_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/prepare_seed_corpus.py}
 SCFUZZBENCH_RUNNER_METRICS=${SCFUZZBENCH_RUNNER_METRICS:-1}
 SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS=${SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS:-5}
+SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS=${SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS:-3600}
+SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT=${SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT:-${SCFUZZBENCH_ROOT}/preliminary_snapshot.py}
+SCFUZZBENCH_PRELIMINARY_HELPER_TIMEOUT_SECONDS=${SCFUZZBENCH_PRELIMINARY_HELPER_TIMEOUT_SECONDS:-300}
+SCFUZZBENCH_PRELIMINARY_MAX_LATENESS_SECONDS=${SCFUZZBENCH_PRELIMINARY_MAX_LATENESS_SECONDS:-300}
+SCFUZZBENCH_PRELIMINARY_UPLOAD_ATTEMPTS=${SCFUZZBENCH_PRELIMINARY_UPLOAD_ATTEMPTS:-2}
+SCFUZZBENCH_PRELIMINARY_UPLOAD_RETRY_SECONDS=${SCFUZZBENCH_PRELIMINARY_UPLOAD_RETRY_SECONDS:-5}
 
 SCFUZZBENCH_AWS_CREDS_ENV_FILE=${SCFUZZBENCH_AWS_CREDS_ENV_FILE:-${SCFUZZBENCH_ROOT}/aws_creds.env}
 SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS=${SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS:-300}
@@ -627,9 +633,650 @@ stop_runner_metrics() {
   fi
 }
 
+preliminary_snapshot_interval_seconds() {
+  local raw="${SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS:-3600}"
+  local normalized
+  normalized=$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]')
+  case "${normalized}" in
+    0|false|no|off|disabled)
+      echo 0
+      return 0
+      ;;
+  esac
+  if [[ "${raw}" =~ ^[0-9]+$ ]] && (( raw >= 60 && raw <= 86400 )); then
+    echo "${raw}"
+    return 0
+  fi
+  log "Invalid preliminary snapshot interval '${raw}' (expected 0 or 60-86400); using 3600 seconds."
+  echo 3600
+}
+
+preliminary_snapshots_enabled() {
+  if is_local_mode; then
+    return 1
+  fi
+  local interval
+  interval=$(preliminary_snapshot_interval_seconds)
+  [[ "${interval}" -gt 0 ]]
+}
+
+preliminary_snapshot_prefix() {
+  require_env SCFUZZBENCH_RUN_ID SCFUZZBENCH_BENCHMARK_UUID
+  printf 'preliminary/%s/%s' \
+    "${SCFUZZBENCH_RUN_ID}" \
+    "${SCFUZZBENCH_BENCHMARK_UUID}"
+}
+
+# PutObject is atomic. If a retry finds the key already present, accept it only
+# when its recorded SHA-256 matches the exact local bytes. A divergent retry is
+# a hard collision and is never allowed to overwrite the first checkpoint.
+put_preliminary_immutable() {
+  local source=$1
+  local key=$2
+  require_env SCFUZZBENCH_S3_BUCKET
+  local sha256
+  sha256=$(sha256sum "${source}" | awk '{print $1}')
+  local attempt=1
+  local max_attempts="${SCFUZZBENCH_PRELIMINARY_UPLOAD_ATTEMPTS:-2}"
+  local retry_seconds="${SCFUZZBENCH_PRELIMINARY_UPLOAD_RETRY_SECONDS:-5}"
+  if [[ ! "${max_attempts}" =~ ^[0-9]+$ ]] || (( max_attempts < 1 || max_attempts > 5 )); then
+    max_attempts=2
+  fi
+  if [[ ! "${retry_seconds}" =~ ^[0-9]+$ ]] || (( retry_seconds > 60 )); then
+    retry_seconds=5
+  fi
+  while (( attempt <= max_attempts )); do
+    if AWS_MAX_ATTEMPTS=2 AWS_RETRY_MODE=standard aws_cli s3api put-object \
+      --bucket "${SCFUZZBENCH_S3_BUCKET}" \
+      --key "${key}" \
+      --body "${source}" \
+      --if-none-match '*' \
+      --metadata "sha256=${sha256}" \
+      --cli-connect-timeout 10 \
+      --cli-read-timeout 60 \
+      >/dev/null; then
+      return 0
+    fi
+
+    local remote_sha=""
+    if remote_sha=$(AWS_MAX_ATTEMPTS=2 AWS_RETRY_MODE=standard aws_cli s3api head-object \
+      --bucket "${SCFUZZBENCH_S3_BUCKET}" \
+      --key "${key}" \
+      --query 'Metadata.sha256' \
+      --output text \
+      --cli-connect-timeout 10 \
+      --cli-read-timeout 60 2>/dev/null); then
+      if [[ "${remote_sha}" == "${sha256}" ]]; then
+        log "Immutable preliminary object already exists with matching SHA-256: ${key}"
+        return 0
+      fi
+      log "Refusing to overwrite preliminary object ${key}; existing SHA-256 is '${remote_sha:-missing}', local is ${sha256}."
+      return 1
+    fi
+    if (( attempt == max_attempts )); then
+      break
+    fi
+    log "Preliminary upload failed (attempt ${attempt}/${max_attempts}); retrying in ${retry_seconds}s: ${key}"
+    sleep "${retry_seconds}" || true
+    attempt=$((attempt + 1))
+  done
+  log "Preliminary upload failed after ${max_attempts} attempts: ${key}"
+  return 1
+}
+
+capture_preliminary_snapshot() (
+  set -euo pipefail
+  local checkpoint=$1
+  local scheduled_at=$2
+  require_env \
+    SCFUZZBENCH_RUN_ID \
+    SCFUZZBENCH_RUN_STARTED_AT_EPOCH \
+    SCFUZZBENCH_BENCHMARK_UUID \
+    SCFUZZBENCH_TIMEOUT_SECONDS \
+    SCFUZZBENCH_FUZZER_LABEL \
+    SCFUZZBENCH_FUZZER_KEY \
+    SCFUZZBENCH_RUN_INDEX
+  cache_instance_id || true
+  local instance_id="${SCFUZZBENCH_INSTANCE_ID:-unknown}"
+  local checkpoint_padded
+  checkpoint_padded=$(printf '%06d' "${checkpoint}")
+  local capture_root="${SCFUZZBENCH_ROOT}/preliminary-checkpoints"
+  mkdir -p "${capture_root}"
+  exec 9>"${capture_root}/capture.lock"
+  if ! flock -n 9; then
+    log "Skipping preliminary checkpoint ${checkpoint_padded}; another capture is active."
+    return 75
+  fi
+  local capture_dir="${capture_root}/${checkpoint_padded}"
+  local archive="${capture_dir}/snapshot.zip"
+  local captured_at
+  captured_at=$(date +%s)
+  rm -rf "${capture_dir}"
+  mkdir -p "${capture_dir}"
+  trap 'rm -rf "${capture_dir}"' EXIT
+
+  local helper_timeout="${SCFUZZBENCH_PRELIMINARY_HELPER_TIMEOUT_SECONDS:-300}"
+  if [[ ! "${helper_timeout}" =~ ^[0-9]+$ ]] || (( helper_timeout < 1 || helper_timeout > 900 )); then
+    helper_timeout=300
+  fi
+
+  timeout --signal=TERM --kill-after=10s "${helper_timeout}s" \
+    python3 "${SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT}" \
+    --log-dir "${SCFUZZBENCH_LOG_DIR}" \
+    --archive "${archive}" \
+    --run-id "${SCFUZZBENCH_RUN_ID}" \
+    --run-started-at-epoch "${SCFUZZBENCH_RUN_STARTED_AT_EPOCH}" \
+    --benchmark-uuid "${SCFUZZBENCH_BENCHMARK_UUID}" \
+    --checkpoint "${checkpoint}" \
+    --interval-seconds "$(preliminary_snapshot_interval_seconds)" \
+    --scheduled-at-epoch "${scheduled_at}" \
+    --captured-at-epoch "${captured_at}" \
+    --instance-id "${instance_id}" \
+    --fuzzer-key "${SCFUZZBENCH_FUZZER_KEY}" \
+    --run-index "${SCFUZZBENCH_RUN_INDEX}" \
+    --fuzzer-label "${SCFUZZBENCH_FUZZER_LABEL}" \
+    --timeout-seconds "${SCFUZZBENCH_TIMEOUT_SECONDS}" \
+    >"${capture_dir}/capture-result.json"
+
+  local identity="${SCFUZZBENCH_FUZZER_KEY}-${SCFUZZBENCH_RUN_INDEX}-${instance_id}"
+  local key
+  key="$(preliminary_snapshot_prefix)/snapshots/${checkpoint_padded}/${identity}/snapshot.zip"
+  put_preliminary_immutable "${archive}" "${key}"
+  log "Uploaded preliminary checkpoint ${checkpoint_padded}: ${key}"
+)
+
+preliminary_process_identity() {
+  local pid=$1
+  if [[ ! "${pid}" =~ ^[0-9]+$ ]] || [[ ! -r "/proc/${pid}/stat" ]]; then
+    return 1
+  fi
+  local process_stat remainder
+  IFS= read -r process_stat <"/proc/${pid}/stat" || return 1
+  # The command name in field 2 can contain whitespace and parentheses. Strip
+  # through the final ") " and parse only the fixed-position remainder.
+  remainder="${process_stat##*) }"
+  if [[ "${remainder}" == "${process_stat}" ]]; then
+    return 1
+  fi
+  local -a fields=()
+  read -r -a fields <<<"${remainder}"
+  if (( ${#fields[@]} <= 19 )) \
+    || [[ ! "${fields[2]}" =~ ^[0-9]+$ ]] \
+    || [[ ! "${fields[19]}" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+  # starttime (field 22), process group (field 5), and state (field 3).
+  printf '%s %s %s\n' "${fields[19]}" "${fields[2]}" "${fields[0]}"
+}
+
+preliminary_process_start_ticks() {
+  local identity
+  identity=$(preliminary_process_identity "$1") || return 1
+  printf '%s\n' "${identity%% *}"
+}
+
+preliminary_wait_for_process_start_ticks() {
+  local pid=$1
+  local attempts="${2:-50}"
+  local token=""
+  local attempt
+  for ((attempt = 0; attempt < attempts; attempt++)); do
+    if token=$(preliminary_process_start_ticks "${pid}"); then
+      printf '%s\n' "${token}"
+      return 0
+    fi
+    sleep 0.01
+  done
+  return 1
+}
+
+preliminary_process_owned() {
+  local pid=$1
+  local expected_start=$2
+  local identity actual_start
+  [[ "${expected_start}" =~ ^[0-9]+$ ]] || return 1
+  identity=$(preliminary_process_identity "${pid}") || return 1
+  actual_start="${identity%% *}"
+  [[ "${actual_start}" == "${expected_start}" ]]
+}
+
+preliminary_process_running_owned() {
+  local pid=$1
+  local expected_start=$2
+  local identity actual_start process_state
+  [[ "${expected_start}" =~ ^[0-9]+$ ]] || return 1
+  identity=$(preliminary_process_identity "${pid}") || return 1
+  read -r actual_start _ process_state <<<"${identity}"
+  [[ "${actual_start}" == "${expected_start}" && "${process_state}" != "Z" && "${process_state}" != "X" ]]
+}
+
+preliminary_process_group_owned() {
+  local pid=$1
+  local expected_start=$2
+  local identity actual_start process_group
+  [[ "${expected_start}" =~ ^[0-9]+$ ]] || return 1
+  identity=$(preliminary_process_identity "${pid}") || return 1
+  read -r actual_start process_group _ <<<"${identity}"
+  [[ "${actual_start}" == "${expected_start}" && "${process_group}" == "${pid}" ]]
+}
+
+preliminary_signal_pid_if_owned() {
+  local signal=$1
+  local pid=$2
+  local expected_start=$3
+  preliminary_process_owned "${pid}" "${expected_start}" || return 1
+  kill "-${signal}" -- "${pid}"
+}
+
+preliminary_signal_group_if_owned() {
+  local signal=$1
+  local leader_pid=$2
+  local expected_start=$3
+  preliminary_process_group_owned "${leader_pid}" "${expected_start}" || return 1
+  kill "-${signal}" -- "-${leader_pid}"
+}
+
+preliminary_write_active_owner() (
+  local owner_file=$1
+  local loop_pid=$2
+  local loop_start=$3
+  local capture_pid=$4
+  local capture_start=$5
+  local lock_file="${owner_file}.lock"
+  local tmp_file="${owner_file}.${loop_pid}.${capture_pid}.tmp"
+  local lock_fd
+  mkdir -p "$(dirname "${owner_file}")"
+  exec {lock_fd}>"${lock_file}" || return 1
+  flock "${lock_fd}" || {
+    exec {lock_fd}>&-
+    return 1
+  }
+  umask 077
+  if ! printf '%s %s %s %s\n' \
+    "${loop_pid}" "${loop_start}" "${capture_pid}" "${capture_start}" \
+    >"${tmp_file}" \
+    || ! mv -f -- "${tmp_file}" "${owner_file}"; then
+    rm -f -- "${tmp_file}"
+    flock -u "${lock_fd}" || true
+    exec {lock_fd}>&-
+    return 1
+  fi
+  flock -u "${lock_fd}" || true
+  exec {lock_fd}>&-
+)
+
+preliminary_read_active_owner() {
+  local owner_file=$1
+  local lock_file="${owner_file}.lock"
+  local lock_fd
+  local loop_pid loop_start capture_pid capture_start extra
+  exec {lock_fd}>"${lock_file}" || return 1
+  flock "${lock_fd}" || {
+    exec {lock_fd}>&-
+    return 1
+  }
+  if [[ ! -f "${owner_file}" ]] \
+    || ! read -r loop_pid loop_start capture_pid capture_start extra <"${owner_file}" \
+    || [[ -n "${extra:-}" ]] \
+    || [[ ! "${loop_pid}" =~ ^[0-9]+$ ]] \
+    || [[ ! "${loop_start}" =~ ^[0-9]+$ ]] \
+    || [[ ! "${capture_pid}" =~ ^[0-9]+$ ]] \
+    || [[ ! "${capture_start}" =~ ^[0-9]+$ ]]; then
+    flock -u "${lock_fd}" || true
+    exec {lock_fd}>&-
+    return 1
+  fi
+  flock -u "${lock_fd}" || true
+  exec {lock_fd}>&-
+  printf '%s %s %s %s\n' \
+    "${loop_pid}" "${loop_start}" "${capture_pid}" "${capture_start}"
+}
+
+preliminary_remove_active_owner_if_matches() {
+  local owner_file=$1
+  local expected_loop_pid=$2
+  local expected_loop_start=$3
+  local lock_file="${owner_file}.lock"
+  local lock_fd
+  local loop_pid loop_start _
+  exec {lock_fd}>"${lock_file}" || return 1
+  flock "${lock_fd}" || {
+    exec {lock_fd}>&-
+    return 1
+  }
+  if [[ -f "${owner_file}" ]] \
+    && read -r loop_pid loop_start _ <"${owner_file}" \
+    && [[ "${loop_pid}" == "${expected_loop_pid}" ]] \
+    && [[ "${loop_start}" == "${expected_loop_start}" ]]; then
+    rm -f -- "${owner_file}"
+  fi
+  flock -u "${lock_fd}" || true
+  exec {lock_fd}>&-
+}
+
+preliminary_capture_supervisor() {
+  local checkpoint=$1
+  local scheduled_at=$2
+  local supervisor_pid="${BASHPID}"
+  local supervisor_start=""
+  local worker_pid=""
+  local worker_start=""
+  local watchdog_pid=""
+  local termination_requested=0
+  local grace_seconds="${SCFUZZBENCH_PRELIMINARY_TERM_GRACE_SECONDS:-2}"
+  if [[ ! "${grace_seconds}" =~ ^[0-9]+$ ]] \
+    || (( grace_seconds < 1 || grace_seconds > 10 )); then
+    grace_seconds=2
+  fi
+  supervisor_start=$(preliminary_process_start_ticks "${supervisor_pid}") || return 70
+
+  preliminary_capture_supervisor_stop() {
+    # Do not exit from the signal trap. Remaining alive as the identifiable
+    # process-group leader lets the loop revalidate ownership immediately
+    # before a grace-period SIGKILL of TERM-resistant descendants.
+    termination_requested=1
+    log "Preliminary capture supervisor received a stop signal; arming group cleanup."
+    if [[ ! "${watchdog_pid}" =~ ^[0-9]+$ ]]; then
+      # Fork the watchdog while TERM/INT are ignored so it inherits that
+      # disposition atomically. The caller's immediately following group TERM
+      # must stop the worker, not cancel the only delayed group-kill guard.
+      trap '' TERM INT
+      (
+        trap '' TERM INT
+        sleep "${grace_seconds}"
+        log "Preliminary capture grace expired; stopping the owned process group."
+        preliminary_signal_group_if_owned \
+          KILL "${supervisor_pid}" "${supervisor_start}" 2>/dev/null || true
+      ) &
+      watchdog_pid=$!
+      trap preliminary_capture_supervisor_stop TERM INT
+    fi
+  }
+  trap preliminary_capture_supervisor_stop TERM INT
+  capture_preliminary_snapshot "${checkpoint}" "${scheduled_at}" &
+  worker_pid=$!
+  if ! worker_start=$(preliminary_wait_for_process_start_ticks "${worker_pid}"); then
+    local early_status=0
+    wait "${worker_pid}" || early_status=$?
+    trap - TERM INT
+    if (( termination_requested )) && [[ "${watchdog_pid}" =~ ^[0-9]+$ ]]; then
+      wait "${watchdog_pid}" 2>/dev/null || true
+    fi
+    return "${early_status}"
+  fi
+  if (( termination_requested )); then
+    preliminary_signal_pid_if_owned \
+      TERM "${worker_pid}" "${worker_start}" 2>/dev/null || true
+  fi
+  local status=0
+  while preliminary_process_owned "${worker_pid}" "${worker_start}"; do
+    local wait_status=0
+    wait "${worker_pid}" || wait_status=$?
+    if ! preliminary_process_owned "${worker_pid}" "${worker_start}"; then
+      status="${wait_status}"
+      break
+    fi
+  done
+  if (( ! termination_requested )); then
+    # A worker can observe the group TERM and exit just before Bash dispatches
+    # the supervisor's own pending trap. Keep the leader/trap alive across that
+    # narrow ordering window instead of dropping the only safe group identity.
+    sleep 0.1 || true
+  fi
+  trap - TERM INT
+  if (( termination_requested )) && [[ "${watchdog_pid}" =~ ^[0-9]+$ ]]; then
+    # A worker may exit while leaving a TERM-resistant grandchild in this
+    # process group. Keep the identifiable leader alive until the watchdog
+    # revalidates its PID/start-time/PGID tuple and kills the whole group.
+    wait "${watchdog_pid}" 2>/dev/null || true
+  fi
+  if (( termination_requested )) && (( status == 0 )); then
+    status=143
+  fi
+  return "${status}"
+}
+
+start_preliminary_snapshots() {
+  if ! preliminary_snapshots_enabled; then
+    log "Preliminary snapshots disabled (SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS=${SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS})."
+    return 0
+  fi
+  if [[ -n "${SCFUZZBENCH_PRELIMINARY_PID:-}" ]] \
+    && [[ -n "${SCFUZZBENCH_PRELIMINARY_PID_START_TICKS:-}" ]] \
+    && preliminary_process_owned \
+      "${SCFUZZBENCH_PRELIMINARY_PID}" \
+      "${SCFUZZBENCH_PRELIMINARY_PID_START_TICKS}"; then
+    return 0
+  fi
+  unset SCFUZZBENCH_PRELIMINARY_PID SCFUZZBENCH_PRELIMINARY_PID_START_TICKS
+  require_env \
+    SCFUZZBENCH_RUN_ID \
+    SCFUZZBENCH_BENCHMARK_UUID \
+    SCFUZZBENCH_FUZZER_KEY \
+    SCFUZZBENCH_RUN_INDEX
+  local run_started_at="${SCFUZZBENCH_RUN_STARTED_AT_EPOCH:-}"
+  if [[ -z "${run_started_at}" && "${SCFUZZBENCH_RUN_ID}" =~ ^[0-9]+$ ]]; then
+    run_started_at="${SCFUZZBENCH_RUN_ID}"
+    export SCFUZZBENCH_RUN_STARTED_AT_EPOCH="${run_started_at}"
+  fi
+  if [[ ! "${run_started_at}" =~ ^[0-9]+$ ]] || (( run_started_at <= 0 )); then
+    log "Preliminary snapshots require SCFUZZBENCH_RUN_STARTED_AT_EPOCH; skipping."
+    return 0
+  fi
+  if [[ ! -f "${SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT}" ]]; then
+    log "Preliminary snapshot helper missing: ${SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT}"
+    return 1
+  fi
+
+  local interval
+  interval=$(preliminary_snapshot_interval_seconds)
+  local timeout_seconds="${SCFUZZBENCH_TIMEOUT_SECONDS:-}"
+  if [[ ! "${timeout_seconds}" =~ ^[0-9]+$ ]] || (( timeout_seconds <= 0 )); then
+    log "Preliminary snapshots require a positive SCFUZZBENCH_TIMEOUT_SECONDS; skipping."
+    return 0
+  fi
+  local deadline=$((run_started_at + timeout_seconds))
+  local max_lateness="${SCFUZZBENCH_PRELIMINARY_MAX_LATENESS_SECONDS:-300}"
+  if [[ ! "${max_lateness}" =~ ^[0-9]+$ ]] || (( max_lateness < 0 || max_lateness > 900 )); then
+    max_lateness=300
+  fi
+  local now elapsed checkpoint
+  now=$(date +%s)
+  elapsed=$(( now - run_started_at ))
+  if (( elapsed < 0 )); then
+    elapsed=0
+  fi
+  checkpoint=$(( elapsed / interval + 1 ))
+
+  (
+    set +e
+    local capture_pid=""
+    local capture_start=""
+    local sleep_pid=""
+    local sleep_start=""
+    local capture_pid_file="${SCFUZZBENCH_ROOT}/preliminary-checkpoints/active.pid"
+    local loop_pid="${BASHPID}"
+    local loop_start=""
+    loop_start=$(preliminary_process_start_ticks "${loop_pid}") || exit 70
+    preliminary_loop_exit() {
+      local status=$?
+      trap - EXIT TERM INT
+      if [[ "${sleep_pid}" =~ ^[0-9]+$ && "${sleep_start}" =~ ^[0-9]+$ ]]; then
+        preliminary_signal_pid_if_owned \
+          TERM "${sleep_pid}" "${sleep_start}" 2>/dev/null || true
+        wait "${sleep_pid}" 2>/dev/null || true
+      fi
+      if [[ "${capture_pid}" =~ ^[0-9]+$ && "${capture_start}" =~ ^[0-9]+$ ]]; then
+        preliminary_signal_pid_if_owned \
+          TERM "${capture_pid}" "${capture_start}" 2>/dev/null || true
+        preliminary_signal_group_if_owned \
+          TERM "${capture_pid}" "${capture_start}" 2>/dev/null || true
+        local capture_wait=0
+        while preliminary_process_running_owned "${capture_pid}" "${capture_start}" \
+          && (( capture_wait < 100 )); do
+          sleep 0.02
+          capture_wait=$((capture_wait + 1))
+        done
+        preliminary_signal_group_if_owned \
+          KILL "${capture_pid}" "${capture_start}" 2>/dev/null || true
+        preliminary_signal_pid_if_owned \
+          KILL "${capture_pid}" "${capture_start}" 2>/dev/null || true
+        wait "${capture_pid}" 2>/dev/null || true
+      fi
+      preliminary_remove_active_owner_if_matches \
+        "${capture_pid_file}" "${loop_pid}" "${loop_start}" || true
+      return "${status}"
+    }
+    trap preliminary_loop_exit EXIT
+    trap 'exit 0' TERM INT
+    while true; do
+      local scheduled_at=$(( run_started_at + checkpoint * interval ))
+      if (( scheduled_at >= deadline )); then
+        log "Preliminary checkpoint loop reached the terminal benchmark deadline."
+        exit 0
+      fi
+      local sleep_for=$(( scheduled_at - $(date +%s) ))
+      if (( sleep_for > 0 )); then
+        sleep "${sleep_for}" &
+        sleep_pid=$!
+        sleep_start=$(preliminary_wait_for_process_start_ticks "${sleep_pid}") || exit 70
+        wait "${sleep_pid}" || exit 0
+        sleep_pid=""
+        sleep_start=""
+      fi
+      now=$(date +%s)
+      if (( now - scheduled_at > max_lateness )); then
+        local next_checkpoint=$(( (now - run_started_at) / interval + 1 ))
+        log "Skipping missed preliminary checkpoint ${checkpoint}; capture is $((now - scheduled_at))s late (next ${next_checkpoint})."
+        checkpoint="${next_checkpoint}"
+        continue
+      fi
+      local common_path="${SCFUZZBENCH_COMMON_SH:-${SCFUZZBENCH_ROOT}/common.sh}"
+      setsid bash -c \
+        'set -euo pipefail; source "$1"; preliminary_capture_supervisor "$2" "$3"' \
+        preliminary-capture "${common_path}" "${checkpoint}" "${scheduled_at}" &
+      capture_pid=$!
+      capture_start=$(preliminary_wait_for_process_start_ticks "${capture_pid}") || {
+        wait "${capture_pid}" 2>/dev/null || true
+        capture_pid=""
+        log "Preliminary checkpoint ${checkpoint} exited before ownership could be recorded."
+        checkpoint=$((checkpoint + 1))
+        continue
+      }
+      if ! preliminary_write_active_owner \
+        "${capture_pid_file}" \
+        "${loop_pid}" \
+        "${loop_start}" \
+        "${capture_pid}" \
+        "${capture_start}"; then
+        preliminary_signal_group_if_owned \
+          KILL "${capture_pid}" "${capture_start}" 2>/dev/null || true
+        preliminary_signal_pid_if_owned \
+          KILL "${capture_pid}" "${capture_start}" 2>/dev/null || true
+        wait "${capture_pid}" 2>/dev/null || true
+        exit 70
+      fi
+      wait "${capture_pid}" || \
+        log "Preliminary checkpoint ${checkpoint} failed; the live campaign continues."
+      preliminary_remove_active_owner_if_matches \
+        "${capture_pid_file}" "${loop_pid}" "${loop_start}" || true
+      capture_pid=""
+      capture_start=""
+      now=$(date +%s)
+      local next_checkpoint=$(( (now - run_started_at) / interval + 1 ))
+      if (( next_checkpoint > checkpoint + 1 )); then
+        log "Skipping preliminary checkpoints $((checkpoint + 1))-$((next_checkpoint - 1)); the previous capture crossed their boundaries."
+      fi
+      if (( next_checkpoint <= checkpoint )); then
+        next_checkpoint=$((checkpoint + 1))
+      fi
+      checkpoint="${next_checkpoint}"
+    done
+  ) &
+  local loop_pid=$!
+  local loop_start=""
+  if ! loop_start=$(preliminary_wait_for_process_start_ticks "${loop_pid}"); then
+    wait "${loop_pid}" 2>/dev/null || true
+    log "Preliminary checkpoint loop exited before ownership could be recorded."
+    return 0
+  fi
+  export SCFUZZBENCH_PRELIMINARY_PID="${loop_pid}"
+  export SCFUZZBENCH_PRELIMINARY_PID_START_TICKS="${loop_start}"
+  log "Scheduled preliminary snapshots every ${interval}s from run epoch ${run_started_at} (next checkpoint ${checkpoint})."
+}
+
+stop_preliminary_snapshots() {
+  local pid="${SCFUZZBENCH_PRELIMINARY_PID:-}"
+  local pid_start="${SCFUZZBENCH_PRELIMINARY_PID_START_TICKS:-}"
+  local capture_pid_file="${SCFUZZBENCH_ROOT}/preliminary-checkpoints/active.pid"
+  local loop_owner=""
+  local loop_owner_start=""
+  local capture_pid=""
+  local capture_start=""
+  local owner_record=""
+  if owner_record=$(preliminary_read_active_owner "${capture_pid_file}"); then
+    read -r loop_owner loop_owner_start capture_pid capture_start <<<"${owner_record}"
+  fi
+  local loop_was_owned=0
+  if [[ "${pid}" =~ ^[0-9]+$ && "${pid_start}" =~ ^[0-9]+$ ]] \
+    && preliminary_process_owned "${pid}" "${pid_start}"; then
+    loop_was_owned=1
+  fi
+  local active_owned=0
+  if (( loop_was_owned )) \
+    && [[ "${loop_owner}" == "${pid}" ]] \
+    && [[ "${loop_owner_start}" == "${pid_start}" ]] \
+    && [[ "${capture_pid}" =~ ^[0-9]+$ ]] \
+    && [[ "${capture_start}" =~ ^[0-9]+$ ]]; then
+    active_owned=1
+    # The direct signal covers the brief setsid startup window before the child
+    # has established its same-numbered process group. Once its supervisor trap
+    # is live, this also arms the bounded group-kill watchdog before descendants
+    # receive TERM and can make the direct worker exit.
+    preliminary_signal_pid_if_owned \
+      TERM "${capture_pid}" "${capture_start}" 2>/dev/null || true
+    preliminary_signal_group_if_owned \
+      TERM "${capture_pid}" "${capture_start}" 2>/dev/null || true
+  fi
+  if (( loop_was_owned )); then
+    preliminary_signal_pid_if_owned TERM "${pid}" "${pid_start}" 2>/dev/null || true
+  fi
+  local loop_wait=0
+  while (( loop_was_owned )) \
+    && preliminary_process_running_owned "${pid}" "${pid_start}" \
+    && (( loop_wait < 150 )); do
+    sleep 0.02
+    loop_wait=$((loop_wait + 1))
+  done
+  if (( active_owned )); then
+    local capture_wait=0
+    while preliminary_process_running_owned "${capture_pid}" "${capture_start}" \
+      && (( capture_wait < 100 )); do
+      sleep 0.02
+      capture_wait=$((capture_wait + 1))
+    done
+    preliminary_signal_group_if_owned \
+      KILL "${capture_pid}" "${capture_start}" 2>/dev/null || true
+    preliminary_signal_pid_if_owned \
+      KILL "${capture_pid}" "${capture_start}" 2>/dev/null || true
+  fi
+  if (( loop_was_owned )); then
+    preliminary_signal_pid_if_owned KILL "${pid}" "${pid_start}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+  fi
+  if (( loop_was_owned )) \
+    && [[ "${loop_owner}" == "${pid}" ]] \
+    && [[ "${loop_owner_start}" == "${pid_start}" ]]; then
+    preliminary_remove_active_owner_if_matches \
+      "${capture_pid_file}" "${pid}" "${pid_start}" || true
+  fi
+  unset SCFUZZBENCH_PRELIMINARY_PID SCFUZZBENCH_PRELIMINARY_PID_START_TICKS
+}
+
 finalize_run() {
   local exit_code=$?
   set +e
+  stop_preliminary_snapshots || true
   stop_runner_metrics || true
   if [[ -z "${SCFUZZBENCH_UPLOAD_DONE:-}" ]]; then
     if is_local_mode; then
@@ -1257,11 +1904,13 @@ run_with_timeout() {
     kill_after=300
   fi
   append_runner_command_log "${SCFUZZBENCH_TIMEOUT_SECONDS}" "${kill_after}" "$@" || true
+  start_preliminary_snapshots
   log "Running command with timeout ${SCFUZZBENCH_TIMEOUT_SECONDS}s (grace ${kill_after}s)"
   set +e
   timeout --signal=SIGINT --kill-after="${kill_after}s" "${SCFUZZBENCH_TIMEOUT_SECONDS}s" "$@" 2>&1 | tee "${log_file}"
   local exit_code=${PIPESTATUS[0]}
   set -e
+  stop_preliminary_snapshots || true
   log_duration "run_with_timeout $(basename "${log_file}")" "${run_start}"
   if [[ "${exit_code}" -eq 124 ]]; then
     log "Command reached configured benchmark timeout; treating as completed run"

@@ -36,6 +36,7 @@ export default defineConfig({
     nav: [
       { text: "Introduction", link: "/introduction" },
       { text: "Runs", link: "/runs/" },
+      { text: "Active", link: "/preliminary/" },
       { text: "Benchmarks", link: "/benchmarks/" },
       { text: "Start benchmark", link: "/start" },
       { text: "Transparency", link: "/transparency" },
@@ -51,6 +52,7 @@ export default defineConfig({
         items: [
           { text: "Introduction", link: "/introduction" },
           { text: "Runs", link: "/runs/" },
+          { text: "Active preliminary results", link: "/preliminary/" },
           { text: "Benchmarks", link: "/benchmarks/" },
           { text: "Start Benchmark", link: "/start" },
           { text: "Transparency", link: "/transparency" },

@@ -46,6 +46,24 @@ variable "timeout_hours" {
   default     = 24
 }
 
+variable "preliminary_interval_seconds" {
+  type        = number
+  description = "Interval between preliminary log checkpoints. Zero disables preliminary results."
+  default     = 3600
+
+  validation {
+    condition = (
+      var.preliminary_interval_seconds == floor(var.preliminary_interval_seconds) &&
+      (
+        var.preliminary_interval_seconds == 0 ||
+        var.preliminary_interval_seconds >= 60
+      ) &&
+      var.preliminary_interval_seconds <= 86400
+    )
+    error_message = "preliminary_interval_seconds must be zero or a whole number in [60, 86400]."
+  }
+}
+
 variable "target_repo_url" {
   type        = string
   description = "Target repository URL."
@@ -285,6 +303,23 @@ variable "run_id" {
   type        = string
   description = "Run identifier (defaults to unix timestamp at apply time)."
   default     = ""
+}
+
+variable "run_started_at_epoch" {
+  type        = string
+  description = "Unix epoch when the run started. Kept separate from the opaque run identifier."
+  default     = ""
+
+  validation {
+    condition = (
+      var.run_started_at_epoch == "" ||
+      (
+        can(regex("^[0-9]+$", var.run_started_at_epoch)) &&
+        try(tonumber(var.run_started_at_epoch), 0) > 0
+      )
+    )
+    error_message = "run_started_at_epoch must be empty or a positive Unix timestamp."
+  }
 }
 
 variable "tags" {

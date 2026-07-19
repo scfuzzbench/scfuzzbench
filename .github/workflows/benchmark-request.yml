@@ -24,6 +24,7 @@ jobs:
       instance_type: ${{ steps.prepare.outputs.instance_type }}
       instances_per_fuzzer: ${{ steps.prepare.outputs.instances_per_fuzzer }}
       timeout_hours: ${{ steps.prepare.outputs.timeout_hours }}
+      preliminary_interval_minutes: ${{ steps.prepare.outputs.preliminary_interval_minutes }}
       fuzzers_json: ${{ steps.prepare.outputs.fuzzers_json }}
       foundry_git_repo: ${{ steps.prepare.outputs.foundry_git_repo }}
       foundry_git_ref: ${{ steps.prepare.outputs.foundry_git_ref }}
@@ -286,6 +287,22 @@ jobs:
 
             const hours = mustNumber(payload, "timeout_hours", { required: true, min: 0.25, max: 72, integer: false });
             if (!hours.ok) errors.push(hours.message);
+            const preliminary_interval = mustNumber(
+              payload,
+              "preliminary_interval_minutes",
+              { required: false, min: 0, max: 1440, integer: false }
+            );
+            if (!preliminary_interval.ok) errors.push(preliminary_interval.message);
+            const preliminaryIntervalMinutes =
+              preliminary_interval.ok && preliminary_interval.value !== null
+                ? preliminary_interval.value
+                : 60;
+            if (!Number.isInteger(preliminaryIntervalMinutes * 60)) {
+              errors.push("preliminary_interval_minutes must resolve to whole seconds");
+            }
+            if (preliminaryIntervalMinutes !== 0 && preliminaryIntervalMinutes < 1) {
+              errors.push("preliminary_interval_minutes must be 0 or at least 1");
+            }
 
             let fuzzers = payload["fuzzers"];
             if (fuzzers === undefined || fuzzers === null) {
@@ -617,6 +634,7 @@ jobs:
                   `- Instance type: \`${itype.value}\``,
                   `- Instances per fuzzer: \`${inst.value}\``,
                   `- Timeout hours: \`${hours.value}\``,
+                  `- Preliminary checkpoint minutes: \`${preliminaryIntervalMinutes}\``,
                   `- Fuzzers: \`${fuzzersJson}\``,
                   shared_seed_corpus_source.value ? `- Shared seeds: \`${shared_seed_corpus_source.value}\`` : "",
                   "",
@@ -642,6 +660,7 @@ jobs:
                   `- Instance type: \`${itype.value}\``,
                   `- Instances per fuzzer: \`${inst.value}\``,
                   `- Timeout hours: \`${hours.value}\``,
+                  `- Preliminary checkpoint minutes: \`${preliminaryIntervalMinutes}\``,
                   `- Fuzzers: \`${fuzzersJson}\``,
                   shared_seed_corpus_source.value ? `- Shared seeds: \`${shared_seed_corpus_source.value}\`` : "",
                 ].join("\n")
@@ -655,6 +674,7 @@ jobs:
               core.setOutput("instance_type", itype.value);
               core.setOutput("instances_per_fuzzer", String(inst.value));
               core.setOutput("timeout_hours", String(hours.value));
+              core.setOutput("preliminary_interval_minutes", String(preliminaryIntervalMinutes));
               core.setOutput("fuzzers_json", fuzzersJson);
 
               core.setOutput("foundry_git_repo", foundry_git_repo.ok ? foundry_git_repo.value : "");
@@ -698,6 +718,7 @@ jobs:
       instance_type: ${{ needs.prepare.outputs.instance_type }}
       instances_per_fuzzer: ${{ fromJSON(needs.prepare.outputs.instances_per_fuzzer) }}
       timeout_hours: ${{ fromJSON(needs.prepare.outputs.timeout_hours) }}
+      preliminary_interval_minutes: ${{ fromJSON(needs.prepare.outputs.preliminary_interval_minutes) }}
       fuzzers_json: ${{ needs.prepare.outputs.fuzzers_json }}
       foundry_git_repo: ${{ needs.prepare.outputs.foundry_git_repo }}
       foundry_git_ref: ${{ needs.prepare.outputs.foundry_git_ref }}

@@ -61,6 +61,7 @@ For all technical/operational details, use the docs site pages:
 - Start benchmark request: `docs/start.md`
 - Methodology: `docs/methodology.md`
 - Operations guide (Terraform, running, reruns, analysis, CI workflows): `docs/operations.md`
+- Active preliminary results: `docs/preliminary/index.md`
 - Target onboarding skill (machine-oriented): `skills/target-onboarding/SKILL.md`
 
 Rendered docs navigation and run/benchmark pages are available under `docs/`.

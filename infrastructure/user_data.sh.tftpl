@@ -27,6 +27,10 @@ cat <<'RUN' >/opt/scfuzzbench/fuzzers/${fuzzer_key}/run.sh
 ${run_sh}
 RUN
 
+cat <<'PRELIMINARY' >/opt/scfuzzbench/preliminary_snapshot.py
+${preliminary_snapshot_py}
+PRELIMINARY
+
 %{ if echidna_ci_enabled ~}
 cat <<'ECHIDNA_CI_EXTRACTOR' >/opt/scfuzzbench/extract_echidna_ci_artifact.py
 ${echidna_ci_extractor}
@@ -47,6 +51,7 @@ FOUNDRY_SOURCE_PATCH
 
 chmod +x /opt/scfuzzbench/common.sh \
   /opt/scfuzzbench/prepare_seed_corpus.py \
+  /opt/scfuzzbench/preliminary_snapshot.py \
   /opt/scfuzzbench/fuzzers/${fuzzer_key}/install.sh \
   /opt/scfuzzbench/fuzzers/${fuzzer_key}/run.sh
 
@@ -58,6 +63,7 @@ export AWS_REGION="${aws_region}"
 export AWS_DEFAULT_REGION="${aws_region}"
 export SCFUZZBENCH_S3_BUCKET="${s3_bucket}"
 export SCFUZZBENCH_RUN_ID="${run_id}"
+export SCFUZZBENCH_RUN_STARTED_AT_EPOCH="${run_started_at_epoch}"
 export SCFUZZBENCH_BENCHMARK_UUID="${benchmark_uuid}"
 export SCFUZZBENCH_BENCHMARK_MANIFEST_B64="${benchmark_manifest_b64}"
 export SCFUZZBENCH_TIMEOUT_SECONDS="${timeout_seconds}"
@@ -88,6 +94,13 @@ export SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE="${seed_corpus_provenance_sourc
 %{ for key, value in fuzzer_env ~}
 export ${key}="${value}"
 %{ endfor ~}
+# These identity/timing values must agree with the immutable run manifest.
+# Keep them authoritative even if an old request includes similarly named
+# entries in its generic fuzzer environment map.
+export SCFUZZBENCH_RUN_STARTED_AT_EPOCH="${run_started_at_epoch}"
+export SCFUZZBENCH_FUZZER_KEY="${fuzzer_key}"
+export SCFUZZBENCH_RUN_INDEX="${run_index}"
+export SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS="${preliminary_interval_seconds}"
 
 # Upload the bootstrap (install/clone phase) log so instances that die before
 # the fuzzer runner uploads its own logs are still diagnosable from S3.

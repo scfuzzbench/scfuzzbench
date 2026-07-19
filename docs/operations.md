@@ -405,6 +405,31 @@ aws ec2 get-console-output --instance-id i-0123456789abcdef0 --latest --output j
   | jq -r '.Output' | tail -n 200
 ```
 
+### Preliminary results for active runs
+
+Cloud runs publish immutable checkpoints every 60 minutes by default. Set
+`preliminary_interval_minutes` in the benchmark request:
+
+- Use a value from 1 to 1440 minutes to change the interval.
+- Use `0` to disable preliminary results.
+
+The scheduled **Benchmark Preliminary Results** workflow selects one settled
+checkpoint number for the whole run. It verifies every archive and file
+checksum before running the existing analysis. Results stay under:
+
+```text
+preliminary/<run_id>/<benchmark_uuid>/
+  run.json
+  snapshots/<checkpoint>/<replicate>/snapshot.zip
+  analysis/<checkpoint>/
+```
+
+Each chart and Markdown report includes its as-of time, elapsed and planned
+budget, and missing-replicate count. These views are incomplete and
+non-terminal. Do not rank fuzzers, declare success or failure, or stop a run
+from preliminary data. Canonical analysis still appears only after the
+**Benchmark Release** workflow completes.
+
 ### Raw Labels
 
 By default, the analysis pipeline normalizes fuzzer names: `echidna-baseline`, `echidna-bandit`, and `echidna-v2.3.1` all collapse to `echidna`. This is correct for cross-fuzzer benchmarks but wrong when comparing two configurations of the same fuzzer.
@@ -463,9 +488,10 @@ For public repos, leave `git_token_ssm_parameter_name` empty.
 
 ## GitHub Actions
 
-Two workflows publish benchmark runs and releases:
+Three workflows publish benchmark data:
 
 - `Benchmark Run` (`.github/workflows/benchmark-run.yml`): dispatch with target/mode/infra inputs.
+- `Benchmark Preliminary Results` (`.github/workflows/benchmark-preliminary.yml`): analyzes immutable checkpoints for active runs without waiting in Actions.
 - `Benchmark Release` (`.github/workflows/benchmark-release.yml`): analyzes completed runs and publishes release artifacts.
 
-A run is treated as complete after `run_id + timeout_hours + 1h`.
+A run is treated as complete after its explicit start epoch, timeout, and one-hour release grace.
