@@ -282,12 +282,15 @@ Recommended operational policy for this repository:
 5. Track overlap groups (for forks/wrappers/shared-core code) and keep only one representative per overlap group unless explicitly justified.
 6. Keep the selection manifest in-repo so additions/removals are reviewable.
 
-Suggested manifest fields per target:
+The authoritative catalog is
+[`benchmarks/targets.json`](https://github.com/scfuzzbench/scfuzzbench/blob/main/benchmarks/targets.json);
+its validation and maintenance workflow are documented in
+[`benchmarks/README.md`](https://github.com/scfuzzbench/scfuzzbench/blob/main/benchmarks/README.md).
+It records:
 
 - repository URL
 - pinned commit
 - properties path (`SCFUZZBENCH_PROPERTIES_PATH`)
-- benchmark mode(s) intended
 - rationale
 - related-work reference(s)
 - overlap group / exclusion notes

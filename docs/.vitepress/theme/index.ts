@@ -4,6 +4,7 @@ import "./custom.css";
 
 import CustomLayout from "../components/CustomLayout.vue";
 import StartBenchmark from "../components/StartBenchmark.vue";
+import TargetManifest from "../components/TargetManifest.vue";
 import TransparencyDashboard from "../components/TransparencyDashboard.vue";
 
 export default {
@@ -12,6 +13,7 @@ export default {
   enhanceApp(ctx) {
     DefaultTheme.enhanceApp?.(ctx);
     ctx.app.component("StartBenchmark", StartBenchmark);
+    ctx.app.component("TargetManifest", TargetManifest);
     ctx.app.component("TransparencyDashboard", TransparencyDashboard);
   },
 } satisfies Theme;
