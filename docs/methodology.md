@@ -20,6 +20,7 @@ Core inputs are defined through Terraform vars and/or workflow dispatch:
 - Infra: `instance_type`, `instances_per_fuzzer`, `timeout_hours`
 - Fuzzer set: `fuzzers` (or default all available)
 - Tool versions: `foundry_version`, `echidna_version`, `medusa_version`, `recon_version`
+- Optional shared input: `shared_seed_corpus_source` (empty by default)
 
 In CI (`.github/workflows/benchmark-run.yml`), inputs are validated before apply (value ranges, formats, and conservative character constraints).
 
@@ -39,6 +40,7 @@ Terraform computes two IDs used across the pipeline:
 - `benchmark_type`, `instance_type`, `instances_per_fuzzer`, `timeout_hours`
 - `aws_region`, `ubuntu_ami_id`
 - tool versions and selected `fuzzer_keys`
+- shared seed source/type/copy semantics when a seed corpus is configured
 
 This means changing any of those manifest fields changes `benchmark_uuid`.
 
@@ -58,6 +60,7 @@ Runner lifecycle is defined in `infrastructure/user_data.sh.tftpl` and `fuzzers/
 - Install only that runner's fuzzer implementation (`fuzzers/<name>/install.sh`).
 - Clone target repository and checkout the pinned commit.
 - Build with `forge build`.
+- Reset the fuzzer corpus and optionally copy the same shared seed tree into it.
 - Run fuzzer command under `timeout` (`SCFUZZBENCH_TIMEOUT_SECONDS`).
 - Collect host metrics periodically into `runner_metrics.csv` (enabled by default).
 - Upload artifacts to S3, then self-shutdown.
@@ -84,6 +87,9 @@ Each instance uploads:
 - Benchmark manifest:
   - `logs/<run_id>/<benchmark_uuid>/manifest.json`
   - `runs/<run_id>/<benchmark_uuid>/manifest.json` (timestamp-first index used by docs)
+- Shared-seed provenance, when configured:
+  - `seed_corpus.json` inside each logs zip
+  - `seed_corpus` in the benchmark manifest (`source`, count, bytes, SHA-256)
 
 ## What Counts as a Complete Run
 

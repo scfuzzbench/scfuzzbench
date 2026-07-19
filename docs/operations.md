@@ -12,6 +12,7 @@ Set inputs via `-var`/`tfvars` (`TF_VAR_*` also works):
 - `fuzzers` (allowlist; empty means all available)
 - fuzzer versions (`foundry_version`, `echidna_version`, `medusa_version`, `recon_version`)
 - `git_token_ssm_parameter_name` (for private repos)
+- `shared_seed_corpus_source` (optional directory or `s3://bucket/prefix`; empty by default)
 - `fuzzer_env` values such as `SCFUZZBENCH_PROPERTIES_PATH`
 
 Per-fuzzer environment variables are documented in `fuzzers/README.md`.
@@ -35,7 +36,40 @@ export TF_VAR_timeout_hours=1
 export TF_VAR_instances_per_fuzzer=4
 export TF_VAR_fuzzers='["echidna","medusa","foundry","recon-fuzzer"]'
 export TF_VAR_git_token_ssm_parameter_name="/scfuzzbench/recon/github_token"
+# Optional: a directory committed in the target repository.
+export TF_VAR_shared_seed_corpus_source="benchmark-seeds/v1"
 ```
+
+## Optional Shared Seed Corpus
+
+The default remains a clean, empty corpus for every fuzzer. To warm-start a
+run, set `shared_seed_corpus_source` to either:
+
+- a directory relative to the cloned target repository, such as
+  `benchmark-seeds/v1`; or
+- an immutable S3 prefix, such as `s3://benchmark-inputs/seeds/v1`.
+
+Absolute directories are supported when they exist on the runner, which is
+mainly useful with `scripts/local-run.sh`. Cloud runners cannot see a path on
+the Terraform operator's machine. For S3, Terraform grants the instance role
+read/list access only to the configured prefix; cross-account buckets must also
+allow that role in their bucket policy.
+
+The directory contents are copied into each selected fuzzer's configured
+corpus directory immediately before the campaign. The copy is recursive and
+byte-for-byte, preserves relative paths, rejects symlinks/special files, and
+does not translate between fuzzer corpus formats. Use only a seed set that all
+selected fuzzers can consume. An opted-in Foundry seed corpus also enables
+Foundry corpus persistence, with its existing memory tradeoff.
+
+Each runner records `source`, file count, total bytes, and a deterministic
+SHA-256 tree digest in `logs/seed_corpus.json`; the same data is added to the
+run manifest and rendered on the run report page. Local absolute paths are
+reported as `local://<directory-name>` so host paths are not published. Keep S3
+prefixes immutable for the duration of a run. The digest visits files in
+UTF-8 relative-path byte order and hashes, for each file, the big-endian
+64-bit path length, relative-path bytes, big-endian 64-bit file size, and file
+bytes.
 
 Foundry builds from upstream [foundry-rs/foundry](https://github.com/foundry-rs/foundry) at the commit
 pinned in `infrastructure/variables.tf` (`foundry_git_ref`). The pin must include invariant
@@ -152,6 +186,9 @@ scripts/local-run.sh \
   --echidna-contract CryticTester
 ```
 
+Add `--seed-corpus ./path/to/seeds` (resolved from the invocation directory) or
+`--seed-corpus s3://bucket/prefix` to opt in locally.
+
 Required flags:
 - `-f, --fuzzer`: `echidna`, `medusa`, `foundry`, or `recon-fuzzer`
 - `-r, --repo`: target git repository URL
@@ -162,6 +199,7 @@ Optional flags:
 - `-w, --workers`: number of fuzzer workers
 - `-T, --type`: `property` or `optimization` (default: `property`)
 - `--install`: run the fuzzer's `install.sh` first
+- `--seed-corpus`: shared local directory or S3 prefix (default: empty)
 - `--echidna-extra-args`: extra arguments passed to echidna (e.g. `"--server 3000 --shrink-limit 1"`)
 
 All fuzzer-specific flags (`--echidna-*`, `--medusa-*`, `--foundry-*`) mirror the environment variables documented in `fuzzers/README.md`.

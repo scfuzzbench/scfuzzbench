@@ -35,6 +35,7 @@ Optional – general:
   -t, --timeout SECONDS         Campaign timeout (default: ${DEFAULT_TIMEOUT})
   -w, --workers N               Number of fuzzer workers/threads
   -T, --type    TYPE            Benchmark type: property | optimization (default: ${DEFAULT_BENCHMARK_TYPE})
+      --seed-corpus SOURCE      Shared seed directory or s3://bucket/prefix (default: empty)
       --install                 Run the fuzzer's install.sh first (idempotent)
 
 Optional – echidna / recon-fuzzer:
@@ -90,6 +91,7 @@ BRANCH=""
 TIMEOUT="${DEFAULT_TIMEOUT}"
 WORKERS="${DEFAULT_WORKERS}"
 BENCHMARK_TYPE="${DEFAULT_BENCHMARK_TYPE}"
+SEED_CORPUS_ARG=""
 DO_INSTALL=0
 
 ECHIDNA_VERSION_ARG=""
@@ -118,6 +120,7 @@ while [[ $# -gt 0 ]]; do
     -t|--timeout)           TIMEOUT="$2"; shift 2 ;;
     -w|--workers)           WORKERS="$2"; shift 2 ;;
     -T|--type)              BENCHMARK_TYPE="$2"; shift 2 ;;
+    --seed-corpus)          SEED_CORPUS_ARG="$2"; shift 2 ;;
     --install)              DO_INSTALL=1; shift ;;
     # echidna
     --echidna-config)       ECHIDNA_CONFIG_ARG="$2"; shift 2 ;;
@@ -177,6 +180,19 @@ export SCFUZZBENCH_REPO_URL="${REPO_URL}"
 export SCFUZZBENCH_COMMIT="${BRANCH}"
 export SCFUZZBENCH_BENCHMARK_TYPE="${BENCHMARK_TYPE}"
 export SCFUZZBENCH_TIMEOUT_SECONDS="${TIMEOUT}"
+if [[ -n "${SEED_CORPUS_ARG}" ]]; then
+  if [[ "${SEED_CORPUS_ARG}" == s3://* ]]; then
+    export SCFUZZBENCH_SEED_CORPUS_SOURCE="${SEED_CORPUS_ARG}"
+  else
+    if [[ ! -d "${SEED_CORPUS_ARG}" ]]; then
+      echo "Error: shared seed corpus directory not found: ${SEED_CORPUS_ARG}" >&2
+      exit 1
+    fi
+    seed_corpus_path="$(cd "${SEED_CORPUS_ARG}" && pwd -P)"
+    export SCFUZZBENCH_SEED_CORPUS_SOURCE="${seed_corpus_path}"
+    export SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE="local://$(basename "${seed_corpus_path}")"
+  fi
+fi
 
 # Versions – CLI flag → existing env → default
 export ECHIDNA_VERSION="${ECHIDNA_VERSION_ARG:-${ECHIDNA_VERSION:-${DEFAULT_ECHIDNA_VERSION}}}"
@@ -240,6 +256,7 @@ echo "  Branch:    ${BRANCH}"
 echo "  Type:      ${BENCHMARK_TYPE}"
 echo "  Timeout:   ${TIMEOUT}s"
 [[ -n "${WORKERS}" ]] && echo "  Workers:   ${WORKERS}"
+[[ -n "${SCFUZZBENCH_SEED_CORPUS_SOURCE:-}" ]] && echo "  Seeds:     ${SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE:-${SCFUZZBENCH_SEED_CORPUS_SOURCE}}"
 echo "  Workspace: ${SCFUZZBENCH_ROOT:-${HOME}/.scfuzzbench}"
 echo "  Output:    ${SCFUZZBENCH_LOCAL_OUTPUT_DIR:-${SCFUZZBENCH_ROOT:-${HOME}/.scfuzzbench}/output}"
 echo "============================================"

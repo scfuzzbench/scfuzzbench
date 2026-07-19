@@ -426,6 +426,30 @@ def format_fuzzer_lines(manifest: dict) -> list[str]:
     return lines
 
 
+def format_seed_corpus_lines(manifest: dict) -> list[str]:
+    seed_corpus = manifest.get("seed_corpus")
+    if not isinstance(seed_corpus, dict):
+        return []
+
+    lines: list[str] = []
+    fields = (
+        ("seed_corpus_source", "source"),
+        ("seed_corpus_source_type", "source_type"),
+        ("seed_corpus_file_count", "file_count"),
+        ("seed_corpus_size_bytes", "size_bytes"),
+        ("seed_corpus_sha256", "sha256"),
+        ("seed_corpus_copy_semantics", "copy_semantics"),
+    )
+    for label, key in fields:
+        value = seed_corpus.get(key)
+        if value is None:
+            continue
+        rendered = str(value).strip()
+        if rendered:
+            lines.append(f"- {label}: `{rendered}`")
+    return lines
+
+
 def write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -1061,6 +1085,7 @@ def main() -> int:
         add_kv("recon_version", m.get("recon_version"))
         if isinstance(m.get("fuzzer_keys"), list):
             lines.append(f"- fuzzer_keys: `{', '.join([str(x) for x in m.get('fuzzer_keys', [])])}`")
+        lines.extend(format_seed_corpus_lines(m))
         lines.append("")
 
         # Artifact links.

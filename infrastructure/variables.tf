@@ -192,3 +192,17 @@ variable "fuzzer_env" {
   description = "Fuzzer environment variable overrides passed to fuzzer run scripts."
   default     = {}
 }
+
+variable "shared_seed_corpus_source" {
+  type        = string
+  description = "Optional shared seed corpus directory or s3://bucket/prefix. Relative directories resolve inside the cloned target; absolute paths must exist on each runner."
+  default     = ""
+
+  validation {
+    condition = var.shared_seed_corpus_source == "" || (
+      can(regex("^(s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/)?[A-Za-z0-9/._+~-]+/?$", var.shared_seed_corpus_source)) &&
+      length(regexall("(^|/)\\.\\.(/|$)", var.shared_seed_corpus_source)) == 0
+    )
+    error_message = "shared_seed_corpus_source must be empty, a safe local path, or an s3://bucket/prefix without '..', spaces, query parameters, or shell metacharacters."
+  }
+}
