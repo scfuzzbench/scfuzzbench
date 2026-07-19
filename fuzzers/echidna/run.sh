@@ -83,10 +83,28 @@ if [[ -n "${ECHIDNA_WORKERS:-}" ]]; then
   cmd+=(--workers "${ECHIDNA_WORKERS}")
 fi
 cmd+=(--corpus-dir "${SCFUZZBENCH_CORPUS_DIR}")
+
+shrink_limit_overridden=0
 if [[ -n "${ECHIDNA_EXTRA_ARGS:-}" ]]; then
   read -r -a extra_args <<< "${ECHIDNA_EXTRA_ARGS}"
+  for arg in "${extra_args[@]}"; do
+    case "${arg}" in
+      --shrink-limit|--shrink-limit=*)
+        shrink_limit_overridden=1
+        break
+        ;;
+    esac
+  done
   cmd+=("${extra_args[@]}")
 fi
+
+# A CLI value overrides shrinkLimit from the target config. Keep shrinking from
+# consuming the benchmark exploration budget unless the operator explicitly
+# supplied a different limit.
+if ((shrink_limit_overridden == 0)); then
+  cmd+=(--shrink-limit 1)
+fi
+
 if [[ -n "${ECHIDNA_TARGET:-}" ]]; then
   cmd+=("${ECHIDNA_TARGET}")
 fi
