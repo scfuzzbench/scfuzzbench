@@ -5,6 +5,13 @@ locals {
   timeout_seconds = var.timeout_hours * 3600
   run_id          = var.run_id != "" ? var.run_id : time_static.run.unix
 
+  foundry_throughput_patch_ref    = "02c05d970d2801da0aef8b82486ce84b01ede36d"
+  foundry_throughput_patch_path   = "${path.module}/../fuzzers/foundry/throughput-progress.patch"
+  foundry_throughput_patch_sha256 = filesha256(local.foundry_throughput_patch_path)
+  foundry_source_patch = var.foundry_git_repo != "" && var.foundry_git_ref == local.foundry_throughput_patch_ref ? (
+    "scfuzzbench-throughput-progress-v1@sha256:${local.foundry_throughput_patch_sha256}"
+  ) : ""
+
   seed_corpus_s3_match  = regexall("^s3://([^/]+)/(.+?)/?$", var.shared_seed_corpus_source)
   seed_corpus_s3_parts  = length(local.seed_corpus_s3_match) == 1 ? local.seed_corpus_s3_match[0] : ["", ""]
   seed_corpus_s3_bucket = local.seed_corpus_s3_parts[0]
@@ -42,6 +49,7 @@ locals {
     foundry_version      = local.foundry_release_version
     foundry_git_repo     = var.foundry_git_repo
     foundry_git_ref      = var.foundry_git_ref
+    foundry_source_patch = local.foundry_source_patch
     echidna_version      = var.echidna_version
     medusa_version       = var.medusa_version
     recon_version        = var.recon_version
@@ -424,6 +432,7 @@ resource "aws_instance" "fuzzer" {
     foundry_version               = local.foundry_release_version
     foundry_git_repo              = var.foundry_git_repo
     foundry_git_ref               = var.foundry_git_ref
+    foundry_source_patch          = file(local.foundry_throughput_patch_path)
     echidna_version               = var.echidna_version
     medusa_version                = var.medusa_version
     recon_version                 = var.recon_version

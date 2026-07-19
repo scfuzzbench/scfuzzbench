@@ -748,8 +748,49 @@ install_foundry() {
       # `git fetch origin <ref>` updates FETCH_HEAD but does not always create a local branch.
       git -C "${tmp_dir}/foundry" checkout --detach FETCH_HEAD
     fi
-    local commit
+    local commit commit_full
     commit=$(git -C "${tmp_dir}/foundry" rev-parse --short HEAD)
+    commit_full=$(git -C "${tmp_dir}/foundry" rev-parse HEAD)
+
+    # Upstream PR #14266 added invariant tx/gas counters, but the pinned source
+    # only emits them when the progress UI is disabled and edge coverage is
+    # enabled. The benchmark deliberately keeps --show-progress for graceful
+    # SIGINT summaries and disables corpus persistence to avoid unbounded memory
+    # growth, so apply the narrow scfuzzbench pulse patch at the exact known pin.
+    # Explicit source-ref experiments remain unpatched and are called out in the
+    # benchmark manifest.
+    local throughput_patch="${SCFUZZBENCH_FOUNDRY_SOURCE_PATCH:-}"
+    local throughput_patch_ref="02c05d970d2801da0aef8b82486ce84b01ede36d"
+    local throughput_patch_sha256="2ee9e69b77c8007c78c816eb9ca791684aa5ecede0651b63f86cdd2e055eb17e"
+    if [[ "${commit_full}" == "${throughput_patch_ref}" ]]; then
+      if [[ -z "${throughput_patch}" || ! -f "${throughput_patch}" ]]; then
+        log "Missing Foundry throughput source patch for pinned commit ${throughput_patch_ref}."
+        return 1
+      fi
+      local actual_patch_sha256
+      actual_patch_sha256=$(sha256sum -- "${throughput_patch}" | awk '{print $1}')
+      if [[ "${actual_patch_sha256}" != "${throughput_patch_sha256}" ]]; then
+        log "Foundry throughput patch digest mismatch: expected ${throughput_patch_sha256}, got ${actual_patch_sha256}."
+        return 1
+      fi
+      if git -C "${tmp_dir}/foundry" apply --check -- "${throughput_patch}"; then
+        git -C "${tmp_dir}/foundry" apply -- "${throughput_patch}"
+      elif git -C "${tmp_dir}/foundry" apply --reverse --check -- "${throughput_patch}"; then
+        log "Foundry throughput patch is already applied."
+      else
+        log "Foundry throughput patch does not apply cleanly to ${commit_full}; refusing a drifted build."
+        return 1
+      fi
+      printf '%s\n' "scfuzzbench-throughput-progress-v1@sha256:${throughput_patch_sha256}" \
+        > "${SCFUZZBENCH_ROOT}/foundry_source_patch"
+      log "Applied Foundry throughput patch ${throughput_patch_sha256} to ${commit_full}"
+    elif [[ "${FOUNDRY_GIT_REF:-}" == "${throughput_patch_ref}" ]]; then
+      log "Foundry ref ${FOUNDRY_GIT_REF} resolved to unexpected commit ${commit_full}; refusing a drifted build."
+      return 1
+    else
+      log "Foundry source override ${commit_full} is outside the throughput patch pin; leaving it unpatched."
+    fi
+
     log "Building Foundry at ${commit} with profile ${foundry_build_profile} on Rust ${foundry_rust_toolchain}"
     # The benchmark path only invokes forge; do not build extra Foundry binaries
     # on every CI comparison side.

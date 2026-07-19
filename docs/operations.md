@@ -87,10 +87,18 @@ Foundry builds from upstream [foundry-rs/foundry](https://github.com/foundry-rs/
 pinned in `infrastructure/variables.tf` (`foundry_git_ref`). The pin must include invariant
 assertion-failure reporting ([foundry-rs/foundry#14275](https://github.com/foundry-rs/foundry/pull/14275))
 and continuous invariant campaigns with handler-bug dedup
-([foundry-rs/foundry#14482](https://github.com/foundry-rs/foundry/pull/14482)); stable releases up to
-v1.7.1 predate #14482, so keep the commit pin until a stable release ships both. The analysis pipeline
-consumes upstream's `event: failure` JSON pulse events. Override `TF_VAR_foundry_git_repo` /
-`TF_VAR_foundry_git_ref` only for experiments.
+([foundry-rs/foundry#14482](https://github.com/foundry-rs/foundry/pull/14482)) and the tx/gas
+throughput counters from
+[foundry-rs/foundry#14266](https://github.com/foundry-rs/foundry/pull/14266). Stable releases up to
+v1.7.1 predate #14482, so keep the commit pin until a stable release ships the required behavior.
+
+The pinned upstream source only writes its throughput pulse when terminal progress is disabled and
+edge coverage is enabled. Those conditions conflict with two production safeguards below.
+`fuzzers/foundry/throughput-progress.patch` therefore makes the existing pulse cadence independent
+of those display/coverage modes. The installer applies that patch only to the exact pinned commit,
+verifies its SHA-256 digest, and fails on drift. `foundry_source_patch` in each benchmark manifest
+records the patch identity. A source override that resolves away from the exact pinned commit is
+intentionally left unpatched, so its throughput availability depends on that source tree.
 
 Cloud benchmark requests do not expose `foundry_version`: setting only that release tag would be ignored while the
 non-empty git repository selects the source build. For a local release-binary run, use
@@ -122,6 +130,12 @@ assertion bugs appear **with their names**
 only as `broken_assertions` counts in pulse metrics, which the analysis converts
 into correctly-timed events and then names from the summary. Broken invariants
 emit named `event: failure` JSON records mid-campaign either way.
+
+The pinned source patch also emits an `event: pulse` JSON record approximately
+every five seconds after a completed invariant run while `--show-progress` is
+active. It preserves the final summary and does not re-enable `corpus_dir`.
+Each pulse carries campaign-wide `total_txs`, `total_gas`, `tps`, and `gps`;
+the `worker` field identifies the worker that won the reporting interval.
 
 ## Re-run A Benchmark
 
