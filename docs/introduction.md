@@ -31,15 +31,12 @@ A fuzzer is considered in-scope when it is:
 
 ## Benchmark targets
 
-Every target is a fork under the scfuzzbench org: the benchmark consumes the target's
-`main` branch (upstream code plus harness), and `pre-target` holds the pristine upstream
-baseline — `compare pre-target...main` shows exactly what the harness adds.
+Every target is a fork under the scfuzzbench org. Its `main` branch holds upstream
+code plus the harness, while `pre-target` holds the pristine upstream baseline.
+Benchmark requests use the immutable commit in the
+[in-repo target manifest](https://github.com/scfuzzbench/scfuzzbench/blob/main/benchmarks/targets.json).
 
-- [Aave v4](https://github.com/scfuzzbench/aave-v4-scfuzzbench)
-- [Superform v2-periphery](https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench)
-- [Liquity v2 Governance](https://github.com/scfuzzbench/liquity-V2-gov-scfuzzbench)
-- [Origin Dollar (OUSD)](https://github.com/scfuzzbench/origin-dollar-scfuzzbench)
-- [Drips](https://github.com/scfuzzbench/drips-fuzzing-scfuzzbench)
+<TargetManifest />
 
 ## Notable fuzzers currently excluded
 

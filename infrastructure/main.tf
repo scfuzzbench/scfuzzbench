@@ -5,6 +5,10 @@ locals {
   timeout_seconds = var.timeout_hours * 3600
   run_id          = var.run_id != "" ? var.run_id : time_static.run.unix
 
+  # A release tag is meaningful only on the foundryup path. Source builds
+  # record the version reported by forge when results are uploaded.
+  foundry_release_version = var.foundry_git_repo == "" ? var.foundry_version : ""
+
   # Pick an AZ that supports the requested instance type to avoid flaky applies
   # when AWS auto-selects an AZ where the type isn't offered.
   subnet_availability_zone = var.availability_zone != "" ? var.availability_zone : sort(data.aws_ec2_instance_type_offerings.fuzzer.locations)[0]
@@ -19,7 +23,7 @@ locals {
     timeout_hours        = var.timeout_hours
     aws_region           = var.aws_region
     ubuntu_ami_id        = data.aws_ssm_parameter.ubuntu_ami.value
-    foundry_version      = var.foundry_version
+    foundry_version      = local.foundry_release_version
     foundry_git_repo     = var.foundry_git_repo
     foundry_git_ref      = var.foundry_git_ref
     echidna_version      = var.echidna_version
@@ -359,7 +363,7 @@ resource "aws_instance" "fuzzer" {
     repo_url                     = var.target_repo_url
     repo_commit                  = var.target_commit
     benchmark_type               = var.benchmark_type
-    foundry_version              = var.foundry_version
+    foundry_version              = local.foundry_release_version
     foundry_git_repo             = var.foundry_git_repo
     foundry_git_ref              = var.foundry_git_ref
     echidna_version              = var.echidna_version
