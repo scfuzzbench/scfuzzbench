@@ -1377,22 +1377,29 @@ def format_statistical_report(
                 )
                 if r.direction == ">":
                     lines.append(
-                        f"- With p < {alpha}, {r.fuzzer_a} finds significantly more bugs "
-                        f"than {r.fuzzer_b} (median {med_a} vs {med_b}; "
-                        f"A12={r.a12:.3f}, {r.effect_magnitude} effect)."
+                        f"- In these runs, {r.fuzzer_a}'s end-of-budget bug counts tended "
+                        f"to be higher than {r.fuzzer_b}'s (median {med_a} vs {med_b}; "
+                        f"A12={r.a12:.3f}, {r.effect_magnitude} effect). The two-sided "
+                        f"Mann-Whitney comparison remained statistically significant after "
+                        f"Bonferroni correction (adjusted p={r.p_corrected:.4g}, "
+                        f"alpha={alpha})."
                     )
                 elif r.direction == "<":
                     lines.append(
-                        f"- With p < {alpha}, {r.fuzzer_b} finds significantly more bugs "
-                        f"than {r.fuzzer_a} (median {med_b} vs {med_a}; "
+                        f"- In these runs, {r.fuzzer_b}'s end-of-budget bug counts tended "
+                        f"to be higher than {r.fuzzer_a}'s (median {med_b} vs {med_a}; "
                         f"A12={r.a12:.3f} for {r.fuzzer_a} over {r.fuzzer_b}, "
-                        f"{r.effect_magnitude} effect)."
+                        f"{r.effect_magnitude} effect). The two-sided Mann-Whitney "
+                        f"comparison remained statistically significant after Bonferroni "
+                        f"correction (adjusted p={r.p_corrected:.4g}, alpha={alpha})."
                     )
                 else:
                     lines.append(
-                        f"- With p < {alpha}, {r.fuzzer_a} and {r.fuzzer_b} differ significantly "
-                        f"(both median {med_a}; A12={r.a12:.3f}, "
-                        f"{r.effect_magnitude} effect), likely due to distributional differences."
+                        f"- In these runs, {r.fuzzer_a} and {r.fuzzer_b} had a statistically "
+                        f"significant two-sided distributional difference after Bonferroni "
+                        f"correction (adjusted p={r.p_corrected:.4g}, alpha={alpha}), "
+                        f"without an A12 tendency in either direction (A12={r.a12:.3f}, "
+                        f"{r.effect_magnitude} effect)."
                     )
             lines.append("")
         else:
@@ -1418,6 +1425,15 @@ def format_statistical_report(
     )
     lines.append(
         "> (>=0.21). Small sample sizes (fewer than 5 runs) reduce statistical power."
+    )
+    lines.append(
+        "> A12 and its magnitude label are descriptive; the thresholds are rules of"
+    )
+    lines.append(
+        "> thumb. Neither the effect size nor statistical significance establishes"
+    )
+    lines.append(
+        "> practical importance, causation, or performance beyond the observed runs."
     )
     lines.append("")
 

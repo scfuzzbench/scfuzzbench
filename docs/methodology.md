@@ -204,7 +204,9 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   Fuzzer A outperforms Fuzzer B (ties count as half); values above `0.5` favor
   A and values below `0.5` favor B. Effect magnitudes are classified by
   distance from `0.5` as negligible (`<0.06`), small (`<0.14`), medium
-  (`<0.21`), or large (`>=0.21`).
+  (`<0.21`), or large (`>=0.21`). These magnitude thresholds are descriptive
+  rules of thumb; neither A12 nor statistical significance establishes
+  practical importance, causation, or performance beyond the observed runs.
 - Note: these report scorecards are count-based. They do not score severity or root-cause uniqueness.
 - If `throughput_summary.csv` is present, the report also includes tx/s and gas/s summary tables.
 - If `throughput_samples.csv` is present, the report also emits throughput trend charts (`tx_per_second_over_time.png`, `gas_per_second_over_time.png`).

@@ -732,6 +732,19 @@ class StatisticalTestsTests(unittest.TestCase):
         self.assertEqual(results[0].a12, 0.75)
         self.assertEqual(results[0].direction, ">")
 
+    def test_a12_reversing_unequal_tied_samples_complements_value(self):
+        m_a = _make_metrics("a", [2, 2, 3])
+        m_b = _make_metrics("b", [1, 2])
+
+        forward, _ = benchmark_report.compute_statistical_tests([m_a, m_b])
+        reverse, _ = benchmark_report.compute_statistical_tests([m_b, m_a])
+
+        self.assertAlmostEqual(forward[0].a12, 5.0 / 6.0)
+        self.assertAlmostEqual(reverse[0].a12, 1.0 / 6.0)
+        self.assertAlmostEqual(forward[0].a12 + reverse[0].a12, 1.0)
+        self.assertEqual(forward[0].direction, ">")
+        self.assertEqual(reverse[0].direction, "<")
+
     def test_a12_magnitude_thresholds_are_symmetric(self):
         cases = [
             (0.50, "negligible"),
@@ -788,14 +801,30 @@ class StatisticalTestsTests(unittest.TestCase):
         self.assertEqual(len(results), 0)
         self.assertTrue(any("fewer than 2 runs" in w for w in warnings))
 
+    def test_empty_final_sample_is_skipped(self):
+        m_a = _make_metrics("a", [5, 6])
+        m_a.final_values = np.array([], dtype=float)
+        m_b = _make_metrics("b", [3, 4])
+        results, warnings = benchmark_report.compute_statistical_tests([m_a, m_b])
+        self.assertEqual(results, [])
+        self.assertTrue(any("fewer than 2 runs" in w for w in warnings))
+
     def test_natural_language_conclusions(self):
         m_a = _make_metrics("echidna", [7, 8, 7, 8, 7, 8, 7, 8, 7, 8])
         m_b = _make_metrics("medusa", [2, 3, 3, 2, 3, 2, 3, 2, 3, 2])
         results, warnings = benchmark_report.compute_statistical_tests([m_a, m_b])
         lines = benchmark_report.format_statistical_report(results, warnings)
         text = "\n".join(lines)
-        self.assertIn("echidna finds significantly more bugs than medusa", text)
+        self.assertIn(
+            "echidna's end-of-budget bug counts tended to be higher than medusa's",
+            text,
+        )
         self.assertIn("A12=1.000, large effect", text)
+        self.assertIn("after Bonferroni correction (adjusted p=", text)
+        self.assertIn(
+            "Neither the effect size nor statistical significance establishes", text
+        )
+        self.assertNotIn("finds significantly more bugs", text)
 
     def test_no_significant_fallback_text(self):
         m_a = _make_metrics("a", [5, 5, 5, 5, 5])
