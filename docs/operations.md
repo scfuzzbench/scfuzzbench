@@ -57,19 +57,31 @@ allow that role in their bucket policy.
 
 The directory contents are copied into each selected fuzzer's configured
 corpus directory immediately before the campaign. The copy is recursive and
-byte-for-byte, preserves relative paths, rejects symlinks/special files, and
-does not translate between fuzzer corpus formats. Use only a seed set that all
-selected fuzzers can consume. An opted-in Foundry seed corpus also enables
-Foundry corpus persistence, with its existing memory tradeoff.
+byte-for-byte, preserves relative paths, and rejects symlinks, hardlinks, device
+nodes, sockets, and FIFOs. Archives are opaque seed files and are never
+extracted. A fixed safety ceiling rejects more than 10,000 files or more than
+1 GiB of source bytes before the live corpus is replaced. scfuzzbench does not
+translate between fuzzer corpus formats; use only a seed layout every selected
+fuzzer can consume. In particular, Foundry invariant seeds must already use
+Foundry's contract/test directory layout. An opted-in Foundry seed corpus also
+enables Foundry corpus persistence, with its existing memory tradeoff.
 
 Each runner records `source`, file count, total bytes, and a deterministic
-SHA-256 tree digest in `logs/seed_corpus.json`; the same data is added to the
-run manifest and rendered on the run report page. Local absolute paths are
-reported as `local://<directory-name>` so host paths are not published. Keep S3
-prefixes immutable for the duration of a run. The digest visits files in
-UTF-8 relative-path byte order and hashes, for each file, the big-endian
-64-bit path length, relative-path bytes, big-endian 64-bit file size, and file
-bytes.
+SHA-256 tree digest plus per-file paths, sizes, and hashes in
+`logs/seed_corpus.json`; the same data is added to the run manifest and rendered
+on the run report page. Target-relative inputs are reported as
+`target://<path>`. Absolute host paths are represented by a SHA-256 path token
+so distinct paths remain distinct without publishing any host path component.
+
+For S3, each object download is bound to the listed ETag or exact version ID,
+and the complete prefix listing must remain unchanged before and after the
+download. Partial downloads and unsafe or colliding object keys fail closed.
+The live corpus is replaced only after a second copy produces the same
+byte/path digest. Canonical manifests use create-once writes: later instances
+must verify byte-identical content instead of overwriting a different
+manifest. The tree digest visits files in UTF-8 relative-path byte order and
+hashes, for each file, the big-endian 64-bit path length, relative-path bytes,
+big-endian 64-bit file size, and file bytes.
 
 Foundry builds from upstream [foundry-rs/foundry](https://github.com/foundry-rs/foundry) at the commit
 pinned in `infrastructure/variables.tf` (`foundry_git_ref`). The pin must include invariant

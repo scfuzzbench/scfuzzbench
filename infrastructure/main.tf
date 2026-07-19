@@ -12,9 +12,14 @@ locals {
   seed_corpus_source_type = var.shared_seed_corpus_source == "" ? "" : (
     local.seed_corpus_s3_bucket != "" ? "s3" : "local"
   )
-  seed_corpus_provenance_source = local.seed_corpus_source_type == "local" ? (
-    "local://${basename(trimsuffix(var.shared_seed_corpus_source, "/"))}"
-  ) : trimsuffix(var.shared_seed_corpus_source, "/")
+  seed_corpus_local_path = trimsuffix(var.shared_seed_corpus_source, "/")
+  seed_corpus_provenance_source = local.seed_corpus_source_type == "s3" ? (
+    trimsuffix(var.shared_seed_corpus_source, "/")
+    ) : startswith(local.seed_corpus_local_path, "/") ? (
+    "local-sha256://${sha256(local.seed_corpus_local_path)}"
+    ) : local.seed_corpus_source_type == "local" ? (
+    "target://${trimprefix(local.seed_corpus_local_path, "./")}"
+  ) : ""
 
   # Pick an AZ that supports the requested instance type to avoid flaky applies
   # when AWS auto-selects an AZ where the type isn't offered.
@@ -304,6 +309,15 @@ data "aws_iam_policy_document" "s3_access" {
     ]
   }
 
+  statement {
+    sid     = "VerifyImmutableBenchmarkManifests"
+    actions = ["s3:GetObject"]
+    resources = [
+      "arn:aws:s3:::${local.bucket_name}/logs/*/manifest.json",
+      "arn:aws:s3:::${local.bucket_name}/runs/*/manifest.json",
+    ]
+  }
+
   dynamic "statement" {
     for_each = local.ssm_parameter_arns
 
@@ -318,7 +332,7 @@ data "aws_iam_policy_document" "s3_access" {
 
     content {
       sid       = "ReadSharedSeedCorpusObjects"
-      actions   = ["s3:GetObject"]
+      actions   = ["s3:GetObject", "s3:GetObjectVersion"]
       resources = ["arn:aws:s3:::${statement.value}/${local.seed_corpus_s3_prefix}/*"]
     }
   }
@@ -391,6 +405,7 @@ resource "aws_instance" "fuzzer" {
   user_data_base64 = base64gzip(templatefile("${path.module}/user_data.sh.tftpl", {
     fuzzer_key                    = each.value.fuzzer.key
     shared_sh                     = file("${path.module}/../fuzzers/_shared/common.sh")
+    seed_corpus_helper            = file("${path.module}/../fuzzers/_shared/prepare_seed_corpus.py")
     install_sh                    = file(each.value.fuzzer.install_path)
     run_sh                        = file(each.value.fuzzer.run_path)
     aws_region                    = var.aws_region

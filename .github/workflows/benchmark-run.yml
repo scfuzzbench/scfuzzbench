@@ -450,8 +450,8 @@ jobs:
             if [[ ! "${SHARED_SEED_CORPUS_SOURCE}" =~ ^(s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/)?[A-Za-z0-9/._+~-]+/?$ ]]; then
               fail "shared_seed_corpus_source must be a safe target-relative path or s3://bucket/prefix"
             fi
-            if [[ "/${SHARED_SEED_CORPUS_SOURCE}/" == *"/../"* ]]; then
-              fail "shared_seed_corpus_source must not contain '..' path segments"
+            if [[ "/${SHARED_SEED_CORPUS_SOURCE}/" == *"/./"* || "/${SHARED_SEED_CORPUS_SOURCE}/" == *"/../"* ]]; then
+              fail "shared_seed_corpus_source must not contain '.' or '..' path segments"
             fi
           fi
 
@@ -471,9 +471,17 @@ jobs:
               raise SystemExit("fuzzer_env_json has too many keys (max 64)")
           key_re = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
           forbidden = re.compile(r'[\r\n"`$\\\\]')
+          reserved_seed_keys = {
+              "SCFUZZBENCH_SEED_CORPUS_SOURCE",
+              "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
+              "SCFUZZBENCH_SEED_CORPUS_HELPER",
+              "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
+          }
           for k, v in obj.items():
               if not isinstance(k, str) or not key_re.match(k):
                   raise SystemExit(f"Invalid env key: {k}")
+              if k in reserved_seed_keys:
+                  raise SystemExit(f"fuzzer_env_json cannot override framework-owned seed variable: {k}")
               if not isinstance(v, str):
                   raise SystemExit(f"Env value for {k} must be a string")
               if len(v) > 2000:

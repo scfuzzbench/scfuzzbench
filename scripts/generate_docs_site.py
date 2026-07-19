@@ -438,7 +438,10 @@ def format_seed_corpus_lines(manifest: dict) -> list[str]:
         ("seed_corpus_file_count", "file_count"),
         ("seed_corpus_size_bytes", "size_bytes"),
         ("seed_corpus_sha256", "sha256"),
+        ("seed_corpus_digest_algorithm", "digest_algorithm"),
         ("seed_corpus_copy_semantics", "copy_semantics"),
+        ("seed_corpus_source_immutability", "source_immutability"),
+        ("seed_corpus_s3_listing_sha256", "s3_listing_sha256"),
     )
     for label, key in fields:
         value = seed_corpus.get(key)

@@ -189,8 +189,9 @@ if [[ -n "${SEED_CORPUS_ARG}" ]]; then
       exit 1
     fi
     seed_corpus_path="$(cd "${SEED_CORPUS_ARG}" && pwd -P)"
+    seed_corpus_path_sha256="$(printf '%s' "${seed_corpus_path}" | sha256sum | cut -d' ' -f1)"
     export SCFUZZBENCH_SEED_CORPUS_SOURCE="${seed_corpus_path}"
-    export SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE="local://$(basename "${seed_corpus_path}")"
+    export SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE="local-sha256://${seed_corpus_path_sha256}"
   fi
 fi
 

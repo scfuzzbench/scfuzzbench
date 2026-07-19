@@ -172,9 +172,16 @@ jobs:
 
               const keys = Object.keys(obj);
               if (keys.length > 64) return fail("fuzzer_env_json has too many keys (max 64).");
+              const reservedSeedKeys = new Set([
+                "SCFUZZBENCH_SEED_CORPUS_SOURCE",
+                "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
+                "SCFUZZBENCH_SEED_CORPUS_HELPER",
+                "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
+              ]);
 
               for (const k of keys) {
                 if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(k)) return fail(`Invalid fuzzer env key: ${k}`);
+                if (reservedSeedKeys.has(k)) return fail(`fuzzer_env_json cannot override framework-owned seed variable: ${k}`);
                 const v = obj[k];
                 if (typeof v !== "string") return fail(`Env value for ${k} must be a string`);
                 if (v.length > 2000) return fail(`Env value for ${k} too long (max 2000 chars)`);
@@ -371,8 +378,8 @@ jobs:
                 "expected a safe target-relative path or s3://bucket/prefix"
               );
               if (!seedSourceMatch.ok) errors.push(seedSourceMatch.message);
-              if (/(^|\/)\.\.(\/|$)/.test(shared_seed_corpus_source.value)) {
-                errors.push("shared_seed_corpus_source must not contain '..' path segments");
+              if (/(^|\/)\.\.?(\/|$)/.test(shared_seed_corpus_source.value)) {
+                errors.push("shared_seed_corpus_source must not contain '.' or '..' path segments");
               }
             }
 

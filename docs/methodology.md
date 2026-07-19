@@ -89,7 +89,12 @@ Each instance uploads:
   - `runs/<run_id>/<benchmark_uuid>/manifest.json` (timestamp-first index used by docs)
 - Shared-seed provenance, when configured:
   - `seed_corpus.json` inside each logs zip
-  - `seed_corpus` in the benchmark manifest (`source`, count, bytes, SHA-256)
+  - `seed_corpus` in the benchmark manifest (redacted/collision-safe source,
+    fixed limits, per-file hashes, tree SHA-256, and S3 object identity)
+
+Canonical manifests are create-once objects. Concurrent instances may confirm
+that an existing object is byte-identical, but cannot overwrite a different
+manifest.
 
 ## What Counts as a Complete Run
 

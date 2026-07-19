@@ -191,6 +191,19 @@ variable "fuzzer_env" {
   type        = map(string)
   description = "Fuzzer environment variable overrides passed to fuzzer run scripts."
   default     = {}
+
+  validation {
+    condition = alltrue([
+      for key in keys(var.fuzzer_env) :
+      !contains([
+        "SCFUZZBENCH_SEED_CORPUS_SOURCE",
+        "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
+        "SCFUZZBENCH_SEED_CORPUS_HELPER",
+        "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
+      ], key)
+    ])
+    error_message = "fuzzer_env cannot override framework-owned shared seed corpus variables."
+  }
 }
 
 variable "shared_seed_corpus_source" {
@@ -201,8 +214,8 @@ variable "shared_seed_corpus_source" {
   validation {
     condition = var.shared_seed_corpus_source == "" || (
       can(regex("^(s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/)?[A-Za-z0-9/._+~-]+/?$", var.shared_seed_corpus_source)) &&
-      length(regexall("(^|/)\\.\\.(/|$)", var.shared_seed_corpus_source)) == 0
+      length(regexall("(^|/)\\.\\.?(/|$)", var.shared_seed_corpus_source)) == 0
     )
-    error_message = "shared_seed_corpus_source must be empty, a safe local path, or an s3://bucket/prefix without '..', spaces, query parameters, or shell metacharacters."
+    error_message = "shared_seed_corpus_source must be empty, a safe local path, or an s3://bucket/prefix without '.'/'..' segments, spaces, query parameters, or shell metacharacters."
   }
 }

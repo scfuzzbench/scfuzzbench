@@ -31,11 +31,14 @@ SCFUZZBENCH_BENCHMARK_MANIFEST_B64=${SCFUZZBENCH_BENCHMARK_MANIFEST_B64:-}
 SCFUZZBENCH_PROPERTIES_PATH=${SCFUZZBENCH_PROPERTIES_PATH:-}
 SCFUZZBENCH_SEED_CORPUS_SOURCE=${SCFUZZBENCH_SEED_CORPUS_SOURCE:-}
 SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE=${SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE:-}
+SCFUZZBENCH_SEED_CORPUS_HELPER=${SCFUZZBENCH_SEED_CORPUS_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/prepare_seed_corpus.py}
 SCFUZZBENCH_RUNNER_METRICS=${SCFUZZBENCH_RUNNER_METRICS:-1}
 SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS=${SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS:-5}
 
 SCFUZZBENCH_AWS_CREDS_ENV_FILE=${SCFUZZBENCH_AWS_CREDS_ENV_FILE:-${SCFUZZBENCH_ROOT}/aws_creds.env}
 SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS=${SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS:-300}
+SCFUZZBENCH_SEED_CORPUS_MAX_FILES=10000
+SCFUZZBENCH_SEED_CORPUS_MAX_BYTES=1073741824
 
 # The pinned Foundry build defaults `dynamic_test_linking` to true, which injects
 # virtual `foundry-pp/DeployHelper*.sol` sources into build-info output.
@@ -288,27 +291,48 @@ prepare_shared_seed_corpus() {
   local source="${SCFUZZBENCH_SEED_CORPUS_SOURCE:-}"
   local staging_dir="${SCFUZZBENCH_ROOT}/shared-seed-corpus"
   local metadata_path="${SCFUZZBENCH_LOG_DIR}/seed_corpus.json"
+  local metadata_tmp="${metadata_path}.tmp-${BASHPID}"
+  local installed_metadata="${SCFUZZBENCH_ROOT}/seed-corpus-installed-${BASHPID}.json"
+  local corpus_tmp="${corpus_dir}.scfuzzbench-tmp-${BASHPID}"
+  local corpus_backup="${corpus_dir}.scfuzzbench-old-${BASHPID}"
   local protected
-  for protected in "${SCFUZZBENCH_ROOT}" "${SCFUZZBENCH_WORKDIR}" "${SCFUZZBENCH_WORKDIR}/target" "${staging_dir}"; do
+  for protected in \
+    "${SCFUZZBENCH_ROOT}" \
+    "${SCFUZZBENCH_WORKDIR}" \
+    "${SCFUZZBENCH_WORKDIR}/target" \
+    "${SCFUZZBENCH_LOG_DIR}" \
+    "${staging_dir}"; do
     if [[ "${corpus_dir}" == "$(realpath -m -- "${protected}")" ]]; then
       log "Refusing to reset protected corpus directory: ${corpus_dir}"
       return 1
     fi
   done
-  rm -f "${metadata_path}"
+  if [[ ! -f "${SCFUZZBENCH_SEED_CORPUS_HELPER}" ]]; then
+    log "Shared seed corpus helper not found: ${SCFUZZBENCH_SEED_CORPUS_HELPER}"
+    return 1
+  fi
+  rm -f -- "${metadata_path}" "${metadata_tmp}" "${installed_metadata}"
+  rm -rf -- "${staging_dir}" "${corpus_tmp}" "${corpus_backup}"
+  unset SCFUZZBENCH_SEED_CORPUS_METADATA_PATH
 
   if [[ -z "${source}" ]]; then
-    rm -rf -- "${corpus_dir}"
-    mkdir -p "${corpus_dir}"
+    mkdir -p "$(dirname "${corpus_tmp}")"
+    mkdir -m 0700 "${corpus_tmp}"
+    if [[ -e "${corpus_dir}" || -L "${corpus_dir}" ]]; then
+      mv -- "${corpus_dir}" "${corpus_backup}"
+    fi
+    if ! mv -- "${corpus_tmp}" "${corpus_dir}"; then
+      [[ ! -e "${corpus_backup}" ]] || mv -- "${corpus_backup}" "${corpus_dir}"
+      return 1
+    fi
+    rm -rf -- "${corpus_backup}"
     log "Starting with an empty corpus"
     return 0
   fi
 
-  rm -rf -- "${staging_dir}"
-  mkdir -p "${staging_dir}"
-
   local source_type
   local provenance_source="${SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE:-}"
+  local helper_source
   case "${source}" in
     s3://*)
       if [[ ! "${source}" =~ ^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/.+$ ]] || \
@@ -318,90 +342,108 @@ prepare_shared_seed_corpus() {
       fi
       source_type="s3"
       provenance_source="${provenance_source:-${source%/}}"
+      helper_source="${source#s3://}"
       if ! command -v aws >/dev/null 2>&1; then
         log "AWS CLI is required for an S3 shared seed corpus"
         return 1
       fi
       log "Downloading shared seed corpus from ${provenance_source}"
-      retry_cmd 5 60 aws_cli s3 cp "${source%/}/" "${staging_dir}/" \
-        --recursive --no-progress --only-show-errors
       ;;
     *)
       source_type="local"
       local source_path="${source}"
+      local source_was_relative=0
       if [[ "${source_path}" != /* ]]; then
+        source_was_relative=1
         source_path="${SCFUZZBENCH_WORKDIR}/target/${source_path#./}"
       fi
       if [[ ! -d "${source_path}" ]]; then
         log "Shared seed corpus directory not found: ${source_path}"
         return 1
       fi
-      local unsupported
-      unsupported=$(find -P "${source_path}" -mindepth 1 ! -type d ! -type f -print -quit)
-      if [[ -n "${unsupported}" ]]; then
-        log "Shared seed corpus contains an unsupported non-regular entry: ${unsupported}"
+      local normalized_source_path
+      normalized_source_path=$(realpath -m -- "${source_path}")
+      if [[ "${staging_dir}" == "${normalized_source_path}" || "${staging_dir}" == "${normalized_source_path}/"* ]]; then
+        log "Shared seed corpus source must not contain the staging directory"
         return 1
       fi
-      provenance_source="${provenance_source:-local://$(basename "${source_path}")}"
+      if [[ "${corpus_dir}" == "${normalized_source_path}/"* ]]; then
+        log "Shared seed corpus source must not contain the destination corpus"
+        return 1
+      fi
+      if [[ -z "${provenance_source}" ]]; then
+        if (( source_was_relative )); then
+          provenance_source="target://${source#./}"
+        else
+          local source_path_sha256
+          source_path_sha256=$(printf '%s' "${normalized_source_path}" | sha256sum | cut -d' ' -f1)
+          provenance_source="local-sha256://${source_path_sha256}"
+        fi
+      fi
+      helper_source="${source_path}"
       log "Copying shared seed corpus from ${provenance_source}"
-      cp -a -- "${source_path}/." "${staging_dir}/"
       ;;
   esac
 
-  local file_count
-  file_count=$(find -P "${staging_dir}" -type f -printf '.' | wc -c)
-  if [[ "${file_count}" -eq 0 ]]; then
-    log "Configured shared seed corpus is empty: ${provenance_source}"
+  if ! python3 "${SCFUZZBENCH_SEED_CORPUS_HELPER}" \
+    --mode "${source_type}" \
+    --source "${helper_source}" \
+    --source-label "${provenance_source}" \
+    --destination "${staging_dir}" \
+    --metadata "${metadata_tmp}" \
+    --max-files "${SCFUZZBENCH_SEED_CORPUS_MAX_FILES}" \
+    --max-bytes "${SCFUZZBENCH_SEED_CORPUS_MAX_BYTES}"; then
+    rm -rf -- "${staging_dir}" "${corpus_tmp}"
+    rm -f -- "${metadata_tmp}" "${installed_metadata}"
     return 1
   fi
 
-  # Reset only after staging so a source inside the target's corpus tree remains
-  # readable. Every fuzzer then receives the same relative paths and file bytes.
-  rm -rf -- "${corpus_dir}"
-  mkdir -p "${corpus_dir}"
-  cp -a -- "${staging_dir}/." "${corpus_dir}/"
-
-  python3 - "${staging_dir}" "${metadata_path}" "${provenance_source}" "${source_type}" <<'PY'
-import hashlib
+  # Copy the trusted snapshot into a sibling temporary directory and verify its
+  # byte/path digest before replacing the live corpus.
+  if ! python3 "${SCFUZZBENCH_SEED_CORPUS_HELPER}" \
+    --mode local \
+    --source "${staging_dir}" \
+    --source-label "${provenance_source}" \
+    --destination "${corpus_tmp}" \
+    --metadata "${installed_metadata}" \
+    --max-files "${SCFUZZBENCH_SEED_CORPUS_MAX_FILES}" \
+    --max-bytes "${SCFUZZBENCH_SEED_CORPUS_MAX_BYTES}"; then
+    rm -rf -- "${staging_dir}" "${corpus_tmp}"
+    rm -f -- "${metadata_tmp}" "${installed_metadata}"
+    return 1
+  fi
+  if ! python3 - "${metadata_tmp}" "${installed_metadata}" <<'PY'
 import json
-import os
 import sys
 from pathlib import Path
 
-root = Path(sys.argv[1])
-metadata_path = Path(sys.argv[2])
-source = sys.argv[3]
-source_type = sys.argv[4]
-files = sorted(
-    (path for path in root.rglob("*") if path.is_file()),
-    key=lambda path: path.relative_to(root).as_posix().encode("utf-8"),
-)
-
-digest = hashlib.sha256()
-size_bytes = 0
-for path in files:
-    relative = path.relative_to(root).as_posix().encode("utf-8")
-    size = path.stat().st_size
-    size_bytes += size
-    digest.update(len(relative).to_bytes(8, "big"))
-    digest.update(relative)
-    digest.update(size.to_bytes(8, "big"))
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-
-metadata = {
-    "source": source,
-    "source_type": source_type,
-    "file_count": len(files),
-    "size_bytes": size_bytes,
-    "sha256": digest.hexdigest(),
-    "copy_semantics": "recursive-byte-for-byte",
-}
-metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+source = json.loads(Path(sys.argv[1]).read_text())
+installed = json.loads(Path(sys.argv[2]).read_text())
+fields = ("file_count", "size_bytes", "sha256", "files")
+if any(source.get(field) != installed.get(field) for field in fields):
+    raise SystemExit("installed seed corpus does not match the staged snapshot")
 PY
+  then
+    rm -rf -- "${staging_dir}" "${corpus_tmp}"
+    rm -f -- "${metadata_tmp}" "${installed_metadata}"
+    return 1
+  fi
 
+  if [[ -e "${corpus_dir}" || -L "${corpus_dir}" ]]; then
+    mv -- "${corpus_dir}" "${corpus_backup}"
+  fi
+  if ! mv -- "${corpus_tmp}" "${corpus_dir}"; then
+    [[ ! -e "${corpus_backup}" ]] || mv -- "${corpus_backup}" "${corpus_dir}"
+    rm -rf -- "${staging_dir}" "${corpus_tmp}"
+    rm -f -- "${metadata_tmp}" "${installed_metadata}"
+    return 1
+  fi
+  rm -rf -- "${corpus_backup}" "${staging_dir}"
+  rm -f -- "${installed_metadata}"
+  mv -- "${metadata_tmp}" "${metadata_path}"
   export SCFUZZBENCH_SEED_CORPUS_METADATA_PATH="${metadata_path}"
+  local file_count
+  file_count=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["file_count"])' "${metadata_path}")
   log "Loaded ${file_count} shared seed corpus files into ${corpus_dir}"
 }
 
@@ -1215,7 +1257,14 @@ resolve_manifest_foundry_version() {
 record_seed_corpus_in_manifest() {
   local manifest_path=$1
   local metadata_path="${SCFUZZBENCH_SEED_CORPUS_METADATA_PATH:-${SCFUZZBENCH_LOG_DIR}/seed_corpus.json}"
-  [[ -f "${manifest_path}" && -f "${metadata_path}" ]] || return 0
+  [[ -f "${manifest_path}" ]] || return 0
+  if [[ ! -f "${metadata_path}" ]]; then
+    if [[ -n "${SCFUZZBENCH_SEED_CORPUS_SOURCE:-}" ]]; then
+      log "Configured seed corpus metadata is missing: ${metadata_path}"
+      return 1
+    fi
+    return 0
+  fi
   python3 - "${manifest_path}" "${metadata_path}" <<'PY'
 import json
 import os
@@ -1230,6 +1279,46 @@ temporary = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
 temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 os.replace(temporary, manifest_path)
 PY
+}
+
+upload_manifest_once_or_verify() {
+  local manifest_path=$1
+  local bucket=$2
+  local key=$3
+  local digest
+  digest=$(sha256sum "${manifest_path}" | cut -d' ' -f1)
+  local existing
+  existing=$(mktemp "${SCFUZZBENCH_ROOT}/manifest-existing.XXXXXX")
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if aws_cli s3api put-object \
+      --bucket "${bucket}" \
+      --key "${key}" \
+      --body "${manifest_path}" \
+      --content-type application/json \
+      --metadata "sha256=${digest}" \
+      --if-none-match '*' >/dev/null 2>&1; then
+      rm -f -- "${existing}"
+      return 0
+    fi
+    rm -f -- "${existing}"
+    if aws_cli s3api get-object \
+      --bucket "${bucket}" \
+      --key "${key}" \
+      "${existing}" >/dev/null 2>&1; then
+      if cmp -s -- "${manifest_path}" "${existing}"; then
+        rm -f -- "${existing}"
+        return 0
+      fi
+      rm -f -- "${existing}"
+      log "Refusing to overwrite a different benchmark manifest at s3://${bucket}/${key}"
+      return 1
+    fi
+    sleep $((attempt * 2))
+  done
+  rm -f -- "${existing}"
+  log "Could not create or verify benchmark manifest at s3://${bucket}/${key}"
+  return 1
 }
 
 upload_results() {
@@ -1249,6 +1338,7 @@ upload_results() {
   mkdir -p "${upload_dir}"
   local log_zip="${upload_dir}/logs-${base_name}.zip"
   local prefix="${SCFUZZBENCH_RUN_ID}"
+  local manifest_upload_ok=1
   if [[ -n "${SCFUZZBENCH_BENCHMARK_UUID}" ]]; then
     # New layout: logs/<run_id>/<benchmark_uuid>/...
     prefix="${SCFUZZBENCH_RUN_ID}/${SCFUZZBENCH_BENCHMARK_UUID}"
@@ -1258,14 +1348,24 @@ upload_results() {
     local manifest_path="${upload_dir}/benchmark_manifest.json"
     echo "${SCFUZZBENCH_BENCHMARK_MANIFEST_B64}" | base64 -d > "${manifest_path}"
     resolve_manifest_foundry_version "${manifest_path}" || true
-    record_seed_corpus_in_manifest "${manifest_path}" || true
-    retry_cmd 5 60 aws_cli s3 cp "${manifest_path}" "s3://${SCFUZZBENCH_S3_BUCKET}/logs/${prefix}/manifest.json" --no-progress
+    if ! record_seed_corpus_in_manifest "${manifest_path}"; then
+      manifest_upload_ok=0
+    elif ! upload_manifest_once_or_verify \
+      "${manifest_path}" \
+      "${SCFUZZBENCH_S3_BUCKET}" \
+      "logs/${prefix}/manifest.json"; then
+      manifest_upload_ok=0
+    fi
 
     # Timestamp-first discovery index for the docs site:
     # runs/<run_id>/<benchmark_uuid>/manifest.json
     if [[ -n "${SCFUZZBENCH_BENCHMARK_UUID}" && "${SCFUZZBENCH_RUN_ID}" =~ ^[0-9]+$ ]]; then
-      local index_dest="s3://${SCFUZZBENCH_S3_BUCKET}/runs/${SCFUZZBENCH_RUN_ID}/${SCFUZZBENCH_BENCHMARK_UUID}/manifest.json"
-      retry_cmd 5 60 aws_cli s3 cp "${manifest_path}" "${index_dest}" --no-progress
+      if (( manifest_upload_ok )) && ! upload_manifest_once_or_verify \
+        "${manifest_path}" \
+        "${SCFUZZBENCH_S3_BUCKET}" \
+        "runs/${SCFUZZBENCH_RUN_ID}/${SCFUZZBENCH_BENCHMARK_UUID}/manifest.json"; then
+        manifest_upload_ok=0
+      fi
     else
       log "Skipping docs index upload; missing benchmark UUID or non-numeric run id."
     fi
@@ -1302,6 +1402,10 @@ upload_results() {
 
   export SCFUZZBENCH_UPLOAD_DONE=1
   log_duration "upload_results" "${upload_start}"
+  if (( ! manifest_upload_ok )); then
+    log "Artifacts uploaded, but benchmark manifest creation or verification failed"
+    return 1
+  fi
 }
 
 save_results_local() {
@@ -1322,7 +1426,7 @@ save_results_local() {
     local manifest_path="${output_dir}/benchmark_manifest.json"
     echo "${SCFUZZBENCH_BENCHMARK_MANIFEST_B64}" | base64 -d > "${manifest_path}"
     resolve_manifest_foundry_version "${manifest_path}" || true
-    record_seed_corpus_in_manifest "${manifest_path}" || true
+    record_seed_corpus_in_manifest "${manifest_path}"
   fi
 
   if [[ -d "${SCFUZZBENCH_LOG_DIR}" ]]; then
