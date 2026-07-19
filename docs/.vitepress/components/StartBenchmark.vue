@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import targetManifest from "../../../benchmarks/targets.json";
 import ec2Pricing from "../generated/ec2-pricing.json";
 
 type BenchmarkType = "property" | "optimization";
@@ -9,52 +10,26 @@ type PreconfiguredTarget = {
   label: string;
   repoUrl: string;
   commit: string;
+  propertiesPath: string;
 };
 
 const REPO_OWNER = "scfuzzbench";
 const REPO_NAME = "scfuzzbench";
 const NEW_ISSUE_URL = `https://github.com/${REPO_OWNER}/${REPO_NAME}/issues/new`;
-// Convention: every target is a fork under the scfuzzbench org; `main` holds the
-// harnessed code the benchmark consumes and `pre-target` the pristine upstream
-// baseline (compare pre-target...main to see the harness).
-const PRECONFIGURED_TARGETS: PreconfiguredTarget[] = [
-  {
-    id: "aave-v4",
-    label: "Aave v4",
-    repoUrl: "https://github.com/scfuzzbench/aave-v4-scfuzzbench",
-    commit: "main",
-  },
-  {
-    id: "superform-v2-periphery",
-    label: "Superform v2-periphery",
-    repoUrl: "https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench",
-    commit: "main",
-  },
-  {
-    id: "liquity-v2-governance",
-    label: "Liquity v2 Governance",
-    repoUrl: "https://github.com/scfuzzbench/liquity-V2-gov-scfuzzbench",
-    commit: "main",
-  },
-  {
-    id: "origin-dollar",
-    label: "Origin Dollar (OUSD)",
-    repoUrl: "https://github.com/scfuzzbench/origin-dollar-scfuzzbench",
-    commit: "main",
-  },
-  {
-    id: "drips",
-    label: "Drips",
-    repoUrl: "https://github.com/scfuzzbench/drips-fuzzing-scfuzzbench",
-    commit: "main",
-  },
-];
+const PRECONFIGURED_TARGETS: PreconfiguredTarget[] = targetManifest.targets.map((target) => ({
+  id: target.id,
+  label: target.label,
+  repoUrl: target.repo,
+  commit: target.commit,
+  propertiesPath: target.properties_path,
+}));
 const CUSTOM_TARGET_ID = "custom";
 
 // Defaults are intentionally aligned with the repo's typical local `.env` values.
 // Avoid putting anything secret here: this is a fully static site.
 const targetRepoUrl = ref(PRECONFIGURED_TARGETS[0].repoUrl);
 const targetCommit = ref(PRECONFIGURED_TARGETS[0].commit);
+const propertiesPath = ref(PRECONFIGURED_TARGETS[0].propertiesPath);
 const selectedPreconfiguredTargetId = ref(PRECONFIGURED_TARGETS[0].id);
 const isApplyingPreconfiguredTarget = ref(false);
 
@@ -106,7 +81,6 @@ const reconVersion = ref("");
 
 const gitTokenSsmParameterName = ref("/scfuzzbench/recon/github_token");
 
-const propertiesPath = ref("");
 const fuzzerEnvJson = ref("");
 
 function normalizeRepoUrl(raw: string): string {
@@ -120,6 +94,10 @@ function normalizeRepoUrl(raw: string): string {
 
 function normalizeCommitRef(raw: string): string {
   return raw.trim();
+}
+
+function shortCommit(raw: string): string {
+  return raw.slice(0, 12);
 }
 
 function findPreconfiguredTarget(repoUrl: string, commit: string): PreconfiguredTarget | null {
@@ -145,6 +123,7 @@ watch(selectedPreconfiguredTargetId, (selectedId) => {
   isApplyingPreconfiguredTarget.value = true;
   targetRepoUrl.value = selected.repoUrl;
   targetCommit.value = selected.commit;
+  propertiesPath.value = selected.propertiesPath;
   isApplyingPreconfiguredTarget.value = false;
 });
 
@@ -254,7 +233,8 @@ const issueBody = computed(() => {
     "",
     "Notes:",
     "- Do not include secrets in this issue.",
-    "- `target_commit` may be a commit SHA, tag, or branch name.",
+    "- Preconfigured targets use an immutable commit from the in-repo target manifest.",
+    "- Custom `target_commit` values may be a commit SHA, tag, or branch name.",
   ].join("\n");
 });
 
@@ -282,7 +262,7 @@ const showAdvanced = ref(false);
               :key="target.id"
               :value="target.id"
             >
-              {{ target.label }} ({{ target.commit }})
+              {{ target.label }} ({{ shortCommit(target.commit) }})
             </option>
             <option :value="CUSTOM_TARGET_ID">Custom</option>
           </select>

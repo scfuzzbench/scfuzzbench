@@ -30,6 +30,12 @@ DURATION_HOURS ?=
 SHOW_MEAN ?=
 EVENTS_CSV ?= $(ANALYSIS_OUT_DIR)/events.csv
 CUMULATIVE_CSV ?= $(ANALYSIS_OUT_DIR)/cumulative.csv
+KNOWN_BUG_CATALOG ?= benchmarks/known_bugs.json
+KNOWN_BUG_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/known_bug_summary.csv
+KNOWN_BUG_FINDINGS_CSV ?= $(ANALYSIS_OUT_DIR)/known_bug_findings.csv
+KNOWN_BUG_REPORT_MD ?= $(ANALYSIS_OUT_DIR)/known_bug_report.md
+KNOWN_BUG_TARGET_ID ?=
+KNOWN_BUG_RUN_MANIFEST ?=
 REPORT_CSV ?= $(CUMULATIVE_CSV)
 REPORT_OUT_DIR ?= $(ANALYSIS_OUT_DIR)
 REPORT_BUDGET ?= $(DURATION_HOURS)
@@ -100,9 +106,17 @@ RAW_LABELS_ARG :=
 ifneq ($(strip $(RAW_LABELS)),)
 RAW_LABELS_ARG := --raw-labels
 endif
+KNOWN_BUG_TARGET_ARG :=
+ifneq ($(strip $(KNOWN_BUG_TARGET_ID)),)
+KNOWN_BUG_TARGET_ARG := --target-id $(KNOWN_BUG_TARGET_ID)
+endif
+KNOWN_BUG_RUN_MANIFEST_ARG :=
+ifneq ($(strip $(KNOWN_BUG_RUN_MANIFEST)),)
+KNOWN_BUG_RUN_MANIFEST_ARG := --run-manifest $(KNOWN_BUG_RUN_MANIFEST)
+endif
 DURATION_ARG :=
 
-.PHONY: terraform-init terraform-init-backend terraform-fmt terraform-validate terraform-plan terraform-deploy terraform-destroy terraform-destroy-infra analysis-venv results-analyze results-download results-prepare results-analyze-filtered results-analyze-all results-inspect s3-purge-versions report-benchmark report-wide-to-long report-events-to-cumulative report-invariant-overlap report-runner-metrics
+.PHONY: terraform-init terraform-init-backend terraform-fmt terraform-validate terraform-plan terraform-deploy terraform-destroy terraform-destroy-infra targets-validate known-bugs-validate analysis-venv results-analyze results-download results-prepare results-analyze-filtered results-analyze-all results-inspect s3-purge-versions report-benchmark report-wide-to-long report-events-to-cumulative report-known-bugs report-invariant-overlap report-runner-metrics
 
 terraform-init:
 	terraform -chdir=$(TF_DIR) init
@@ -128,6 +142,13 @@ terraform-destroy:
 terraform-destroy-infra:
 	terraform -chdir=$(TF_DIR) destroy $(TF_ARGS) -target=aws_instance.fuzzer -target=aws_iam_instance_profile.fuzzer -target=aws_iam_role_policy.s3_access -target=aws_iam_role.fuzzer -target=aws_key_pair.ssh -target=local_sensitive_file.ssh_private_key -target=tls_private_key.ssh -target=aws_security_group.ssh -target=aws_route_table_association.public -target=aws_route_table.public -target=aws_subnet.public -target=aws_internet_gateway.main -target=aws_vpc.main $(SCFUZZBENCH_COMMIT_ARG) $(EXISTING_BUCKET_ARG)
 
+targets-validate:
+	python3 scripts/validate_target_manifest.py
+	python3 scripts/validate_known_bugs.py
+
+known-bugs-validate:
+	python3 scripts/validate_known_bugs.py
+
 analysis-venv:
 	python3 -m venv $(ANALYSIS_VENV)
 	$(ANALYSIS_PIP) install -r $(ANALYSIS_REQ)
@@ -144,7 +165,7 @@ results-prepare:
 results-analyze-filtered: analysis-venv
 	$(ANALYSIS_PY) scripts/run_analysis_filtered.py --logs-dir $(ANALYSIS_LOGS_DIR) --out-dir $(ANALYSIS_OUT_DIR) $(RUN_ID_ARG) $(EXCLUDE_ARG) $(RAW_LABELS_ARG) $(DIFFERENTIAL_COVERAGE_PAIRING_ARG)
 
-results-analyze-all: analysis-venv results-download results-prepare results-analyze-filtered report-events-to-cumulative report-benchmark report-invariant-overlap report-runner-metrics
+results-analyze-all: analysis-venv results-download results-prepare results-analyze-filtered report-events-to-cumulative report-known-bugs report-benchmark report-invariant-overlap report-runner-metrics
 
 results-inspect:
 	python3 scripts/inspect_logs.py --logs-dir $(ANALYSIS_LOGS_DIR)
@@ -160,6 +181,9 @@ report-wide-to-long: analysis-venv
 
 report-events-to-cumulative: analysis-venv
 	$(ANALYSIS_PY) analysis/events_to_cumulative.py --events-csv $(EVENTS_CSV) --out-csv $(CUMULATIVE_CSV) --logs-dir $(ANALYSIS_LOGS_DIR) $(RUN_ID_ARG) $(EXCLUDE_ARG) $(RAW_LABELS_ARG)
+
+report-known-bugs: analysis-venv
+	$(ANALYSIS_PY) analysis/known_bug_report.py --events-csv $(EVENTS_CSV) --logs-dir $(ANALYSIS_LOGS_DIR) --catalog $(KNOWN_BUG_CATALOG) --summary-out $(KNOWN_BUG_SUMMARY_CSV) --findings-out $(KNOWN_BUG_FINDINGS_CSV) --report-out $(KNOWN_BUG_REPORT_MD) $(RUN_ID_ARG) $(EXCLUDE_ARG) $(KNOWN_BUG_TARGET_ARG) $(KNOWN_BUG_RUN_MANIFEST_ARG)
 
 report-invariant-overlap: analysis-venv
 	$(ANALYSIS_PY) analysis/invariant_overlap_report.py --events-csv $(EVENTS_CSV) --logs-dir $(ANALYSIS_LOGS_DIR) --out-md $(BROKEN_INVARIANTS_MD) --out-csv $(BROKEN_INVARIANTS_CSV) --out-png $(INVARIANT_OVERLAP_PNG) $(INVARIANT_BUDGET_ARG) --top-k $(INVARIANT_TOP_K) $(RAW_LABELS_ARG)

@@ -194,7 +194,17 @@ DEST="$(mktemp -d /tmp/scfuzzbench-analysis-1770053924-XXXXXX)"
 make results-analyze-all BUCKET=<bucket-name> RUN_ID=1770053924 BENCHMARK_UUID=<benchmark_uuid> DEST="$DEST" ARTIFACT_CATEGORY=both
 ```
 
-This pipeline now also generates runner resource artifacts (`cpu_usage_over_time.png`, `memory_usage_over_time.png`, `runner_resource_usage.md`, and runner resource CSVs).
+The pipeline also generates:
+
+- evidence-backed ground-truth artifacts (`known_bug_report.md`,
+  `known_bug_summary.csv`, and `known_bug_findings.csv`);
+- runner resource artifacts (`cpu_usage_over_time.png`,
+  `memory_usage_over_time.png`, `runner_resource_usage.md`, and runner resource
+  CSVs).
+
+If the run target or commit does not exactly match the curated catalog,
+`known_bug_report.md` explains why mapping was withheld and the ground-truth
+CSVs remain empty.
 
 Quick readiness checks:
 
