@@ -11,6 +11,7 @@ Paste a JSON request below.
 
 Notes:
 - Do not include secrets in this issue.
+- Prefer the immutable commit and properties path from `benchmarks/targets.json`.
 - Step `01` (`benchmark/01-pending`) is applied by this template at issue creation.
 - Step `02` (`benchmark/02-validated`) is applied by the bot after JSON validation passes.
 - Step `03` (`benchmark/03-approved`) is applied manually by a maintainer to start the run.
@@ -18,8 +19,8 @@ Notes:
 
 ```json
 {
-  "target_repo_url": "https://github.com/scfuzzbench/aave-v4-scfuzzbench",
-  "target_commit": "main",
+  "target_repo_url": "https://github.com/OWNER/REPOSITORY",
+  "target_commit": "0123456789abcdef0123456789abcdef01234567",
   "benchmark_type": "property",
   "instance_type": "c6a.4xlarge",
   "instances_per_fuzzer": 4,
@@ -32,7 +33,7 @@ Notes:
   "medusa_version": "",
   "recon_version": "",
   "git_token_ssm_parameter_name": "/scfuzzbench/recon/github_token",
-  "properties_path": "",
+  "properties_path": "test/recon/Properties.sol",
   "fuzzer_env_json": ""
 }
 ```

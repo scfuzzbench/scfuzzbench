@@ -6,6 +6,7 @@ import CustomLayout from "../components/CustomLayout.vue";
 import CostTransparencyDashboard from "../components/CostTransparencyDashboard.vue";
 import GrantTransparencyTracker from "../components/GrantTransparencyTracker.vue";
 import StartBenchmark from "../components/StartBenchmark.vue";
+import TargetManifest from "../components/TargetManifest.vue";
 
 export default {
   extends: DefaultTheme,
@@ -15,5 +16,6 @@ export default {
     ctx.app.component("CostTransparencyDashboard", CostTransparencyDashboard);
     ctx.app.component("GrantTransparencyTracker", GrantTransparencyTracker);
     ctx.app.component("StartBenchmark", StartBenchmark);
+    ctx.app.component("TargetManifest", TargetManifest);
   },
 } satisfies Theme;
