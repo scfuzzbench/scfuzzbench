@@ -1,0 +1,9 @@
+fuzzer,run_id,time_hours,bugs_found
+echidna,run-e1,0,0
+echidna,run-e1,1,1
+foundry,run-f1,0,0
+foundry,run-f1,1,1
+medusa,run-m1,0,0
+medusa,run-m1,1,1
+recon-fuzzer,run-r1,0,0
+recon-fuzzer,run-r1,1,1

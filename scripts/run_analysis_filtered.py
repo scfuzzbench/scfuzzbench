@@ -41,6 +41,15 @@ def main() -> int:
         help="Use raw directory names as fuzzer labels instead of normalizing.",
     )
     parser.add_argument(
+        "--coverage-over-time",
+        action="store_true",
+        help=(
+            "Opt in to extracting fuzzer-native coverage signals from timestamped "
+            "progress output. Signals use different units and are not cross-fuzzer "
+            "coverage scores."
+        ),
+    )
+    parser.add_argument(
         "--pairing-mode",
         choices=["unpaired", "paired"],
         default="unpaired",
@@ -89,7 +98,10 @@ def main() -> int:
         )
     with timed_step("parse_progress_metrics", timings):
         progress_metrics_samples = analyze.parse_progress_metrics_logs(
-            args.logs_dir, args.run_id, log_files
+            args.logs_dir,
+            args.run_id,
+            log_files,
+            include_coverage=args.coverage_over_time,
         )
     if args.raw_labels:
         with timed_step("apply_raw_labels", timings):
@@ -150,6 +162,7 @@ def main() -> int:
                 "events": len(events),
                 "throughput_samples": len(throughput_samples),
                 "progress_metrics_samples": len(progress_metrics_samples),
+                "coverage_over_time": args.coverage_over_time,
                 "timings_seconds": timings,
             },
             handle,

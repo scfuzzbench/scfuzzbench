@@ -51,6 +51,11 @@ THROUGHPUT_SAMPLES_CSV ?= $(ANALYSIS_OUT_DIR)/throughput_samples.csv
 THROUGHPUT_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/throughput_summary.csv
 PROGRESS_METRICS_SAMPLES_CSV ?= $(ANALYSIS_OUT_DIR)/progress_metrics_samples.csv
 PROGRESS_METRICS_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/progress_metrics_summary.csv
+COVERAGE_OVER_TIME ?=
+COVERAGE_OVER_TIME_ARG :=
+ifneq ($(filter 1 true yes,$(strip $(COVERAGE_OVER_TIME))),)
+COVERAGE_OVER_TIME_ARG := --coverage-over-time
+endif
 RUNNER_RESOURCE_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/runner_resource_summary.csv
 RUNNER_RESOURCE_TIMESERIES_CSV ?= $(ANALYSIS_OUT_DIR)/runner_resource_timeseries.csv
 RUNNER_RESOURCE_MD ?= $(ANALYSIS_OUT_DIR)/runner_resource_usage.md
@@ -154,7 +159,7 @@ analysis-venv:
 	$(ANALYSIS_PIP) install -r $(ANALYSIS_REQ)
 
 results-analyze: analysis-venv
-	$(ANALYSIS_PY) analysis/analyze.py run --logs-dir $(LOGS_DIR) --out-dir $(OUT_DIR) $(RUN_ID_ARG) $(RAW_LABELS_ARG) $(DIFFERENTIAL_COVERAGE_PAIRING_ARG)
+	$(ANALYSIS_PY) analysis/analyze.py run --logs-dir $(LOGS_DIR) --out-dir $(OUT_DIR) $(RUN_ID_ARG) $(RAW_LABELS_ARG) $(COVERAGE_OVER_TIME_ARG) $(DIFFERENTIAL_COVERAGE_PAIRING_ARG)
 
 results-download:
 	python3 scripts/download_run_artifacts.py --bucket $(BUCKET) --run-id $(RUN_ID) $(BENCHMARK_UUID_ARG) --dest $(DEST) --category $(ARTIFACT_CATEGORY) $(PROFILE_ARG) $(NO_UNZIP_ARG)
@@ -163,7 +168,7 @@ results-prepare:
 	python3 scripts/prepare_analysis_logs.py --unzipped-dir $(UNZIPPED_DIR) --out-dir $(ANALYSIS_LOGS_DIR)
 
 results-analyze-filtered: analysis-venv
-	$(ANALYSIS_PY) scripts/run_analysis_filtered.py --logs-dir $(ANALYSIS_LOGS_DIR) --out-dir $(ANALYSIS_OUT_DIR) $(RUN_ID_ARG) $(EXCLUDE_ARG) $(RAW_LABELS_ARG) $(DIFFERENTIAL_COVERAGE_PAIRING_ARG)
+	$(ANALYSIS_PY) scripts/run_analysis_filtered.py --logs-dir $(ANALYSIS_LOGS_DIR) --out-dir $(ANALYSIS_OUT_DIR) $(RUN_ID_ARG) $(EXCLUDE_ARG) $(RAW_LABELS_ARG) $(COVERAGE_OVER_TIME_ARG) $(DIFFERENTIAL_COVERAGE_PAIRING_ARG)
 
 results-analyze-all: analysis-venv results-download results-prepare results-analyze-filtered report-events-to-cumulative report-known-bugs report-benchmark report-invariant-overlap report-runner-metrics
 
@@ -174,7 +179,7 @@ s3-purge-versions:
 	python3 scripts/purge_s3_versions.py --bucket $(BUCKET) $(PROFILE_ARG)
 
 report-benchmark: analysis-venv
-	$(ANALYSIS_PY) analysis/benchmark_report.py --csv $(REPORT_CSV) --report-outdir $(REPORT_OUT_DIR) --images-outdir $(IMAGES_OUT_DIR) $(REPORT_BUDGET_ARG) --grid_step_min $(REPORT_GRID_STEP_MIN) --checkpoints $(REPORT_CHECKPOINTS) --ks $(REPORT_KS) --throughput-summary-csv $(THROUGHPUT_SUMMARY_CSV) --throughput-samples-csv $(THROUGHPUT_SAMPLES_CSV) --progress-metrics-summary-csv $(PROGRESS_METRICS_SUMMARY_CSV) --progress-metrics-samples-csv $(PROGRESS_METRICS_SAMPLES_CSV) --differential-coverage-statistics-json $(DIFFERENTIAL_COVERAGE_STATISTICS_JSON) $$( [ -f "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)" ] && [ "$$(wc -l < "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)")" -gt 1 ] && printf -- '--relative-scores-csv %s' "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)" ) $(if $(REPORT_ANONYMIZE),--anonymize,)
+	$(ANALYSIS_PY) analysis/benchmark_report.py --csv $(REPORT_CSV) --report-outdir $(REPORT_OUT_DIR) --images-outdir $(IMAGES_OUT_DIR) $(REPORT_BUDGET_ARG) --grid_step_min $(REPORT_GRID_STEP_MIN) --checkpoints $(REPORT_CHECKPOINTS) --ks $(REPORT_KS) --throughput-summary-csv $(THROUGHPUT_SUMMARY_CSV) --throughput-samples-csv $(THROUGHPUT_SAMPLES_CSV) --progress-metrics-summary-csv $(PROGRESS_METRICS_SUMMARY_CSV) --progress-metrics-samples-csv $(PROGRESS_METRICS_SAMPLES_CSV) $(COVERAGE_OVER_TIME_ARG) --differential-coverage-statistics-json $(DIFFERENTIAL_COVERAGE_STATISTICS_JSON) $$( [ -f "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)" ] && [ "$$(wc -l < "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)")" -gt 1 ] && printf -- '--relative-scores-csv %s' "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)" ) $(if $(REPORT_ANONYMIZE),--anonymize,)
 
 report-wide-to-long: analysis-venv
 	$(ANALYSIS_PY) analysis/wide_to_long.py --wide_csv $(WIDE_CSV) --out_csv $(LONG_CSV)

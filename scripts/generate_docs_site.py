@@ -932,7 +932,14 @@ def main() -> int:
         txps_over_time_chart_key = f"{r.analysis_prefix}/tx_per_second_over_time.png"
         gasps_over_time_chart_key = f"{r.analysis_prefix}/gas_per_second_over_time.png"
         seqps_over_time_chart_key = f"{r.analysis_prefix}/seq_per_second_over_time.png"
-        coverage_over_time_chart_key = f"{r.analysis_prefix}/coverage_proxy_over_time.png"
+        coverage_over_time_chart_name = "coverage_over_time.png"
+        coverage_over_time_chart_key = (
+            f"{r.analysis_prefix}/{coverage_over_time_chart_name}"
+        )
+        legacy_coverage_over_time_chart_name = "coverage_proxy_over_time.png"
+        legacy_coverage_over_time_chart_key = (
+            f"{r.analysis_prefix}/{legacy_coverage_over_time_chart_name}"
+        )
         corpus_over_time_chart_key = f"{r.analysis_prefix}/corpus_size_over_time.png"
         runner_md_key = f"{r.analysis_prefix}/runner_resource_usage.md"
         runner_summary_csv_key = f"{r.analysis_prefix}/runner_resource_summary.csv"
@@ -984,10 +991,17 @@ def main() -> int:
             r.analysis_kind == "analysis"
             and head_exists(bucket, seqps_over_time_chart_key, profile=profile)
         )
-        has_coverage_over_time_chart = (
-            r.analysis_kind == "analysis"
-            and head_exists(bucket, coverage_over_time_chart_key, profile=profile)
-        )
+        has_coverage_over_time_chart = False
+        if r.analysis_kind == "analysis":
+            if head_exists(bucket, coverage_over_time_chart_key, profile=profile):
+                has_coverage_over_time_chart = True
+            elif head_exists(
+                bucket, legacy_coverage_over_time_chart_key, profile=profile
+            ):
+                has_coverage_over_time_chart = True
+                coverage_over_time_chart_name = (
+                    legacy_coverage_over_time_chart_name
+                )
         has_corpus_over_time_chart = (
             r.analysis_kind == "analysis"
             and head_exists(bucket, corpus_over_time_chart_key, profile=profile)
@@ -1015,7 +1029,9 @@ def main() -> int:
                 if has_invariant_chart:
                     lines.append(f"![Invariant Overlap (UpSet)]({analysis_base}/invariant_overlap_upset.png)")
                 if has_coverage_over_time_chart:
-                    lines.append(f"![Coverage Over Time]({analysis_base}/coverage_proxy_over_time.png)")
+                    lines.append(
+                        f"![Coverage Over Time]({analysis_base}/{coverage_over_time_chart_name})"
+                    )
                 if has_corpus_over_time_chart:
                     lines.append(f"![Corpus Size Over Time]({analysis_base}/corpus_size_over_time.png)")
                 if has_seqps_over_time_chart:

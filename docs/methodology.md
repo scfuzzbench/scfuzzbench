@@ -152,7 +152,7 @@ This expands to:
 7. Build broken-invariant overlap artifacts (`analysis/invariant_overlap_report.py`)
 8. Build runner CPU/memory artifacts (`analysis/runner_metrics_report.py`)
 
-Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_MIN`, `REPORT_CHECKPOINTS`, `REPORT_KS`, `INVARIANT_TOP_K`, and `RUNNER_METRICS_BIN_SECONDS`.
+Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_MIN`, `REPORT_CHECKPOINTS`, `REPORT_KS`, `INVARIANT_TOP_K`, `RUNNER_METRICS_BIN_SECONDS`, and `COVERAGE_OVER_TIME`.
 
 ### Event extraction semantics (`analysis/analyze.py`)
 
@@ -172,7 +172,7 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - `exclusive.csv` (events found by exactly one fuzzer)
   - `throughput_samples.csv` (raw tx/s and gas/s samples recovered from logs when available)
   - `throughput_summary.csv` (per-fuzzer tx/s and gas/s distribution summary)
-  - `progress_metrics_samples.csv` (raw fuzzer-native progress metrics such as seq/s, coverage proxy, corpus size, favored items, failure rate when available)
+  - `progress_metrics_samples.csv` (raw fuzzer-native progress metrics such as seq/s, corpus size, favored items, and failure rate; native coverage proxies are included only with `COVERAGE_OVER_TIME=1`)
   - `progress_metrics_summary.csv` (per-fuzzer distribution summary of those progress metrics)
   - `differential_coverage_summary.csv` (human-readable baseline/feature verdicts computed from per-sample relscore statistics and relcov non-inferiority against baseline reliability)
   - `differential_coverage_statistics.json` (machine-readable verdict inputs, per-campaign test results, intervals, sample counts, and aggregate verdict)
@@ -254,7 +254,30 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   campaign rows before any Slack status rendering. Aggregate status is only an
   improvement when a majority of targets improve and no target regresses; any
   target regression blocks an aggregate improvement.
-- `SCFUZZBENCH_FOUNDRY_SHOWMAP=0` disables Foundry showmap collection. `FOUNDRY_SHOWMAP_DOMAIN`, `FOUNDRY_SHOWMAP_CORPUS_DIR`, and `SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS` tune replay behavior. When no corpus override is set, showmap replay lets `forge` resolve the corpus directories from the target's Foundry config. Replay timeout defaults to the smaller of the campaign timeout and 1800 seconds so showmap collection stays within the benchmark completion grace window unless explicitly overridden.
+- `SCFUZZBENCH_FOUNDRY_SHOWMAP=1` enables Foundry showmap collection; it is disabled by default. `FOUNDRY_SHOWMAP_DOMAIN`, `FOUNDRY_SHOWMAP_CORPUS_DIR`, and `SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS` tune replay behavior. When no corpus override is set, showmap replay lets `forge` resolve the corpus directories from the target's Foundry config. Replay timeout defaults to the smaller of the campaign timeout and 1800 seconds so showmap collection stays within the benchmark completion grace window unless explicitly overridden.
+
+### Coverage over time
+
+Coverage-over-time analysis is opt-in:
+
+```bash
+make results-analyze-all \
+  BUCKET=... RUN_ID=... BENCHMARK_UUID=... \
+  COVERAGE_OVER_TIME=1
+```
+
+The flag extracts supported native coverage counters and adds a coverage limitations table to `REPORT.md`. Repeated live counters are plotted in `coverage_over_time.png`, with a separate panel and y-axis for each available fuzzer signal. End-of-run-only counters remain in the table and are not stretched into a time series. Native signals are not normalized, pooled, ranked, or treated as a universal coverage metric.
+
+Source-based coverage is preferred, but no current real-time log format exposes source locations. The available signals and limitations are:
+
+| Fuzzer | Native signal | Source-based? | Temporal availability | Limitation |
+|---|---|---|---|---|
+| Echidna | `cov` coverage points | No | Echidna status lines | Tool/config-specific counter; the progress log has no source locations. |
+| Medusa | `branches hit` | No | Medusa status lines | Branch identities depend on compiled bytecode/config; the progress log has no source locations. |
+| Foundry | `cumulative_edges_seen` | No | Compatible Foundry JSON pulse builds | Edge identities depend on the build/instrumentation. |
+| Recon Fuzzer | `Unique instructions` | No | End-of-run summary only | Tool/version-specific final instruction count; there are no source locations or intermediate observations. Recon's separate Echidna-style `cov` status field is not mixed into this series. |
+
+Foundry showmap is intentionally separate. It is an opt-in, post-campaign edge replay for comparable Foundry A/B campaigns, not real-time or source-based coverage. When a native signal is absent, the report records zero available runs rather than substituting another metric. The table also records parser provenance and observation windows: partial runs are labelled, live lines stop at each run's last observation, and malformed/non-finite/negative coverage values make opt-in report generation fail instead of being reported as unavailable.
 
 ### Cumulative conversion (`analysis/events_to_cumulative.py`)
 
@@ -292,8 +315,9 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   uniqueness. Use `known_bug_report.md` and its CSVs for ground-truth hit rates.
 - If `throughput_summary.csv` is present, the report also includes tx/s and gas/s summary tables.
 - If `throughput_samples.csv` is present, the report also emits throughput trend charts (`tx_per_second_over_time.png`, `gas_per_second_over_time.png`).
-- If `progress_metrics_summary.csv` is present, the report also includes per-fuzzer progress proxy tables (seq/s, coverage, corpus, favored, failure rate) and progress-metrics summary charts.
-- If `progress_metrics_samples.csv` is present, the report also emits progress trend charts (`seq_per_second_over_time.png`, `coverage_proxy_over_time.png`, `corpus_size_over_time.png`, `favored_items_over_time.png`, `failure_rate_over_time.png`).
+- If `progress_metrics_summary.csv` is present, the report also includes per-fuzzer progress proxy tables (seq/s and corpus).
+- If `progress_metrics_samples.csv` is present, the report also emits progress trend charts (`seq_per_second_over_time.png` and `corpus_size_over_time.png`).
+- With `COVERAGE_OVER_TIME=1`, the report includes per-fuzzer native coverage availability, provenance, observation windows, and final-value rows. It emits `coverage_over_time.png` with independent scales when at least one live signal has two observations. Without the opt-in, coverage columns remain empty, the coverage report section is omitted, and no coverage chart is generated.
 - Emits:
   - `REPORT.md`
   - `bugs_over_time.png`

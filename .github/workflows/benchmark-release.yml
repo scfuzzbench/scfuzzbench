@@ -19,6 +19,11 @@ on:
         description: "Comma-separated fuzzers to exclude (optional)."
         required: false
         default: ""
+      coverage_over_time:
+        description: "Include opt-in, fuzzer-native coverage-over-time proxies in analysis."
+        required: false
+        type: boolean
+        default: false
       force_reanalyze:
         description: "Re-run analysis and re-upload artifacts even if release tag exists."
         required: false
@@ -284,6 +289,7 @@ jobs:
           DURATION_HOURS: ${{ steps.manifest.outputs.report_budget_hours }}
           REPORT_BUDGET: ${{ steps.manifest.outputs.report_budget_hours }}
           EXCLUDE_FUZZERS: ${{ inputs.exclude_fuzzers }}
+          COVERAGE_OVER_TIME: ${{ inputs.coverage_over_time }}
         run: |
           set -euo pipefail
           make results-analyze-all
@@ -308,7 +314,7 @@ jobs:
             tx_per_second_over_time.png \
             gas_per_second_over_time.png \
             seq_per_second_over_time.png \
-            coverage_proxy_over_time.png \
+            coverage_over_time.png \
             corpus_size_over_time.png \
             favored_items_over_time.png \
             failure_rate_over_time.png \
@@ -402,7 +408,7 @@ jobs:
             tx_per_second_over_time.png \
             gas_per_second_over_time.png \
             seq_per_second_over_time.png \
-            coverage_proxy_over_time.png \
+            coverage_over_time.png \
             corpus_size_over_time.png \
             favored_items_over_time.png \
             failure_rate_over_time.png \
@@ -481,7 +487,7 @@ jobs:
               tx_per_second_over_time.png \
               gas_per_second_over_time.png \
               seq_per_second_over_time.png \
-              coverage_proxy_over_time.png \
+              coverage_over_time.png \
               corpus_size_over_time.png \
               favored_items_over_time.png \
               failure_rate_over_time.png \
