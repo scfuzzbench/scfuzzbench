@@ -19,9 +19,11 @@ Core inputs are defined through Terraform vars and/or workflow dispatch:
 - Mode: `benchmark_type` (`property` or `optimization`)
 - Infra: `instance_type`, `instances_per_fuzzer`, `timeout_hours`
 - Fuzzer set: `fuzzers` (or default all available)
-- Tool versions: `foundry_version`, `echidna_version`, `medusa_version`, `recon_version`
+- Tool versions: `foundry_git_repo`/`foundry_git_ref`, `echidna_version`, `medusa_version`, `recon_version`
 
 In CI (`.github/workflows/benchmark-run.yml`), inputs are validated before apply (value ranges, formats, and conservative character constraints).
+Cloud runs build Foundry from the pinned git source. The release-tag `foundry_version` path is available only to
+`scripts/local-run.sh` (or a low-level Terraform invocation with `foundry_git_repo` explicitly empty).
 
 ### 2) Compute run identity and benchmark identity
 
@@ -134,9 +136,10 @@ This expands to:
 2. Collect `*.log` files, runner metrics, and Foundry showmap artifacts into analysis layout (`scripts/prepare_analysis_logs.py`)
 3. Parse events, summaries, and differential coverage artifacts (`scripts/run_analysis_filtered.py` -> `analysis/analyze.py`)
 4. Convert event stream to cumulative series (`analysis/events_to_cumulative.py`)
-5. Build report + charts (`analysis/benchmark_report.py`)
-6. Build broken-invariant overlap artifacts (`analysis/invariant_overlap_report.py`)
-7. Build runner CPU/memory artifacts (`analysis/runner_metrics_report.py`)
+5. Map events to revision-locked known-bug IDs (`analysis/known_bug_report.py`)
+6. Build report + charts (`analysis/benchmark_report.py`)
+7. Build broken-invariant overlap artifacts (`analysis/invariant_overlap_report.py`)
+8. Build runner CPU/memory artifacts (`analysis/runner_metrics_report.py`)
 
 Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_MIN`, `REPORT_CHECKPOINTS`, `REPORT_KS`, `INVARIANT_TOP_K`, and `RUNNER_METRICS_BIN_SECONDS`.
 
@@ -147,7 +150,10 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - Medusa: parse elapsed markers and failed assertions/properties from textual logs.
   - Echidna and Recon Fuzzer: parse falsification markers from textual logs.
   - Unknown fuzzers: fall back to generic pattern parsing.
-- Event de-duplication is per run-instance stream (same event name counted once per run).
+- Event de-duplication is per run-instance stream (same event name counted once
+  per replicate).
+  These are normalized failure identities, not crash inputs and not necessarily
+  confirmed root-cause bugs.
 - Outputs:
   - `events.csv` (raw event stream)
   - `summary.csv` (run-level aggregates)
@@ -163,6 +169,32 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - `differential_coverage_relcov.csv` (pairwise non-self relcov values computed from normalized AFL showmap campaigns)
   - `showmap_campaign_manifest.json` (raw showmap inputs, skipped inputs, and normalized campaign summaries)
   - `showmap_campaigns/` (canonical `approach/trial.txt` campaign directories used for relscore scoring)
+
+### Ground-truth known-bug mapping (`analysis/known_bug_report.py`)
+
+- [`benchmarks/known_bugs.json`](../benchmarks/known_bugs.json) is the
+  authoritative, schema-validated mapping from target-specific canonical IDs to
+  fuzzer event aliases.
+- Mapping is applied only when the run repository and commit exactly match the
+  evidence-pinned target catalog. Runs against mutable or different revisions
+  receive an explicit "mapping unavailable" report instead of speculative
+  classifications.
+- Qualified names, Solidity signatures, assertion suffixes, and legacy Foundry
+  assertion-wrapper prefixes are normalized before alias lookup.
+- Multiple aliases for one canonical bug count at most once per replicate,
+  identified by `(run_id, instance_id, fuzzer)`. Crash
+  inputs and corpus entries are never used as bug identities.
+- Health-check canaries have their own denominator and never contribute to the
+  real known-bug hit rate.
+- Unknown event identities remain explicit `unmapped` rows. They are triage
+  candidates, not claimed bugs.
+- Hit rate is computed per fuzzer as canonical known-bug/replicate hits divided
+  by `(known bugs discoverable by that fuzzer × configured replicates)`.
+  Configured replicates with missing logs remain in the denominator.
+- Outputs:
+  - `known_bug_report.md` (human-readable hit rates, catalog entries, and unmapped identities)
+  - `known_bug_summary.csv` (per-fuzzer known-bug and canary hit rates)
+  - `known_bug_findings.csv` (per-run canonical mappings and unmapped identities)
 
 ### Differential coverage from Foundry showmap
 
@@ -195,6 +227,8 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
 ### Cumulative conversion (`analysis/events_to_cumulative.py`)
 
 - Produces long-form CSV: `fuzzer, run_id, time_hours, bugs_found`.
+- `bugs_found` is a legacy compatibility name for cumulative normalized event
+  identities. Use the ground-truth outputs for confirmed known-bug claims.
 - Run keys are stabilized as `run_id:instance_id`.
 - When `--logs-dir` is provided, runs with zero detected events still emit a time `0` row (unless `--no-zero`).
 
@@ -212,7 +246,18 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - late discovery share
   - time-to-k median + reach rate
   - final distribution (median + IQR)
-- Note: these report scorecards are count-based. They do not score severity or root-cause uniqueness.
+- Compares each fuzzer pair's end-of-budget bug counts with a two-sided
+  Mann-Whitney U test, applies a Bonferroni correction, and reports the
+  Vargha-Delaney A12 effect size. A12 is expressed as the probability that
+  Fuzzer A outperforms Fuzzer B (ties count as half); values above `0.5` favor
+  A and values below `0.5` favor B. Effect magnitudes are classified by
+  distance from `0.5` as negligible (`<0.06`), small (`<0.14`), medium
+  (`<0.21`), or large (`>=0.21`). These magnitude thresholds are descriptive
+  rules of thumb; neither A12 nor statistical significance establishes
+  practical importance, causation, or performance beyond the observed runs.
+- Note: these report scorecards use normalized event-identity counts. They do
+  not count crash inputs, but they also do not establish severity or root-cause
+  uniqueness. Use `known_bug_report.md` and its CSVs for ground-truth hit rates.
 - If `throughput_summary.csv` is present, the report also includes tx/s and gas/s summary tables.
 - If `throughput_samples.csv` is present, the report also emits throughput trend charts (`tx_per_second_over_time.png`, `gas_per_second_over_time.png`).
 - If `progress_metrics_summary.csv` is present, the report also includes per-fuzzer progress proxy tables (seq/s, coverage, corpus, favored, failure rate) and progress-metrics summary charts.
@@ -296,12 +341,15 @@ Recommended operational policy for this repository:
 5. Track overlap groups (for forks/wrappers/shared-core code) and keep only one representative per overlap group unless explicitly justified.
 6. Keep the selection manifest in-repo so additions/removals are reviewable.
 
-Suggested manifest fields per target:
+The authoritative catalog is
+[`benchmarks/targets.json`](https://github.com/scfuzzbench/scfuzzbench/blob/main/benchmarks/targets.json);
+its validation and maintenance workflow are documented in
+[`benchmarks/README.md`](https://github.com/scfuzzbench/scfuzzbench/blob/main/benchmarks/README.md).
+It records:
 
 - repository URL
 - pinned commit
 - properties path (`SCFUZZBENCH_PROPERTIES_PATH`)
-- benchmark mode(s) intended
 - rationale
 - related-work reference(s)
 - overlap group / exclusion notes
