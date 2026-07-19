@@ -167,9 +167,11 @@ Optional flags:
 - `-w, --workers`: number of fuzzer workers
 - `-T, --type`: `property` or `optimization` (default: `property`)
 - `--install`: run the fuzzer's `install.sh` first
-- `--echidna-extra-args`: extra arguments passed to echidna (e.g. `"--server 3000 --shrink-limit 1"`)
+- `--echidna-extra-args`: extra arguments passed to echidna (e.g. `"--server 3000 --shrink-limit 25"`)
 
 All fuzzer-specific flags (`--echidna-*`, `--medusa-*`, `--foundry-*`) mirror the environment variables documented in `fuzzers/README.md`.
+
+Echidna runs default to `--shrink-limit 1`, passed as a CLI option so it overrides any `shrinkLimit` in the target config. Supply one non-negative value through `--echidna-extra-args` when an experiment intentionally needs a different amount of shrinking. Extra arguments support shell-style quoting without shell evaluation; malformed quoting and duplicate shrink-limit options fail before Echidna starts.
 
 ### How it works
 

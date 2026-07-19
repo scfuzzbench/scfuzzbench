@@ -25,6 +25,7 @@ Environment variables:
 
 Notes:
 - In `property` mode, the runner rewrites `prefix: "invariant_"` to `prefix: "echidna_"` inside the config file so global properties are treated like assertions.
+- The runner passes `--shrink-limit 1` by default, overriding `shrinkLimit` in target configs so shrinking does not consume the campaign budget. Set one non-negative `--shrink-limit` in `ECHIDNA_EXTRA_ARGS` for an explicit operator override. Extra arguments support shell-style quoting, but are parsed without shell evaluation.
 - By default, the runner appends `+RTS -A1g -RTS` to reduce GC overhead on multicore instances.
 
 ## Recon Fuzzer
