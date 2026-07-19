@@ -119,6 +119,22 @@ class ExtractEchidnaArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.ArtifactError, "expands beyond"):
             self.module.extract_echidna(artifact, self.root / "out", max_bytes=200)
 
+    def test_enforces_global_entry_and_depth_caps(self):
+        nested = tar_payload(
+            [
+                ("bin/one", b"x", "file"),
+                ("bin/echidna", b"binary", "file"),
+            ]
+        )
+        artifact = self.write_zip([("echidna.tar.gz", nested)])
+        with self.assertRaisesRegex(self.module.ArtifactError, "too many"):
+            self.module.extract_echidna(artifact, self.root / "entries", max_entries=2)
+
+        deep = "/".join(["d"] * 4 + ["echidna"])
+        artifact = self.write_zip([(deep, b"binary")])
+        with self.assertRaisesRegex(self.module.ArtifactError, "maximum depth"):
+            self.module.extract_echidna(artifact, self.root / "depth", max_depth=4)
+
 
 if __name__ == "__main__":
     unittest.main()

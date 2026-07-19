@@ -1070,6 +1070,7 @@ def main() -> int:
         add_kv("echidna_ci_artifact", m.get("echidna_ci_artifact"))
         add_kv("echidna_ci_sha256", m.get("echidna_ci_sha256"))
         add_kv("echidna_ci_commit", m.get("echidna_ci_commit"))
+        add_kv("echidna_ci_token_kms_key_arn", m.get("echidna_ci_token_kms_key_arn"))
         add_kv("medusa_version", m.get("medusa_version"))
         add_kv("medusa_git_repo", m.get("medusa_git_repo"))
         add_kv("medusa_git_ref", m.get("medusa_git_ref"))

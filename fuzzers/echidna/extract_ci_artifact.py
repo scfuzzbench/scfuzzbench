@@ -18,6 +18,7 @@ from pathlib import Path
 
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024
 DEFAULT_MAX_ENTRIES = 2_000
+DEFAULT_MAX_DEPTH = 16
 CHUNK_SIZE = 1024 * 1024
 BINARY_NAMES = frozenset({"echidna", "echidna-test"})
 TAR_SUFFIXES = (".tar", ".tar.gz", ".tgz")
@@ -27,7 +28,7 @@ class ArtifactError(RuntimeError):
     """Raised when an artifact cannot be extracted safely."""
 
 
-def _relative_parts(name: str) -> tuple[str, ...]:
+def _relative_parts(name: str, max_depth: int) -> tuple[str, ...]:
     normalized = name.rstrip("/")
     if not normalized:
         raise ArtifactError("archive contains an empty path")
@@ -36,6 +37,8 @@ def _relative_parts(name: str) -> tuple[str, ...]:
     parts = tuple(normalized.split("/"))
     if any(part in {"", ".", ".."} for part in parts):
         raise ArtifactError(f"unsafe archive path: {name!r}")
+    if len(parts) > max_depth:
+        raise ArtifactError(f"archive path exceeds maximum depth ({len(parts)} > {max_depth})")
     if ":" in parts[0]:
         raise ArtifactError(f"unsafe archive path: {name!r}")
     return parts
@@ -60,7 +63,13 @@ def _copy_limited(source, destination: Path, expected_size: int, max_bytes: int)
     return written
 
 
-def _extract_zip(archive: Path, destination: Path, max_bytes: int, max_entries: int) -> int:
+def _extract_zip(
+    archive: Path,
+    destination: Path,
+    max_bytes: int,
+    max_entries: int,
+    max_depth: int,
+) -> tuple[int, int]:
     try:
         bundle = zipfile.ZipFile(archive)
     except (OSError, zipfile.BadZipFile) as exc:
@@ -75,7 +84,7 @@ def _extract_zip(archive: Path, destination: Path, max_bytes: int, max_entries: 
 
         total_size = 0
         for entry in entries:
-            parts = _relative_parts(entry.filename)
+            parts = _relative_parts(entry.filename, max_depth)
             mode = entry.external_attr >> 16
             file_type = stat.S_IFMT(mode)
             if file_type == stat.S_IFLNK:
@@ -97,7 +106,7 @@ def _extract_zip(archive: Path, destination: Path, max_bytes: int, max_entries: 
             with bundle.open(entry, "r") as source:
                 _copy_limited(source, output_path, entry.file_size, max_bytes)
 
-    return total_size
+    return total_size, len(entries)
 
 
 def _extract_tar(
@@ -105,7 +114,8 @@ def _extract_tar(
     destination: Path,
     max_bytes: int,
     max_entries: int,
-) -> int:
+    max_depth: int,
+) -> tuple[int, int]:
     try:
         bundle = tarfile.open(archive, mode="r:*")
     except (OSError, tarfile.TarError) as exc:
@@ -118,7 +128,7 @@ def _extract_tar(
 
         total_size = 0
         for entry in entries:
-            parts = _relative_parts(entry.name)
+            parts = _relative_parts(entry.name, max_depth)
             if not (entry.isdir() or entry.isreg()):
                 raise ArtifactError(f"links and special files are not allowed: {entry.name!r}")
             if entry.size < 0:
@@ -137,7 +147,7 @@ def _extract_tar(
             with source:
                 _copy_limited(source, output_path, entry.size, max_bytes)
 
-    return total_size
+    return total_size, len(entries)
 
 
 def _binary_candidates(root: Path) -> list[Path]:
@@ -169,8 +179,9 @@ def extract_echidna(
     *,
     max_bytes: int = DEFAULT_MAX_BYTES,
     max_entries: int = DEFAULT_MAX_ENTRIES,
+    max_depth: int = DEFAULT_MAX_DEPTH,
 ) -> Path:
-    if max_bytes <= 0 or max_entries <= 0:
+    if max_bytes <= 0 or max_entries <= 0 or max_depth <= 0:
         raise ArtifactError("extraction limits must be positive")
     if artifact.stat().st_size > max_bytes:
         raise ArtifactError(f"artifact download exceeds {max_bytes} bytes")
@@ -178,7 +189,13 @@ def extract_echidna(
     destination.mkdir(parents=True, exist_ok=False)
     outer = destination / "outer"
     outer.mkdir()
-    consumed = _extract_zip(artifact, outer, max_bytes, max_entries)
+    consumed, entries_seen = _extract_zip(
+        artifact,
+        outer,
+        max_bytes,
+        max_entries,
+        max_depth,
+    )
 
     candidates = _binary_candidates(outer)
     nested_archives = sorted(
@@ -187,12 +204,23 @@ def extract_echidna(
         if path.is_file() and path.name.lower().endswith(TAR_SUFFIXES)
     )
     for index, nested_archive in enumerate(nested_archives):
+        remaining_entries = max_entries - entries_seen
+        if remaining_entries <= 0:
+            raise ArtifactError(f"artifact contains more than {max_entries} entries")
         nested_destination = destination / f"nested-{index}"
         nested_destination.mkdir()
         remaining = max_bytes - consumed
         if remaining <= 0:
             raise ArtifactError(f"artifact expands beyond {max_bytes} bytes")
-        consumed += _extract_tar(nested_archive, nested_destination, remaining, max_entries)
+        nested_bytes, nested_entries = _extract_tar(
+            nested_archive,
+            nested_destination,
+            remaining,
+            remaining_entries,
+            max_depth,
+        )
+        consumed += nested_bytes
+        entries_seen += nested_entries
         candidates.extend(_binary_candidates(nested_destination))
 
     unique_candidates = sorted(set(candidates))
@@ -213,6 +241,7 @@ def main() -> int:
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     parser.add_argument("--max-entries", type=int, default=DEFAULT_MAX_ENTRIES)
+    parser.add_argument("--max-depth", type=int, default=DEFAULT_MAX_DEPTH)
     args = parser.parse_args()
 
     try:
@@ -221,6 +250,7 @@ def main() -> int:
             args.destination,
             max_bytes=args.max_bytes,
             max_entries=args.max_entries,
+            max_depth=args.max_depth,
         )
     except (ArtifactError, OSError) as exc:
         parser.exit(1, f"error: {exc}\n")

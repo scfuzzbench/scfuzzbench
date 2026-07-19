@@ -29,32 +29,33 @@ locals {
   subnet_availability_zone = var.availability_zone != "" ? var.availability_zone : sort(data.aws_ec2_instance_type_offerings.fuzzer.locations)[0]
 
   benchmark_manifest = {
-    scfuzzbench_commit   = var.scfuzzbench_commit
-    target_repo_url      = var.target_repo_url
-    target_commit        = var.target_commit
-    benchmark_type       = var.benchmark_type
-    instance_type        = var.instance_type
-    instances_per_fuzzer = var.instances_per_fuzzer
-    timeout_hours        = var.timeout_hours
-    aws_region           = var.aws_region
-    ubuntu_ami_id        = data.aws_ssm_parameter.ubuntu_ami.value
-    foundry_version      = var.foundry_version
-    foundry_git_repo     = var.foundry_git_repo
-    foundry_git_ref      = var.foundry_git_ref
-    echidna_version      = local.echidna_ci_enabled ? "" : var.echidna_version
-    echidna_ci_repo      = var.echidna_ci_repo
-    echidna_ci_run_id    = var.echidna_ci_run_id
-    echidna_ci_artifact  = var.echidna_ci_artifact_name
-    echidna_ci_sha256    = lower(var.echidna_ci_artifact_sha256)
-    echidna_ci_commit    = lower(var.echidna_ci_commit)
-    medusa_version       = local.medusa_source_enabled ? "" : var.medusa_version
-    medusa_git_repo      = var.medusa_git_repo
-    medusa_git_ref       = var.medusa_git_ref
-    medusa_git_commit    = lower(var.medusa_git_commit)
-    medusa_go_version    = local.medusa_source_enabled ? var.medusa_go_version : ""
-    medusa_go_sha256     = local.medusa_source_enabled ? lower(var.medusa_go_sha256) : ""
-    recon_version        = var.recon_version
-    fuzzer_keys          = sort([for fuzzer in local.fuzzer_definitions : fuzzer.key])
+    scfuzzbench_commit           = var.scfuzzbench_commit
+    target_repo_url              = var.target_repo_url
+    target_commit                = var.target_commit
+    benchmark_type               = var.benchmark_type
+    instance_type                = var.instance_type
+    instances_per_fuzzer         = var.instances_per_fuzzer
+    timeout_hours                = var.timeout_hours
+    aws_region                   = var.aws_region
+    ubuntu_ami_id                = data.aws_ssm_parameter.ubuntu_ami.value
+    foundry_version              = var.foundry_version
+    foundry_git_repo             = var.foundry_git_repo
+    foundry_git_ref              = var.foundry_git_ref
+    echidna_version              = local.echidna_ci_enabled ? "" : var.echidna_version
+    echidna_ci_repo              = var.echidna_ci_repo
+    echidna_ci_run_id            = var.echidna_ci_run_id
+    echidna_ci_artifact          = var.echidna_ci_artifact_name
+    echidna_ci_sha256            = lower(var.echidna_ci_artifact_sha256)
+    echidna_ci_commit            = lower(var.echidna_ci_commit)
+    echidna_ci_token_kms_key_arn = var.echidna_ci_token_kms_key_arn
+    medusa_version               = local.medusa_source_enabled ? "" : var.medusa_version
+    medusa_git_repo              = var.medusa_git_repo
+    medusa_git_ref               = var.medusa_git_ref
+    medusa_git_commit            = lower(var.medusa_git_commit)
+    medusa_go_version            = local.medusa_source_enabled ? var.medusa_go_version : ""
+    medusa_go_sha256             = local.medusa_source_enabled ? lower(var.medusa_go_sha256) : ""
+    recon_version                = var.recon_version
+    fuzzer_keys                  = sort([for fuzzer in local.fuzzer_definitions : fuzzer.key])
   }
 
   benchmark_manifest_json = jsonencode(local.benchmark_manifest)
@@ -100,6 +101,12 @@ locals {
     for fuzzer in concat(local.base_fuzzer_definitions, var.custom_fuzzer_definitions) :
     fuzzer if contains(local.selected_fuzzer_keys, fuzzer.key)
   ]
+  echidna_ci_selected = local.echidna_ci_enabled && contains([
+    for fuzzer in local.fuzzer_definitions : fuzzer.key
+  ], "echidna")
+  medusa_source_selected = local.medusa_source_enabled && contains([
+    for fuzzer in local.fuzzer_definitions : fuzzer.key
+  ], "medusa")
 
   instances = flatten([
     for fuzzer in local.fuzzer_definitions : [
@@ -261,7 +268,7 @@ locals {
   bucket_name                        = var.existing_bucket_name != "" ? var.existing_bucket_name : try(aws_s3_bucket.logs[0].bucket, "")
   git_token_ssm_parameter_arn        = var.git_token_ssm_parameter_name != "" ? "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${trimprefix(var.git_token_ssm_parameter_name, "/")}" : ""
   echidna_ci_token_ssm_parameter_arn = var.echidna_ci_token_ssm_parameter_name != "" ? "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${trimprefix(var.echidna_ci_token_ssm_parameter_name, "/")}" : ""
-  ssm_parameter_arns                 = distinct(compact([local.git_token_ssm_parameter_arn, local.echidna_ci_token_ssm_parameter_arn]))
+  ssm_parameter_arns                 = compact([local.git_token_ssm_parameter_arn])
 }
 
 resource "tls_private_key" "ssh" {
@@ -362,16 +369,77 @@ resource "aws_iam_instance_profile" "fuzzer" {
   role = aws_iam_role.fuzzer.name
 }
 
+resource "aws_iam_role" "echidna_ci" {
+  count = local.echidna_ci_selected ? 1 : 0
+
+  name               = "${local.name_prefix}-echidna-ci-role-${random_id.suffix.hex}"
+  assume_role_policy = data.aws_iam_policy_document.assume_role.json
+  tags               = local.tags
+}
+
+data "aws_iam_policy_document" "echidna_ci_access" {
+  count = local.echidna_ci_selected ? 1 : 0
+
+  source_policy_documents = [data.aws_iam_policy_document.s3_access.json]
+
+  statement {
+    sid       = "ReadExactEchidnaToken"
+    actions   = ["ssm:GetParameter"]
+    resources = [local.echidna_ci_token_ssm_parameter_arn]
+  }
+
+  dynamic "statement" {
+    for_each = var.echidna_ci_token_kms_key_arn == "" ? [] : [var.echidna_ci_token_kms_key_arn]
+
+    content {
+      sid       = "DecryptExactEchidnaTokenKey"
+      actions   = ["kms:Decrypt"]
+      resources = [statement.value]
+
+      condition {
+        test     = "StringEquals"
+        variable = "kms:EncryptionContext:PARAMETER_ARN"
+        values   = [local.echidna_ci_token_ssm_parameter_arn]
+      }
+
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = ["ssm.${var.aws_region}.amazonaws.com"]
+      }
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "echidna_ci_access" {
+  count = local.echidna_ci_selected ? 1 : 0
+
+  name   = "${local.name_prefix}-echidna-ci-${random_id.suffix.hex}"
+  role   = aws_iam_role.echidna_ci[0].id
+  policy = data.aws_iam_policy_document.echidna_ci_access[0].json
+}
+
+resource "aws_iam_instance_profile" "echidna_ci" {
+  count = local.echidna_ci_selected ? 1 : 0
+
+  name = "${local.name_prefix}-echidna-ci-profile-${random_id.suffix.hex}"
+  role = aws_iam_role.echidna_ci[0].name
+}
+
 resource "aws_instance" "fuzzer" {
   for_each = local.instance_map
 
-  ami                                  = data.aws_ssm_parameter.ubuntu_ami.value
-  instance_type                        = var.instance_type
-  associate_public_ip_address          = true
-  subnet_id                            = aws_subnet.public.id
-  vpc_security_group_ids               = [aws_security_group.ssh.id]
-  key_name                             = aws_key_pair.ssh.key_name
-  iam_instance_profile                 = aws_iam_instance_profile.fuzzer.name
+  ami                         = data.aws_ssm_parameter.ubuntu_ami.value
+  instance_type               = var.instance_type
+  associate_public_ip_address = true
+  subnet_id                   = aws_subnet.public.id
+  vpc_security_group_ids      = [aws_security_group.ssh.id]
+  key_name                    = aws_key_pair.ssh.key_name
+  iam_instance_profile = (
+    each.value.fuzzer.key == "echidna" && local.echidna_ci_selected
+    ? aws_iam_instance_profile.echidna_ci[0].name
+    : aws_iam_instance_profile.fuzzer.name
+  )
   instance_initiated_shutdown_behavior = "terminate"
   user_data_replace_on_change          = true
 
@@ -380,7 +448,10 @@ resource "aws_instance" "fuzzer" {
     shared_sh                           = file("${path.module}/../fuzzers/_shared/common.sh")
     install_sh                          = file(each.value.fuzzer.install_path)
     run_sh                              = file(each.value.fuzzer.run_path)
-    echidna_ci_extractor                = file("${path.module}/../fuzzers/echidna/extract_ci_artifact.py")
+    echidna_ci_enabled                  = each.value.fuzzer.key == "echidna" && local.echidna_ci_enabled
+    echidna_ci_extractor                = each.value.fuzzer.key == "echidna" && local.echidna_ci_enabled ? file("${path.module}/../fuzzers/echidna/extract_ci_artifact.py") : ""
+    medusa_source_enabled               = each.value.fuzzer.key == "medusa" && local.medusa_source_enabled
+    medusa_go_extractor                 = each.value.fuzzer.key == "medusa" && local.medusa_source_enabled ? file("${path.module}/../fuzzers/medusa/extract_go_toolchain.py") : ""
     aws_region                          = var.aws_region
     s3_bucket                           = local.bucket_name
     run_id                              = local.run_id
@@ -394,18 +465,18 @@ resource "aws_instance" "fuzzer" {
     foundry_git_repo                    = var.foundry_git_repo
     foundry_git_ref                     = var.foundry_git_ref
     echidna_version                     = var.echidna_version
-    echidna_ci_repo                     = var.echidna_ci_repo
-    echidna_ci_run_id                   = var.echidna_ci_run_id
-    echidna_ci_artifact_name            = var.echidna_ci_artifact_name
-    echidna_ci_artifact_sha256          = var.echidna_ci_artifact_sha256
-    echidna_ci_commit                   = var.echidna_ci_commit
-    echidna_ci_token_ssm_parameter_name = var.echidna_ci_token_ssm_parameter_name
+    echidna_ci_repo                     = each.value.fuzzer.key == "echidna" ? var.echidna_ci_repo : ""
+    echidna_ci_run_id                   = each.value.fuzzer.key == "echidna" ? var.echidna_ci_run_id : ""
+    echidna_ci_artifact_name            = each.value.fuzzer.key == "echidna" ? var.echidna_ci_artifact_name : ""
+    echidna_ci_artifact_sha256          = each.value.fuzzer.key == "echidna" ? var.echidna_ci_artifact_sha256 : ""
+    echidna_ci_commit                   = each.value.fuzzer.key == "echidna" ? var.echidna_ci_commit : ""
+    echidna_ci_token_ssm_parameter_name = each.value.fuzzer.key == "echidna" ? var.echidna_ci_token_ssm_parameter_name : ""
     medusa_version                      = var.medusa_version
-    medusa_git_repo                     = var.medusa_git_repo
-    medusa_git_ref                      = var.medusa_git_ref
-    medusa_git_commit                   = var.medusa_git_commit
-    medusa_go_version                   = var.medusa_go_version
-    medusa_go_sha256                    = var.medusa_go_sha256
+    medusa_git_repo                     = each.value.fuzzer.key == "medusa" ? var.medusa_git_repo : ""
+    medusa_git_ref                      = each.value.fuzzer.key == "medusa" ? var.medusa_git_ref : ""
+    medusa_git_commit                   = each.value.fuzzer.key == "medusa" ? var.medusa_git_commit : ""
+    medusa_go_version                   = each.value.fuzzer.key == "medusa" && local.medusa_source_enabled ? var.medusa_go_version : ""
+    medusa_go_sha256                    = each.value.fuzzer.key == "medusa" && local.medusa_source_enabled ? var.medusa_go_sha256 : ""
     recon_version                       = var.recon_version
     git_token_ssm_parameter_name        = var.git_token_ssm_parameter_name
     fuzzer_env                          = local.merged_fuzzer_env
@@ -432,8 +503,23 @@ resource "aws_instance" "fuzzer" {
     }
 
     precondition {
+      condition     = !local.echidna_ci_enabled || local.echidna_ci_selected
+      error_message = "Echidna CI artifact mode requires echidna in the selected fuzzers."
+    }
+
+    precondition {
+      condition     = var.echidna_ci_token_kms_key_arn == "" || local.echidna_ci_enabled
+      error_message = "echidna_ci_token_kms_key_arn is valid only with Echidna CI artifact mode."
+    }
+
+    precondition {
       condition     = local.medusa_source_input_count == 0 || local.medusa_source_input_count == length(local.medusa_source_inputs)
       error_message = "Medusa source mode requires git repo, git ref, and full commit together."
+    }
+
+    precondition {
+      condition     = !local.medusa_source_enabled || local.medusa_source_selected
+      error_message = "Medusa source mode requires medusa in the selected fuzzers."
     }
   }
 

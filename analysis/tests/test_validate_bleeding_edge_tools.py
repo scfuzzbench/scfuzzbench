@@ -104,6 +104,41 @@ class BleedingEdgeToolValidationTests(unittest.TestCase):
                     expected_commit=expected,
                 )
 
+    def test_accepts_only_official_go_linux_amd64_digest(self):
+        metadata = [
+            {
+                "version": "go1.24.0",
+                "files": [
+                    {
+                        "filename": "go1.24.0.linux-amd64.tar.gz",
+                        "os": "linux",
+                        "arch": "amd64",
+                        "kind": "archive",
+                        "sha256": self.digest,
+                        "size": 78_382_844,
+                    }
+                ],
+            }
+        ]
+        with mock.patch.object(self.module, "fetch_json", return_value=metadata):
+            result = self.module.validate_go_toolchain(
+                version="1.24.0",
+                expected_sha256=self.digest,
+            )
+        self.assertEqual(self.digest, result["sha256"])
+        self.assertEqual(78_382_844, result["size"])
+
+        with mock.patch.object(self.module, "fetch_json", return_value=metadata):
+            with self.assertRaisesRegex(self.module.ValidationError, "official metadata"):
+                self.module.validate_go_toolchain(
+                    version="1.24.0",
+                    expected_sha256="0" * 64,
+                )
+
+    def test_rejects_option_like_medusa_ref_before_git(self):
+        with self.assertRaisesRegex(self.module.ValidationError, "unsupported"):
+            self.module.resolve_git_ref("https://github.com/crytic/medusa", "--help")
+
 
 if __name__ == "__main__":
     unittest.main()

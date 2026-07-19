@@ -21,7 +21,8 @@ install_medusa_from_source() {
     log "MEDUSA_GIT_REPO must be https://github.com/<org>/<repo>"
     return 1
   fi
-  if [[ ! "${MEDUSA_GIT_REF}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+  if [[ ! "${MEDUSA_GIT_REF}" =~ ^[A-Za-z0-9._/-]+$ ]] \
+    || [[ "${MEDUSA_GIT_REF}" == -* || "${MEDUSA_GIT_REF}" == *".."* || "${MEDUSA_GIT_REF}" == *"//"* ]]; then
     log "MEDUSA_GIT_REF contains unsupported characters"
     return 1
   fi
@@ -51,8 +52,60 @@ install_medusa_from_source() {
   trap cleanup_medusa_source EXIT
 
   local go_archive="${tmp_dir}/go.tar.gz"
+  local go_metadata="${tmp_dir}/go-downloads.json"
   local go_max_bytes=209715200
   local go_url="https://go.dev/dl/go${MEDUSA_GO_VERSION}.linux-amd64.tar.gz"
+  local go_metadata_max_bytes=10485760
+  retry_cmd 3 5 curl --fail --silent --show-error --location \
+    --max-filesize "${go_metadata_max_bytes}" \
+    "https://go.dev/dl/?mode=json&include=all" \
+    --output "${go_metadata}"
+  local go_metadata_size
+  go_metadata_size=$(stat -c '%s' "${go_metadata}")
+  if (( go_metadata_size <= 0 || go_metadata_size > go_metadata_max_bytes )); then
+    log "Official Go metadata size ${go_metadata_size} is outside the allowed range"
+    return 1
+  fi
+  local go_official
+  go_official=$(python3 - "${go_metadata}" "${MEDUSA_GO_VERSION}" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    releases = json.load(handle)
+filename = f"go{sys.argv[2]}.linux-amd64.tar.gz"
+matches = [
+    item
+    for release in releases
+    if isinstance(release, dict)
+    for item in release.get("files", [])
+    if isinstance(item, dict)
+    and item.get("filename") == filename
+    and item.get("os") == "linux"
+    and item.get("arch") == "amd64"
+    and item.get("kind") == "archive"
+]
+if len(matches) != 1:
+    raise SystemExit(f"expected one official Go archive named {filename}, found {len(matches)}")
+digest = str(matches[0].get("sha256", "")).lower()
+size = matches[0].get("size")
+if not re.fullmatch(r"[0-9a-f]{64}", digest) or not isinstance(size, int) or size <= 0:
+    raise SystemExit("official Go archive metadata is incomplete")
+print(f"{digest} {size}")
+PY
+  )
+  local go_official_digest="${go_official%% *}"
+  local go_official_size="${go_official##* }"
+  if [[ "${go_official_digest}" != "${MEDUSA_GO_SHA256,,}" ]]; then
+    log "Configured Go SHA-256 does not match the official Go download metadata"
+    return 1
+  fi
+  if [[ ! "${go_official_size}" =~ ^[1-9][0-9]*$ ]] || (( go_official_size > go_max_bytes )); then
+    log "Official Go archive size ${go_official_size} is outside the allowed range"
+    return 1
+  fi
+
   log "Installing verified Go ${MEDUSA_GO_VERSION} for Medusa source build"
   retry_cmd 3 5 curl --fail --silent --show-error --location \
     --max-filesize "${go_max_bytes}" \
@@ -60,8 +113,8 @@ install_medusa_from_source() {
     --output "${go_archive}"
   local go_archive_size
   go_archive_size=$(stat -c '%s' "${go_archive}")
-  if (( go_archive_size <= 0 || go_archive_size > go_max_bytes )); then
-    log "Go distribution size ${go_archive_size} is outside the allowed range"
+  if (( go_archive_size != go_official_size )); then
+    log "Go distribution size ${go_archive_size} does not match official metadata ${go_official_size}"
     return 1
   fi
   local go_archive_digest
@@ -71,34 +124,27 @@ install_medusa_from_source() {
     return 1
   fi
 
-  # The checksum authenticates the official distribution. Still reject paths
-  # outside its single go/ root and links/special files before extraction.
-  local tar_entry
-  while IFS= read -r tar_entry; do
-    case "${tar_entry}" in
-      go|go/*) ;;
-      *)
-        log "Unsafe path in Go distribution: ${tar_entry}"
-        return 1
-        ;;
-    esac
-    if [[ "${tar_entry}" == *"/../"* || "${tar_entry}" == "../"* ]]; then
-      log "Unsafe traversal path in Go distribution: ${tar_entry}"
-      return 1
+  local extractor="${MEDUSA_GO_EXTRACTOR:-}"
+  if [[ -z "${extractor}" ]]; then
+    if is_local_mode; then
+      extractor="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/extract_go_toolchain.py"
+    else
+      extractor="/opt/scfuzzbench/extract_go_toolchain.py"
     fi
-  done < <(tar -tzf "${go_archive}")
-  if tar -tvzf "${go_archive}" | awk '
-    substr($1, 1, 1) != "d" && substr($1, 1, 1) != "-" { bad = 1 }
-    END { exit bad ? 0 : 1 }
-  '; then
-    log "Go distribution contains a link or special file"
+  fi
+  if [[ ! -f "${extractor}" ]]; then
+    log "Go toolchain extractor not found at ${extractor}"
     return 1
   fi
 
   local toolchain_root="${tmp_dir}/toolchain"
-  mkdir -p "${toolchain_root}"
-  tar -xzf "${go_archive}" -C "${toolchain_root}"
-  local go_bin="${toolchain_root}/go/bin/go"
+  local go_bin
+  go_bin=$(python3 "${extractor}" \
+    --archive "${go_archive}" \
+    --destination "${toolchain_root}" \
+    --max-bytes 536870912 \
+    --max-entries 20000 \
+    --max-depth 16)
   if [[ ! -x "${go_bin}" ]]; then
     log "Verified Go distribution did not contain go/bin/go"
     return 1
@@ -116,7 +162,7 @@ install_medusa_from_source() {
   local expected_commit="${MEDUSA_GIT_COMMIT,,}"
 
   log "Fetching immutable Medusa commit ${expected_commit}"
-  GIT_TERMINAL_PROMPT=0 git -C "${source_dir}" fetch --no-tags --depth 1 origin "${expected_commit}"
+  GIT_TERMINAL_PROMPT=0 git -C "${source_dir}" fetch --no-tags --depth 1 origin -- "${expected_commit}"
   local fetched_commit
   fetched_commit=$(git -C "${source_dir}" rev-parse 'FETCH_HEAD^{commit}')
   if [[ "${fetched_commit,,}" != "${expected_commit}" ]]; then
@@ -126,7 +172,7 @@ install_medusa_from_source() {
 
   # Re-resolve the human-readable ref on every instance. If it moved after the
   # request was approved, fail instead of benchmarking a silently different build.
-  GIT_TERMINAL_PROMPT=0 git -C "${source_dir}" fetch --no-tags --depth 1 origin "${MEDUSA_GIT_REF}"
+  GIT_TERMINAL_PROMPT=0 git -C "${source_dir}" fetch --no-tags --depth 1 origin -- "${MEDUSA_GIT_REF}"
   local ref_commit
   ref_commit=$(git -C "${source_dir}" rev-parse 'FETCH_HEAD^{commit}')
   if [[ "${ref_commit,,}" != "${expected_commit}" ]]; then
@@ -141,8 +187,13 @@ install_medusa_from_source() {
   fi
   local go_sum_digest
   go_sum_digest=$(sha256sum "${source_dir}/go.sum" | awk '{print tolower($1)}')
+  local go_mod_digest
+  go_mod_digest=$(sha256sum "${source_dir}/go.mod" | awk '{print tolower($1)}')
+  local source_tree_digest
+  source_tree_digest=$(git -C "${source_dir}" archive --format=tar "${expected_commit}" | sha256sum | awk '{print tolower($1)}')
 
   export GOTOOLCHAIN=local
+  export GOFLAGS="-mod=readonly"
   export GOPATH="${tmp_dir}/gopath"
   export GOMODCACHE="${GOPATH}/pkg/mod"
   export GOCACHE="${tmp_dir}/gocache"
@@ -161,6 +212,7 @@ install_medusa_from_source() {
       -ldflags=-buildid= \
       -o "${tmp_dir}/medusa-bin" \
       .
+    git diff --exit-code -- go.mod go.sum
   )
 
   install -m 0755 "${tmp_dir}/medusa-bin" "${SCFUZZBENCH_BIN_DIR}/medusa"
@@ -182,6 +234,9 @@ install_medusa_from_source() {
     --arg commit "${expected_commit}" \
     --arg go_version "${MEDUSA_GO_VERSION}" \
     --arg go_distribution_sha256 "${go_archive_digest}" \
+    --arg go_distribution_size "${go_archive_size}" \
+    --arg source_tree_sha256 "${source_tree_digest}" \
+    --arg go_mod_sha256 "${go_mod_digest}" \
     --arg go_sum_sha256 "${go_sum_digest}" \
     --arg binary_sha256 "${binary_digest}" \
     --arg binary_version "${binary_version}" \
@@ -192,13 +247,16 @@ install_medusa_from_source() {
       repository: $repo,
       requested_ref: $ref,
       commit: $commit,
+      source_tree_sha256: $source_tree_sha256,
       toolchain: {
         name: "go",
         version: $go_version,
         os: "linux",
         arch: "amd64",
         distribution_sha256: $go_distribution_sha256,
+        distribution_size_bytes: ($go_distribution_size | tonumber),
         module_mode: "readonly",
+        go_mod_sha256: $go_mod_sha256,
         go_sum_sha256: $go_sum_sha256
       },
       binary: {name: "medusa", sha256: $binary_sha256, version: $binary_version}

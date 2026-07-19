@@ -65,6 +65,9 @@ Provide all of:
 - `echidna_ci_commit`: full 40-character run head commit.
 - `echidna_ci_token_ssm_parameter_name`: a SecureString containing a token with
   Actions read access to that repository.
+- `echidna_ci_token_kms_key_arn` (optional): the exact customer-managed KMS key
+  ARN used by that SecureString. Leave blank for the account's AWS-managed
+  `alias/aws/ssm` key.
 
 GitHub Actions artifacts expire. Inspect the run before requesting a paid
 benchmark:
@@ -90,7 +93,12 @@ aws ssm put-parameter \
   --overwrite
 ```
 
-The EC2 role receives `ssm:GetParameter` only for the configured parameter ARN.
+Only Echidna artifact instances use the dedicated CI instance profile. It grants
+`ssm:GetParameter` only for the configured parameter ARN; stable Echidna and
+other fuzzer instances receive no access to that token. With a customer-managed
+KMS key, the profile grants `kms:Decrypt` only for the exact key ARN and only
+when the encryption context is the exact parameter ARN via regional SSM.
+Aliases and wildcard KMS permissions are rejected.
 At boot the installer re-checks repository, run success, head commit, artifact
 identity, expiry, API digest, downloaded ZIP digest, archive safety, and the
 binary's Linux x86-64 ELF identity. Authentication is held in a temporary
@@ -107,9 +115,11 @@ Source builds use an official pinned Go Linux amd64 distribution. The defaults
 are Go `1.24.0` and SHA-256
 `dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858`.
 Override `medusa_go_version` and `medusa_go_sha256` together when the selected
-commit requires a different toolchain. The installer verifies the distribution
-checksum and toolchain identity, disables automatic toolchain switching, runs
-`go mod verify`, and builds with `-mod=readonly -trimpath`.
+commit requires a different toolchain. The installer binds the configured
+digest and size to Go's official download metadata, stream-extracts with
+entry/depth/expanded-byte limits, verifies toolchain identity, disables
+automatic toolchain switching, runs `go mod verify`, preserves `go.mod` and
+`go.sum`, and builds with `-mod=readonly -trimpath`.
 
 Each opt-in leg writes `tool_provenance.json` into its log archive. It records
 the repository/ref/commit, artifact or Go distribution digest, module
@@ -212,9 +222,7 @@ You can run fuzzers locally without AWS infrastructure using `scripts/local-run.
 
 ### Prerequisites
 
-- The fuzzer binary must already be installed (the current stable runner uses
-  `echidna-test`; CI artifact mode installs canonical `echidna` plus that
-  compatibility alias), or pass `--install`
+- The fuzzer binary must already be installed, or pass `--install`
 - Foundry must be installed (`forge`, `cast`)
 - `zip` must be available for result packaging
 

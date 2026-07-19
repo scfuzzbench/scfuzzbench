@@ -52,7 +52,7 @@ on:
         required: false
         default: ""
       echidna_ci_json:
-        description: "Optional JSON object with the six non-secret echidna_ci_* artifact inputs."
+        description: "Optional JSON object with Echidna artifact/SSM/KMS inputs."
         required: false
         default: ""
       medusa_version:
@@ -166,6 +166,11 @@ on:
         default: ""
       echidna_ci_token_ssm_parameter_name:
         description: "SecureString path containing a token with Actions read access."
+        required: false
+        type: string
+        default: ""
+      echidna_ci_token_kms_key_arn:
+        description: "Optional exact customer-managed KMS key ARN for the token SecureString."
         required: false
         type: string
         default: ""
@@ -285,6 +290,7 @@ jobs:
           CALL_ECHIDNA_CI_ARTIFACT_SHA256: ${{ inputs.echidna_ci_artifact_sha256 }}
           CALL_ECHIDNA_CI_COMMIT: ${{ inputs.echidna_ci_commit }}
           CALL_ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.echidna_ci_token_ssm_parameter_name }}
+          CALL_ECHIDNA_CI_TOKEN_KMS_KEY_ARN: ${{ inputs.echidna_ci_token_kms_key_arn }}
           CALL_MEDUSA_GIT_REPO: ${{ inputs.medusa_git_repo }}
           CALL_MEDUSA_GIT_REF: ${{ inputs.medusa_git_ref }}
           CALL_MEDUSA_GIT_COMMIT: ${{ inputs.medusa_git_commit }}
@@ -306,6 +312,7 @@ jobs:
                       "echidna_ci_artifact_sha256",
                       "echidna_ci_commit",
                       "echidna_ci_token_ssm_parameter_name",
+                      "echidna_ci_token_kms_key_arn",
                   ],
                   "identity_keys": [
                       "echidna_ci_repo",
@@ -455,6 +462,7 @@ jobs:
           ECHIDNA_CI_ARTIFACT_SHA256: ${{ steps.tool_sources.outputs.echidna_ci_artifact_sha256 }}
           ECHIDNA_CI_COMMIT: ${{ steps.tool_sources.outputs.echidna_ci_commit }}
           ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ steps.tool_sources.outputs.echidna_ci_token_ssm_parameter_name }}
+          ECHIDNA_CI_TOKEN_KMS_KEY_ARN: ${{ steps.tool_sources.outputs.echidna_ci_token_kms_key_arn }}
           MEDUSA_VERSION: ${{ inputs.medusa_version }}
           MEDUSA_GIT_REPO: ${{ steps.tool_sources.outputs.medusa_git_repo }}
           MEDUSA_GIT_REF: ${{ steps.tool_sources.outputs.medusa_git_ref }}
@@ -558,6 +566,14 @@ jobs:
               || fail "echidna_ci_commit must be a full 40-character SHA"
             [[ "${ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME}" =~ ^/scfuzzbench/[A-Za-z0-9_./-]+$ ]] \
               || fail "echidna_ci_token_ssm_parameter_name must start with /scfuzzbench/"
+            if [[ -n "${ECHIDNA_CI_TOKEN_KMS_KEY_ARN}" ]]; then
+              require_safe "echidna_ci_token_kms_key_arn" "${ECHIDNA_CI_TOKEN_KMS_KEY_ARN}"
+              [[ "${ECHIDNA_CI_TOKEN_KMS_KEY_ARN}" =~ ^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]{36}$ ]] \
+                || fail "echidna_ci_token_kms_key_arn must be an exact customer-managed KMS key ARN"
+            fi
+          fi
+          if [[ -n "${ECHIDNA_CI_TOKEN_KMS_KEY_ARN}" ]] && (( echidna_ci_count != 6 )); then
+            fail "echidna_ci_token_kms_key_arn requires Echidna CI artifact mode"
           fi
 
           if [[ -n "${MEDUSA_VERSION}" ]]; then
@@ -584,7 +600,7 @@ jobs:
             require_safe "medusa_git_commit" "${MEDUSA_GIT_COMMIT}"
             [[ "${MEDUSA_GIT_REPO}" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?/?$ ]] \
               || fail "medusa_git_repo must be https://github.com/<org>/<repo>"
-            [[ "${MEDUSA_GIT_REF}" =~ ^[A-Za-z0-9._/-]+$ ]] \
+            [[ "${MEDUSA_GIT_REF}" =~ ^[A-Za-z0-9._/-]+$ && "${MEDUSA_GIT_REF}" != -* && "${MEDUSA_GIT_REF}" != *".."* && "${MEDUSA_GIT_REF}" != *"//"* ]] \
               || fail "medusa_git_ref contains unsupported characters"
             [[ "${MEDUSA_GIT_COMMIT}" =~ ^[A-Fa-f0-9]{40}$ ]] \
               || fail "medusa_git_commit must be a full 40-character SHA"
@@ -690,6 +706,7 @@ jobs:
               "ECHIDNA_CI_ARTIFACT_NAME",
               "ECHIDNA_CI_ARTIFACT_SHA256",
               "ECHIDNA_CI_COMMIT",
+              "ECHIDNA_CI_TOKEN_KMS_KEY_ARN",
               "MEDUSA_GIT_REPO",
               "MEDUSA_GIT_REF",
               "MEDUSA_GIT_COMMIT",
@@ -720,6 +737,8 @@ jobs:
           MEDUSA_GIT_REPO: ${{ steps.tool_sources.outputs.medusa_git_repo }}
           MEDUSA_GIT_REF: ${{ steps.tool_sources.outputs.medusa_git_ref }}
           MEDUSA_GIT_COMMIT: ${{ steps.tool_sources.outputs.medusa_git_commit }}
+          MEDUSA_GO_VERSION: ${{ steps.tool_sources.outputs.medusa_go_version }}
+          MEDUSA_GO_SHA256: ${{ steps.tool_sources.outputs.medusa_go_sha256 }}
         run: |
           set -euo pipefail
           python3 scripts/validate_bleeding_edge_tools.py \
@@ -730,7 +749,9 @@ jobs:
             --echidna-ci-commit "${ECHIDNA_CI_COMMIT}" \
             --medusa-git-repo "${MEDUSA_GIT_REPO}" \
             --medusa-git-ref "${MEDUSA_GIT_REF}" \
-            --medusa-git-commit "${MEDUSA_GIT_COMMIT}"
+            --medusa-git-commit "${MEDUSA_GIT_COMMIT}" \
+            --medusa-go-version "${MEDUSA_GO_VERSION}" \
+            --medusa-go-sha256 "${MEDUSA_GO_SHA256}"
 
       - name: Terraform apply
         id: apply
@@ -753,6 +774,7 @@ jobs:
           ECHIDNA_CI_ARTIFACT_SHA256: ${{ steps.tool_sources.outputs.echidna_ci_artifact_sha256 }}
           ECHIDNA_CI_COMMIT: ${{ steps.tool_sources.outputs.echidna_ci_commit }}
           ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ steps.tool_sources.outputs.echidna_ci_token_ssm_parameter_name }}
+          ECHIDNA_CI_TOKEN_KMS_KEY_ARN: ${{ steps.tool_sources.outputs.echidna_ci_token_kms_key_arn }}
           MEDUSA_VERSION: ${{ inputs.medusa_version }}
           MEDUSA_GIT_REPO: ${{ steps.tool_sources.outputs.medusa_git_repo }}
           MEDUSA_GIT_REF: ${{ steps.tool_sources.outputs.medusa_git_ref }}
@@ -805,6 +827,9 @@ jobs:
               -var "echidna_ci_commit=${ECHIDNA_CI_COMMIT}"
               -var "echidna_ci_token_ssm_parameter_name=${ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME}"
             )
+            if [[ -n "${ECHIDNA_CI_TOKEN_KMS_KEY_ARN}" ]]; then
+              tf_args+=(-var "echidna_ci_token_kms_key_arn=${ECHIDNA_CI_TOKEN_KMS_KEY_ARN}")
+            fi
           fi
           if [[ -n "${MEDUSA_VERSION}" ]]; then
             tf_args+=(-var "medusa_version=${MEDUSA_VERSION}")

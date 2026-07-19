@@ -160,6 +160,17 @@ variable "echidna_ci_token_ssm_parameter_name" {
   }
 }
 
+variable "echidna_ci_token_kms_key_arn" {
+  type        = string
+  description = "Optional exact customer-managed KMS key ARN for the Echidna token SecureString. Blank uses the account's aws/ssm managed key."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_token_kms_key_arn == "" || can(regex("^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]{36}$", var.echidna_ci_token_kms_key_arn))
+    error_message = "echidna_ci_token_kms_key_arn must be blank or an exact customer-managed KMS key ARN (aliases and wildcards are not accepted)."
+  }
+}
+
 variable "medusa_version" {
   type        = string
   description = "Pinned Medusa version."
@@ -322,6 +333,7 @@ variable "fuzzer_env" {
       "ECHIDNA_CI_ARTIFACT_NAME",
       "ECHIDNA_CI_ARTIFACT_SHA256",
       "ECHIDNA_CI_COMMIT",
+      "ECHIDNA_CI_TOKEN_KMS_KEY_ARN",
       "MEDUSA_GIT_REPO",
       "MEDUSA_GIT_REF",
       "MEDUSA_GIT_COMMIT",

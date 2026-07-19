@@ -31,7 +31,8 @@ Environment variables:
 Notes:
 - CI artifact mode verifies run/commit/artifact metadata, expiry, archive and
   binary digests, safe extraction, and Linux x86-64 ELF identity. It installs
-  the canonical `echidna` command and records `tool_provenance.json`.
+  the canonical `echidna` command without a legacy alias and records
+  `tool_provenance.json`.
 - In `property` mode, the runner rewrites `prefix: "invariant_"` to `prefix: "echidna_"` inside the config file so global properties are treated like assertions.
 - By default, the runner appends `+RTS -A1g -RTS` to reduce GC overhead on multicore instances.
 
@@ -57,9 +58,10 @@ Environment variables:
 - `MEDUSA_WORKERS`, `MEDUSA_CORPUS_DIR`
 
 Source mode verifies that the ref still resolves to the requested full commit,
-checks the official Go distribution digest, uses `GOTOOLCHAIN=local`, verifies
-the module cache against `go.sum`, builds with readonly module semantics, and
-records source/toolchain/binary provenance in `tool_provenance.json`.
+checks digest and size against official Go metadata, stream-extracts with
+bounded entry/depth/size limits, uses `GOTOOLCHAIN=local`, verifies the module
+cache and unchanged module lock files, builds with readonly module semantics,
+and records source/toolchain/binary provenance in `tool_provenance.json`.
 
 ## Foundry
 

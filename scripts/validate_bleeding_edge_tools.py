@@ -34,7 +34,7 @@ def github_repo_path(repo_url: str) -> str:
     return f"{match.group('owner')}/{match.group('repo')}"
 
 
-def github_json(url: str) -> dict[str, Any]:
+def fetch_json(url: str) -> Any:
     request = urllib.request.Request(
         url,
         headers={
@@ -47,7 +47,12 @@ def github_json(url: str) -> dict[str, Any]:
         with urllib.request.urlopen(request, timeout=30) as response:
             value = json.load(response)
     except (OSError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
-        raise ValidationError(f"GitHub metadata request failed for {url}: {exc}") from exc
+        raise ValidationError(f"metadata request failed for {url}: {exc}") from exc
+    return value
+
+
+def github_json(url: str) -> dict[str, Any]:
+    value = fetch_json(url)
     if not isinstance(value, dict):
         raise ValidationError(f"GitHub metadata response was not an object: {url}")
     return value
@@ -139,7 +144,12 @@ def validate_echidna_artifact(
 
 def resolve_git_ref(repo_url: str, git_ref: str) -> str:
     github_repo_path(repo_url)
-    if not re.fullmatch(r"[A-Za-z0-9._/-]+", git_ref):
+    if (
+        not re.fullmatch(r"[A-Za-z0-9._/-]+", git_ref)
+        or git_ref.startswith("-")
+        or ".." in git_ref
+        or "//" in git_ref
+    ):
         raise ValidationError("Medusa git ref contains unsupported characters")
     with tempfile.TemporaryDirectory(prefix="scfuzzbench-medusa-ref-") as directory:
         checkout = Path(directory)
@@ -155,6 +165,7 @@ def resolve_git_ref(repo_url: str, git_ref: str) -> str:
                 "--depth",
                 "1",
                 "origin",
+                "--",
                 git_ref,
             ],
             ["git", "-C", str(checkout), "rev-parse", "FETCH_HEAD^{commit}"],
@@ -168,7 +179,12 @@ def resolve_git_ref(repo_url: str, git_ref: str) -> str:
                     capture_output=True,
                     text=True,
                     timeout=120,
-                    env={"PATH": str(Path("/usr/local/bin")) + ":/usr/bin:/bin"},
+                    env={
+                        "PATH": str(Path("/usr/local/bin")) + ":/usr/bin:/bin",
+                        "GIT_CONFIG_NOSYSTEM": "1",
+                        "GIT_PROTOCOL_FROM_USER": "0",
+                        "GIT_TERMINAL_PROMPT": "0",
+                    },
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 raise ValidationError(f"could not resolve Medusa ref {git_ref!r}: {exc}") from exc
@@ -193,6 +209,41 @@ def validate_medusa_source(*, repo_url: str, git_ref: str, expected_commit: str)
     }
 
 
+def validate_go_toolchain(*, version: str, expected_sha256: str) -> dict[str, str | int]:
+    if not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", version):
+        raise ValidationError("Medusa Go version must look like 1.24.0")
+    if not DIGEST_RE.fullmatch(expected_sha256):
+        raise ValidationError("Medusa Go digest must be a SHA-256")
+    value = fetch_json("https://go.dev/dl/?mode=json&include=all")
+    if not isinstance(value, list):
+        raise ValidationError("official Go download metadata was not a list")
+    filename = f"go{version}.linux-amd64.tar.gz"
+    matches = [
+        item
+        for release in value
+        if isinstance(release, dict)
+        for item in release.get("files", [])
+        if isinstance(item, dict)
+        and item.get("filename") == filename
+        and item.get("os") == "linux"
+        and item.get("arch") == "amd64"
+        and item.get("kind") == "archive"
+    ]
+    if len(matches) != 1:
+        raise ValidationError(
+            f"expected one official Go archive named {filename}, found {len(matches)}"
+        )
+    digest = str(matches[0].get("sha256") or "").lower()
+    size = matches[0].get("size")
+    if digest != expected_sha256.lower():
+        raise ValidationError(
+            f"Medusa Go digest does not match official metadata: expected {digest or 'missing'}"
+        )
+    if not isinstance(size, int) or size <= 0 or size > 209_715_200:
+        raise ValidationError(f"official Go archive size is invalid: {size!r}")
+    return {"filename": filename, "sha256": digest, "size": size}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--echidna-ci-repo", default="")
@@ -203,9 +254,11 @@ def main() -> int:
     parser.add_argument("--medusa-git-repo", default="")
     parser.add_argument("--medusa-git-ref", default="")
     parser.add_argument("--medusa-git-commit", default="")
+    parser.add_argument("--medusa-go-version", default="")
+    parser.add_argument("--medusa-go-sha256", default="")
     args = parser.parse_args()
 
-    results: dict[str, dict[str, str]] = {}
+    results: dict[str, dict[str, Any]] = {}
     try:
         if args.echidna_ci_repo:
             results["echidna"] = validate_echidna_artifact(
@@ -220,6 +273,10 @@ def main() -> int:
                 repo_url=args.medusa_git_repo,
                 git_ref=args.medusa_git_ref,
                 expected_commit=args.medusa_git_commit,
+            )
+            results["medusa_go"] = validate_go_toolchain(
+                version=args.medusa_go_version,
+                expected_sha256=args.medusa_go_sha256,
             )
     except ValidationError as exc:
         parser.exit(1, f"error: {exc}\n")

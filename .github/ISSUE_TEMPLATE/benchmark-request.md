@@ -35,6 +35,7 @@ Notes:
   "echidna_ci_artifact_sha256": "",
   "echidna_ci_commit": "",
   "echidna_ci_token_ssm_parameter_name": "",
+  "echidna_ci_token_kms_key_arn": "",
   "medusa_version": "",
   "medusa_git_repo": "",
   "medusa_git_ref": "",

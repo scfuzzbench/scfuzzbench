@@ -23,12 +23,21 @@ cat <<'RUN' >/opt/scfuzzbench/fuzzers/${fuzzer_key}/run.sh
 ${run_sh}
 RUN
 
+%{ if echidna_ci_enabled ~}
 cat <<'ECHIDNA_CI_EXTRACTOR' >/opt/scfuzzbench/extract_echidna_ci_artifact.py
 ${echidna_ci_extractor}
 ECHIDNA_CI_EXTRACTOR
+chmod +x /opt/scfuzzbench/extract_echidna_ci_artifact.py
+%{ endif ~}
+
+%{ if medusa_source_enabled ~}
+cat <<'MEDUSA_GO_EXTRACTOR' >/opt/scfuzzbench/extract_go_toolchain.py
+${medusa_go_extractor}
+MEDUSA_GO_EXTRACTOR
+chmod +x /opt/scfuzzbench/extract_go_toolchain.py
+%{ endif ~}
 
 chmod +x /opt/scfuzzbench/common.sh \
-  /opt/scfuzzbench/extract_echidna_ci_artifact.py \
   /opt/scfuzzbench/fuzzers/${fuzzer_key}/install.sh \
   /opt/scfuzzbench/fuzzers/${fuzzer_key}/run.sh
 

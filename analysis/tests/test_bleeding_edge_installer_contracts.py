@@ -51,7 +51,9 @@ class BleedingEdgeInstallerContractTests(unittest.TestCase):
                 }
                 retry_cmd() { shift 2; "$@"; }
                 aws_cli() {
-                  printf '%s\n' "${MOCK_GITHUB_TOKEN:-test_token}"
+                  printf '{"Parameter":{"Name":"%s","Type":"SecureString","Value":"%s"}}\n' \
+                    "${ECHIDNA_CI_TOKEN_SSM_PARAMETER:-}" \
+                    "${MOCK_GITHUB_TOKEN:-test_token}"
                 }
                 """
             ),
@@ -260,7 +262,7 @@ class BleedingEdgeInstallerContractTests(unittest.TestCase):
         self.assertEqual(artifact_digest, provenance["artifact"]["sha256"])
         self.assertEqual(hashlib.sha256(Path("/bin/echo").read_bytes()).hexdigest(), provenance["binary"]["sha256"])
         self.assertTrue((self.install_bin / "echidna").is_file())
-        self.assertTrue((self.install_bin / "echidna-test").is_symlink())
+        self.assertFalse((self.install_bin / "echidna-test").exists())
         self.assertNotIn("github_pat_test_token", curl_log.read_text(encoding="utf-8"))
 
     def test_medusa_source_path_records_commit_toolchain_and_binary(self):
@@ -296,6 +298,27 @@ class BleedingEdgeInstallerContractTests(unittest.TestCase):
 
             archive.addfile(info, io.BytesIO(go_script))
         go_digest = hashlib.sha256(go_archive.read_bytes()).hexdigest()
+        go_metadata = self.root / "go-downloads.json"
+        go_metadata.write_text(
+            json.dumps(
+                [
+                    {
+                        "version": "go1.24.0",
+                        "files": [
+                            {
+                                "filename": "go1.24.0.linux-amd64.tar.gz",
+                                "os": "linux",
+                                "arch": "amd64",
+                                "kind": "archive",
+                                "sha256": go_digest,
+                                "size": go_archive.stat().st_size,
+                            }
+                        ],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
         commit = "3857153837ab90ed73adc484414b4b43703a54fb"
         curl_log = self.root / "curl.log"
         self.write_executable(
@@ -305,13 +328,19 @@ class BleedingEdgeInstallerContractTests(unittest.TestCase):
             set -euo pipefail
             printf '%s\n' "$*" >> "${MOCK_CURL_LOG}"
             output=""
+            url=""
             while (($#)); do
               case "$1" in
                 -o|--output) output="$2"; shift 2 ;;
+                http*) url="$1"; shift ;;
                 *) shift ;;
               esac
             done
-            cp "${MOCK_GO_ARCHIVE}" "${output}"
+            case "${url}" in
+              *mode=json*) cp "${MOCK_GO_METADATA}" "${output}" ;;
+              */go1.24.0.linux-amd64.tar.gz) cp "${MOCK_GO_ARCHIVE}" "${output}" ;;
+              *) echo "unexpected URL: ${url}" >&2; exit 1 ;;
+            esac
             """,
         )
         self.write_executable(
@@ -341,8 +370,12 @@ class BleedingEdgeInstallerContractTests(unittest.TestCase):
                 "MEDUSA_GIT_COMMIT": commit,
                 "MEDUSA_GO_VERSION": "1.24.0",
                 "MEDUSA_GO_SHA256": go_digest,
+                "MEDUSA_GO_EXTRACTOR": str(
+                    REPO_ROOT / "fuzzers" / "medusa" / "extract_go_toolchain.py"
+                ),
                 "MOCK_CURL_LOG": str(curl_log),
                 "MOCK_GO_ARCHIVE": str(go_archive),
+                "MOCK_GO_METADATA": str(go_metadata),
                 "MOCK_MEDUSA_COMMIT": commit,
             },
         )
@@ -353,6 +386,8 @@ class BleedingEdgeInstallerContractTests(unittest.TestCase):
         self.assertEqual(commit, provenance["commit"])
         self.assertEqual("1.24.0", provenance["toolchain"]["version"])
         self.assertEqual(go_digest, provenance["toolchain"]["distribution_sha256"])
+        self.assertEqual(go_archive.stat().st_size, provenance["toolchain"]["distribution_size_bytes"])
+        self.assertRegex(provenance["source_tree_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(
             hashlib.sha256(b"example.invalid/module v1.0.0 h1:test\n").hexdigest(),
             provenance["toolchain"]["go_sum_sha256"],

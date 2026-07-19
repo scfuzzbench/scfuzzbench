@@ -108,6 +108,7 @@ const echidnaCiArtifactName = ref("");
 const echidnaCiArtifactSha256 = ref("");
 const echidnaCiCommit = ref("");
 const echidnaCiTokenSsmParameterName = ref("");
+const echidnaCiTokenKmsKeyArn = ref("");
 const medusaVersion = ref("");
 const medusaGitRepo = ref("");
 const medusaGitRef = ref("");
@@ -240,6 +241,7 @@ const requestJson = computed(() => {
     echidna_ci_artifact_sha256: echidnaCiArtifactSha256.value.trim(),
     echidna_ci_commit: echidnaCiCommit.value.trim(),
     echidna_ci_token_ssm_parameter_name: echidnaCiTokenSsmParameterName.value.trim(),
+    echidna_ci_token_kms_key_arn: echidnaCiTokenKmsKeyArn.value.trim(),
     medusa_version: medusaVersion.value.trim(),
     medusa_git_repo: medusaGitRepo.value.trim(),
     medusa_git_ref: medusaGitRef.value.trim(),
@@ -449,6 +451,16 @@ const showAdvanced = ref(false);
               class="sb-start__input"
               type="text"
               placeholder="/scfuzzbench/echidna/actions_token"
+            />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Echidna token KMS key ARN (optional)</div>
+            <input
+              v-model="echidnaCiTokenKmsKeyArn"
+              class="sb-start__input"
+              type="text"
+              placeholder="Blank for the aws/ssm managed key"
             />
           </label>
 

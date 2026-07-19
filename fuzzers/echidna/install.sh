@@ -3,6 +3,15 @@ set -euo pipefail
 
 source "${SCFUZZBENCH_COMMON_SH:-/opt/scfuzzbench/common.sh}"
 
+# Keep a local-mode token in shell memory only; do not let unrelated bootstrap
+# subprocesses inherit it from the caller's environment.
+ECHIDNA_CI_LOCAL_TOKEN=""
+if [[ "${ECHIDNA_CI_TOKEN+x}" == "x" ]]; then
+  set +x
+  ECHIDNA_CI_LOCAL_TOKEN="${ECHIDNA_CI_TOKEN}"
+  unset ECHIDNA_CI_TOKEN
+fi
+
 prepare_workspace
 install_base_packages
 install_foundry
@@ -68,20 +77,28 @@ install_echidna_ci_artifact() {
   # variables, state, user-data, or command-line arguments.
   set +x
   local github_token=""
-  if [[ -n "${ECHIDNA_CI_TOKEN:-}" ]]; then
-    github_token="${ECHIDNA_CI_TOKEN}"
+  if [[ -n "${ECHIDNA_CI_LOCAL_TOKEN:-}" ]]; then
+    github_token="${ECHIDNA_CI_LOCAL_TOKEN}"
   elif [[ -n "${ECHIDNA_CI_TOKEN_SSM_PARAMETER:-}" ]]; then
-    github_token=$(aws_cli ssm get-parameter \
+    local parameter_json=""
+    parameter_json=$(aws_cli ssm get-parameter \
       --with-decryption \
       --name "${ECHIDNA_CI_TOKEN_SSM_PARAMETER}" \
-      --query 'Parameter.Value' \
-      --output text)
+      --output json)
+    if [[ "$(jq -r '.Parameter.Type // ""' <<<"${parameter_json}")" != "SecureString" ]] \
+      || [[ "$(jq -r '.Parameter.Name // ""' <<<"${parameter_json}")" != "${ECHIDNA_CI_TOKEN_SSM_PARAMETER}" ]]; then
+      unset parameter_json
+      log "Echidna CI token parameter must be the exact requested SecureString"
+      return 1
+    fi
+    github_token=$(jq -r '.Parameter.Value // ""' <<<"${parameter_json}")
+    unset parameter_json
   else
     log "Echidna CI artifact mode requires ECHIDNA_CI_TOKEN locally or ECHIDNA_CI_TOKEN_SSM_PARAMETER in cloud runs"
     return 1
   fi
   if [[ -z "${github_token}" || ! "${github_token}" =~ ^[A-Za-z0-9_]+$ ]]; then
-    unset github_token ECHIDNA_CI_TOKEN
+    unset github_token ECHIDNA_CI_LOCAL_TOKEN
     log "Echidna CI token is empty or has an unexpected format"
     return 1
   fi
@@ -93,7 +110,7 @@ install_echidna_ci_artifact() {
     printf 'header = "Authorization: Bearer %s"\n' "${github_token}"
   } >"${auth_config}"
   chmod 0600 "${auth_config}"
-  unset github_token ECHIDNA_CI_TOKEN
+  unset github_token ECHIDNA_CI_LOCAL_TOKEN
 
   local repo_path="${ECHIDNA_CI_REPO#https://github.com/}"
   repo_path="${repo_path%.git}"
@@ -152,8 +169,26 @@ install_echidna_ci_artifact() {
   artifact_commit=$(jq -r --arg name "${ECHIDNA_CI_ARTIFACT_NAME}" \
     '.artifacts[] | select(.name == $name) | .workflow_run.head_sha // "" | ascii_downcase' "${artifacts_json}")
 
+  if [[ ! "${artifact_id}" =~ ^[1-9][0-9]*$ ]]; then
+    log "Echidna CI artifact metadata is missing a positive numeric ID"
+    return 1
+  fi
   if [[ "${artifact_expired}" != "false" ]]; then
     log "Echidna CI artifact ${ECHIDNA_CI_ARTIFACT_NAME} is expired"
+    return 1
+  fi
+  if [[ -z "${artifact_expires_at}" ]] || ! python3 - "${artifact_expires_at}" <<'PY'
+import datetime as dt
+import sys
+
+try:
+    expiry = dt.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+except ValueError:
+    raise SystemExit(1)
+raise SystemExit(0 if expiry > dt.datetime.now(dt.timezone.utc) else 1)
+PY
+  then
+    log "Echidna CI artifact ${ECHIDNA_CI_ARTIFACT_NAME} has an invalid or elapsed expiry"
     return 1
   fi
   if [[ "${artifact_commit}" != "${expected_commit}" ]]; then
@@ -212,9 +247,7 @@ install_echidna_ci_artifact() {
     --max-bytes "${max_bytes}")
 
   install -m 0755 "${binary_path}" "${SCFUZZBENCH_BIN_DIR}/echidna"
-  # Frozen main still invokes the historical name. Keep a local compatibility
-  # link; the canonical installed binary and provenance name are `echidna`.
-  ln -sfn "echidna" "${SCFUZZBENCH_BIN_DIR}/echidna-test"
+  rm -f -- "${SCFUZZBENCH_BIN_DIR}/echidna-test"
   command -v echidna >/dev/null
 
   local binary_digest binary_version
