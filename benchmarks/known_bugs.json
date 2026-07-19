@@ -1,0 +1,556 @@
+{
+  "schema_version": 1,
+  "targets": [
+    {
+      "target_id": "aave-v4",
+      "target_commit": "459b020058f4a65d18eb1481083b75c766340124",
+      "notes": "Only the two instrumented health-check canaries are mapped. Other property failures remain unmapped until a reviewed root-cause record ties them to a confirmed bug.",
+      "canaries": [
+        {
+          "id": "assertion-canary",
+          "title": "Assertion-path canary",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/aave-v4-scfuzzbench/blob/459b020058f4a65d18eb1481083b75c766340124/tests/recon/Properties.sol#L289-L292",
+              "description": "The pinned harness marks this assertion helper as an expected fuzzing discovery."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "assert_canary",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invariant-canary",
+          "title": "Invariant-path canary",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/aave-v4-scfuzzbench/blob/459b020058f4a65d18eb1481083b75c766340124/tests/recon/Properties.sol#L294-L300",
+              "description": "The pinned harness marks this invariant as an immediate expected failure."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "invariant_canary",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        }
+      ],
+      "known_bugs": []
+    },
+    {
+      "target_id": "superform-v2-periphery",
+      "target_commit": "4d56ecd0efe4bd63c95ef92c14d48135838fbb10",
+      "notes": "Only the two instrumented health-check canaries are mapped. The target documents historical findings, but their current event aliases are left unmapped until each alias-to-root-cause relationship is independently reviewed.",
+      "canaries": [
+        {
+          "id": "assertion-canary",
+          "title": "Assertion-path canary",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench/blob/4d56ecd0efe4bd63c95ef92c14d48135838fbb10/test/recon/Properties.sol#L716-L719",
+              "description": "The pinned harness marks this assertion helper as an expected fuzzing discovery."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "assert_canary",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invariant-canary",
+          "title": "Invariant-path canary",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench/blob/4d56ecd0efe4bd63c95ef92c14d48135838fbb10/test/recon/Properties.sol#L721-L725",
+              "description": "The pinned harness marks this invariant as an immediate expected failure."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "invariant_canary",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        }
+      ],
+      "known_bugs": []
+    },
+    {
+      "target_id": "liquity-v2-governance",
+      "target_commit": "5610870e7e91fe6e29f8cfb0c0ae316fe9784e10",
+      "notes": "Only the two instrumented health-check canaries are mapped. Other property failures remain unmapped until a reviewed root-cause record ties them to a confirmed bug.",
+      "canaries": [
+        {
+          "id": "assertion-canary",
+          "title": "Assertion-path canary",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/liquity-V2-gov-scfuzzbench/blob/5610870e7e91fe6e29f8cfb0c0ae316fe9784e10/test/recon/Properties.sol#L60-L63",
+              "description": "The pinned harness marks this assertion helper as an expected fuzzing discovery."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "assert_canary",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invariant-canary",
+          "title": "Invariant-path canary",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/liquity-V2-gov-scfuzzbench/blob/5610870e7e91fe6e29f8cfb0c0ae316fe9784e10/test/recon/Properties.sol#L65-L73",
+              "description": "The pinned harness marks this invariant as an immediate expected failure."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "invariant_canary",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        }
+      ],
+      "known_bugs": []
+    },
+    {
+      "target_id": "origin-dollar",
+      "target_commit": "299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4",
+      "notes": "Known bugs are limited to handlers explicitly annotated with hasKnownIssue in the pinned target. Each handler remains a separate catalog entry because the target does not provide evidence that any pair is the same root cause.",
+      "canaries": [
+        {
+          "id": "assertion-canary",
+          "title": "Assertion-path canary",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/test/recon/Properties.sol#L28-L30",
+              "description": "The pinned adaptation defines the cross-fuzzer assertion canary."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "assert_canary",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invariant-canary",
+          "title": "Invariant-path canary",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/test/recon/Properties.sol#L23-L26",
+              "description": "The pinned adaptation defines the cross-fuzzer invariant canary."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "invariant_canary",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        }
+      ],
+      "known_bugs": [
+        {
+          "id": "change-supply-mismatch",
+          "title": "changeSupply does not exactly reach the requested total supply",
+          "kind": "documented-known-issue",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestSupply.sol#L18-L38",
+              "description": "The pinned suite provides a reproducer and annotates testChangeSupply with hasKnownIssue."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testChangeSupply",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "total-supply-below-balances",
+          "title": "Total supply can fall below the sum of account balances",
+          "kind": "documented-known-issue",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestSupply.sol#L40-L66",
+              "description": "The pinned suite provides a reproducer and annotates testTotalSupplyLessThanTotalBalance with hasKnownIssue."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testTotalSupplyLessThanTotalBalance",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "non-rebasing-supply-above-total",
+          "title": "Non-rebasing supply can exceed total supply",
+          "kind": "documented-known-issue",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestSupply.sol#L68-L83",
+              "description": "The pinned suite provides a reproducer and annotates testNonRebasingSupplyVsTotalSupply with hasKnownIssue."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testNonRebasingSupplyVsTotalSupply",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "rebasing-credits-per-token-increase",
+          "title": "Rebasing credits per token can increase",
+          "kind": "documented-known-issue",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestSupply.sol#L85-L108",
+              "description": "The pinned suite provides a reproducer and annotates testRebasingCreditsPerTokenNotIncreased with hasKnownIssue."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testRebasingCreditsPerTokenNotIncreased",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "non-rebasing-supply-below-balances",
+          "title": "Non-rebasing supply can fall below non-rebasing balances",
+          "kind": "documented-known-issue",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestSupply.sol#L115-L143",
+              "description": "The pinned suite provides a reproducer and annotates testTotalNonRebasingSupplyLessThanTotalBalance with hasKnownIssue."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testTotalNonRebasingSupplyLessThanTotalBalance",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "mint-balance-shortfall",
+          "title": "Minting can increase an account balance by less than the minted amount",
+          "kind": "documented-known-issue",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestMintBurn.sol#L40-L68",
+              "description": "The pinned suite provides a reproducer and annotates testMintBalance with hasKnownIssue."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testMintBalance",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "burn-balance-shortfall",
+          "title": "Burning can decrease an account balance by less than the burned amount",
+          "kind": "documented-known-issue",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestMintBurn.sol#L70-L98",
+              "description": "The pinned suite provides a reproducer and annotates testBurnBalance with hasKnownIssue."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testBurnBalance",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "burn-all-leaves-balance",
+          "title": "Burning an account's full balance can leave a nonzero balance",
+          "kind": "documented-known-issue",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestMintBurn.sol#L123-L132",
+              "description": "The pinned suite annotates testBurnAllBalanceToZero with hasKnownIssue."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testBurnAllBalanceToZero",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "burn-all-reverts",
+          "title": "Burning an account's full balance can revert",
+          "kind": "documented-known-issue",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestMintBurn.sol#L134-L151",
+              "description": "The pinned suite annotates testBurnAllBalanceShouldNotRevert with hasKnownIssue."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testBurnAllBalanceShouldNotRevert",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "transfer-recipient-shortfall",
+          "title": "A transfer recipient can receive less than the transferred amount",
+          "kind": "documented-known-issue",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestTransfer.sol#L12-L49",
+              "description": "The pinned suite provides a reproducer and annotates testTransferBalanceReceivedLess with hasKnownIssue."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testTransferBalanceReceivedLess",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "transfer-sender-shortfall",
+          "title": "A transfer sender's balance can decrease by less than the transferred amount",
+          "kind": "documented-known-issue",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestTransfer.sol#L77-L114",
+              "description": "The pinned suite provides a reproducer and annotates testTransferBalanceSentLess with hasKnownIssue."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testTransferBalanceSentLess",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "transfer-within-balance-reverts",
+          "title": "A transfer within the sender's balance can revert",
+          "kind": "documented-known-issue",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestTransfer.sol#L218-L252",
+              "description": "The pinned suite provides a reproducer and annotates testTransferWithinBalanceDoesNotRevert with hasKnownIssue."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testTransferWithinBalanceDoesNotRevert",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "target_id": "drips",
+      "target_commit": "c50d160ead6bf82b1d1071e853dc74da0b23f595",
+      "notes": "The one real known bug is the pinned historical squeeze regression. Two assertion handlers are aliases for the same root cause and therefore count as one bug per run.",
+      "canaries": [
+        {
+          "id": "assertion-canary",
+          "title": "Assertion-path canary",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/drips-fuzzing-scfuzzbench/blob/c50d160ead6bf82b1d1071e853dc74da0b23f595/test/recon/Properties.sol#L28-L30",
+              "description": "The pinned adaptation defines the cross-fuzzer assertion canary."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "assert_canary",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invariant-canary",
+          "title": "Invariant-path canary",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/drips-fuzzing-scfuzzbench/blob/c50d160ead6bf82b1d1071e853dc74da0b23f595/test/recon/Properties.sol#L23-L26",
+              "description": "The pinned adaptation defines the cross-fuzzer invariant canary."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "invariant_canary",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        }
+      ],
+      "known_bugs": [
+        {
+          "id": "pre-update-time-squeeze",
+          "title": "Previously streamed funds can be removed from the squeezable balance",
+          "kind": "historical-regression",
+          "evidence": [
+            {
+              "url": "https://github.com/scfuzzbench/drips-fuzzing-scfuzzbench/blob/c50d160ead6bf82b1d1071e853dc74da0b23f595/src/Streams.sol#L501-L510",
+              "description": "The pinned fixture explicitly reintroduces the historical pre-update-time squeeze bug."
+            },
+            {
+              "url": "https://github.com/scfuzzbench/drips-fuzzing-scfuzzbench/pull/2",
+              "description": "The target review documents attribution, the upstream fix, and independently observed aliases."
+            }
+          ],
+          "aliases": [
+            {
+              "event": "testSqueezableAmountCantBeUndone",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            },
+            {
+              "event": "testSqueezableAmountCantBeWithdrawn",
+              "fuzzers": [
+                "echidna",
+                "foundry",
+                "medusa",
+                "recon-fuzzer"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

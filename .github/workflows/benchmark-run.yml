@@ -35,10 +35,6 @@ on:
         description: "JSON list of fuzzer keys to run (optional)."
         required: false
         default: '["echidna","medusa","foundry","recon-fuzzer"]'
-      foundry_version:
-        description: "Override Foundry version (optional)."
-        required: false
-        default: ""
       foundry_git_repo:
         description: "Optional Foundry git repo override (build from source; defaults to upstream foundry-rs/foundry via Terraform)."
         required: false
@@ -111,11 +107,6 @@ on:
         required: false
         type: string
         default: '["echidna","medusa","foundry","recon-fuzzer"]'
-      foundry_version:
-        description: "Override Foundry version (optional)."
-        required: false
-        type: string
-        default: ""
       foundry_git_repo:
         description: "Optional Foundry git repo override (build from source; defaults to upstream foundry-rs/foundry via Terraform)."
         required: false
@@ -288,7 +279,6 @@ jobs:
           INSTANCES_PER_FUZZER: ${{ inputs.instances_per_fuzzer }}
           TIMEOUT_HOURS: ${{ inputs.timeout_hours }}
           FUZZERS_JSON: ${{ inputs.fuzzers_json }}
-          FOUNDRY_VERSION: ${{ inputs.foundry_version }}
           FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
           FOUNDRY_GIT_REF: ${{ inputs.foundry_git_ref }}
           ECHIDNA_VERSION: ${{ inputs.echidna_version }}
@@ -331,13 +321,6 @@ jobs:
           require_safe "target_commit" "${TARGET_COMMIT}"
           require_safe "benchmark_type" "${BENCHMARK_TYPE}"
           require_safe "instance_type" "${INSTANCE_TYPE}"
-
-          if [[ -n "${FOUNDRY_VERSION}" ]]; then
-            require_safe "foundry_version" "${FOUNDRY_VERSION}"
-            if [[ ! "${FOUNDRY_VERSION}" =~ ^[A-Za-z0-9._+-]+$ ]]; then
-              fail "foundry_version must not contain spaces"
-            fi
-          fi
 
           if [[ -n "${FOUNDRY_GIT_REPO}" ]]; then
             require_safe "foundry_git_repo" "${FOUNDRY_GIT_REPO}"
@@ -474,7 +457,6 @@ jobs:
           INSTANCES_PER_FUZZER: ${{ inputs.instances_per_fuzzer }}
           TIMEOUT_HOURS: ${{ inputs.timeout_hours }}
           FUZZERS_JSON: ${{ inputs.fuzzers_json }}
-          FOUNDRY_VERSION: ${{ inputs.foundry_version }}
           FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
           FOUNDRY_GIT_REF: ${{ inputs.foundry_git_ref }}
           ECHIDNA_VERSION: ${{ inputs.echidna_version }}
@@ -504,9 +486,6 @@ jobs:
             -var "scfuzzbench_commit=${GITHUB_SHA}"
           )
 
-          if [[ -n "${FOUNDRY_VERSION}" ]]; then
-            tf_args+=(-var "foundry_version=${FOUNDRY_VERSION}")
-          fi
           if [[ -n "${FOUNDRY_GIT_REPO}" ]]; then
             tf_args+=(-var "foundry_git_repo=${FOUNDRY_GIT_REPO}")
           fi
