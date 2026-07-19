@@ -51,8 +51,8 @@ edge coverage is enabled. Those conditions conflict with two production safeguar
 `fuzzers/foundry/throughput-progress.patch` therefore makes the existing pulse cadence independent
 of those display/coverage modes. The installer applies that patch only to the exact pinned commit,
 verifies its SHA-256 digest, and fails on drift. `foundry_source_patch` in each benchmark manifest
-records the patch identity. A `foundry_git_ref` override is intentionally left unpatched, so its
-throughput availability depends on that source tree.
+records the patch identity. A source override that resolves away from the exact pinned commit is
+intentionally left unpatched, so its throughput availability depends on that source tree.
 
 ## One Run At A Time
 

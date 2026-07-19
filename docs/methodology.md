@@ -164,8 +164,9 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   totals are campaign-wide; the pulse's `worker.id` only identifies the worker that emitted that
   interval.
 - Pulses are cadence-gated at roughly five seconds and occur after a completed invariant run. A
-  long in-flight transaction can therefore create a wider gap. Source-ref overrides do not receive
-  the pinned patch and may legitimately produce no Foundry throughput samples.
+  long in-flight transaction can therefore create a wider gap. Source overrides that resolve away
+  from the exact pinned commit do not receive the patch and may legitimately produce no Foundry
+  throughput samples.
 - The existing release pipeline publishes `throughput_samples.csv`,
   `throughput_summary.csv`, `tx_per_second_over_time.png`, and
   `gas_per_second_over_time.png`; no rate is inferred from host CPU or other proxy telemetry.

@@ -591,14 +591,14 @@ install_foundry() {
         return 1
       fi
       local actual_patch_sha256
-      actual_patch_sha256=$(sha256sum "${throughput_patch}" | awk '{print $1}')
+      actual_patch_sha256=$(sha256sum -- "${throughput_patch}" | awk '{print $1}')
       if [[ "${actual_patch_sha256}" != "${throughput_patch_sha256}" ]]; then
         log "Foundry throughput patch digest mismatch: expected ${throughput_patch_sha256}, got ${actual_patch_sha256}."
         return 1
       fi
-      if git -C "${tmp_dir}/foundry" apply --check "${throughput_patch}"; then
-        git -C "${tmp_dir}/foundry" apply "${throughput_patch}"
-      elif git -C "${tmp_dir}/foundry" apply --reverse --check "${throughput_patch}"; then
+      if git -C "${tmp_dir}/foundry" apply --check -- "${throughput_patch}"; then
+        git -C "${tmp_dir}/foundry" apply -- "${throughput_patch}"
+      elif git -C "${tmp_dir}/foundry" apply --reverse --check -- "${throughput_patch}"; then
         log "Foundry throughput patch is already applied."
       else
         log "Foundry throughput patch does not apply cleanly to ${commit_full}; refusing a drifted build."

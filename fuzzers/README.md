@@ -61,4 +61,5 @@ Environment variables:
 The default pinned source is patched narrowly so its existing tx/gas JSON
 pulse is emitted while `--show-progress` remains active and corpus persistence
 remains disabled. The installer verifies both the exact Foundry commit and
-patch digest. Explicit source-ref experiments are not patched.
+patch digest. Source experiments that resolve away from the exact pin are not
+patched.

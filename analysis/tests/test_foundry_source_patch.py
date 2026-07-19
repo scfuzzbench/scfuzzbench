@@ -38,7 +38,9 @@ class FoundrySourcePatchTests(unittest.TestCase):
             f'throughput_patch_sha256="{EXPECTED_PATCH_SHA256}"',
             common,
         )
-        self.assertIn("apply --reverse --check", common)
+        self.assertIn('sha256sum -- "${throughput_patch}"', common)
+        self.assertIn('apply --check -- "${throughput_patch}"', common)
+        self.assertIn('apply --reverse --check -- "${throughput_patch}"', common)
         self.assertIn("refusing a drifted build", common)
 
     def test_patch_applies_to_the_pinned_progress_branch_and_is_detectable_afterward(self):
