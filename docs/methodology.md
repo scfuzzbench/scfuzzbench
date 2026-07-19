@@ -19,9 +19,11 @@ Core inputs are defined through Terraform vars and/or workflow dispatch:
 - Mode: `benchmark_type` (`property` or `optimization`)
 - Infra: `instance_type`, `instances_per_fuzzer`, `timeout_hours`
 - Fuzzer set: `fuzzers` (or default all available)
-- Tool versions: `foundry_version`, `echidna_version`, `medusa_version`, `recon_version`
+- Tool versions: `foundry_git_repo`/`foundry_git_ref`, `echidna_version`, `medusa_version`, `recon_version`
 
 In CI (`.github/workflows/benchmark-run.yml`), inputs are validated before apply (value ranges, formats, and conservative character constraints).
+Cloud runs build Foundry from the pinned git source. The release-tag `foundry_version` path is available only to
+`scripts/local-run.sh` (or a low-level Terraform invocation with `foundry_git_repo` explicitly empty).
 
 ### 2) Compute run identity and benchmark identity
 

@@ -303,8 +303,9 @@ Typical fields:
 6. `timeout_hours`
 7. `fuzzers`: `["echidna","medusa","foundry","recon-fuzzer"]`
 8. optional `fuzzer_env_json` only when target-specific override is necessary
-9. leave `foundry_version`, `foundry_git_repo`, and `foundry_git_ref` empty — the infrastructure
-   defaults build upstream `foundry-rs/foundry` at the commit pinned in `infrastructure/variables.tf`
+9. omit `foundry_version` (it is local-only) and leave `foundry_git_repo` and `foundry_git_ref`
+   empty — the infrastructure defaults build upstream `foundry-rs/foundry` at the commit pinned
+   in `infrastructure/variables.tf`
 
 ## Common failures and fixes
 
