@@ -426,6 +426,33 @@ def format_fuzzer_lines(manifest: dict) -> list[str]:
     return lines
 
 
+def format_seed_corpus_lines(manifest: dict) -> list[str]:
+    seed_corpus = manifest.get("seed_corpus")
+    if not isinstance(seed_corpus, dict):
+        return []
+
+    lines: list[str] = []
+    fields = (
+        ("seed_corpus_source", "source"),
+        ("seed_corpus_source_type", "source_type"),
+        ("seed_corpus_file_count", "file_count"),
+        ("seed_corpus_size_bytes", "size_bytes"),
+        ("seed_corpus_sha256", "sha256"),
+        ("seed_corpus_digest_algorithm", "digest_algorithm"),
+        ("seed_corpus_copy_semantics", "copy_semantics"),
+        ("seed_corpus_source_immutability", "source_immutability"),
+        ("seed_corpus_s3_listing_sha256", "s3_listing_sha256"),
+    )
+    for label, key in fields:
+        value = seed_corpus.get(key)
+        if value is None:
+            continue
+        rendered = str(value).strip()
+        if rendered:
+            lines.append(f"- {label}: `{rendered}`")
+    return lines
+
+
 def write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -895,6 +922,9 @@ def main() -> int:
         memory_chart_key = f"{r.analysis_prefix}/memory_usage_over_time.png"
         broken_md_key = f"{r.analysis_prefix}/broken_invariants.md"
         broken_csv_key = f"{r.analysis_prefix}/broken_invariants.csv"
+        known_bug_md_key = f"{r.analysis_prefix}/known_bug_report.md"
+        known_bug_summary_csv_key = f"{r.analysis_prefix}/known_bug_summary.csv"
+        known_bug_findings_csv_key = f"{r.analysis_prefix}/known_bug_findings.csv"
         throughput_summary_csv_key = f"{r.analysis_prefix}/throughput_summary.csv"
         progress_metrics_summary_csv_key = (
             f"{r.analysis_prefix}/progress_metrics_summary.csv"
@@ -921,6 +951,18 @@ def main() -> int:
         )
         has_broken_csv = (
             r.analysis_kind == "analysis" and head_exists(bucket, broken_csv_key, profile=profile)
+        )
+        has_known_bug_md = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, known_bug_md_key, profile=profile)
+        )
+        has_known_bug_summary_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, known_bug_summary_csv_key, profile=profile)
+        )
+        has_known_bug_findings_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, known_bug_findings_csv_key, profile=profile)
         )
         has_throughput_summary_csv = (
             r.analysis_kind == "analysis"
@@ -1018,6 +1060,17 @@ def main() -> int:
                 except Exception:
                     lines.append("_Failed to fetch broken_invariants.md from S3._")
                     lines.append("")
+            if has_known_bug_md:
+                try:
+                    known_bug_raw = aws_text(
+                        ["s3", "cp", f"s3://{bucket}/{known_bug_md_key}", "-"],
+                        profile=profile,
+                    )
+                    lines.append(rewrite_headings(known_bug_raw, add=2).rstrip())
+                    lines.append("")
+                except Exception:
+                    lines.append("_Failed to fetch known_bug_report.md from S3._")
+                    lines.append("")
             if has_runner_md:
                 try:
                     runner_raw = aws_text(
@@ -1062,6 +1115,7 @@ def main() -> int:
         add_kv("recon_version", m.get("recon_version"))
         if isinstance(m.get("fuzzer_keys"), list):
             lines.append(f"- fuzzer_keys: `{', '.join([str(x) for x in m.get('fuzzer_keys', [])])}`")
+        lines.extend(format_seed_corpus_lines(m))
         lines.append("")
 
         # Artifact links.
@@ -1076,6 +1130,21 @@ def main() -> int:
                 lines.append("- Broken invariants (Markdown): " + f"{analysis_base}/broken_invariants.md")
             if has_broken_csv:
                 lines.append("- Broken invariants (CSV): " + f"{analysis_base}/broken_invariants.csv")
+            if has_known_bug_md:
+                lines.append(
+                    "- Ground-truth known bugs (Markdown): "
+                    + f"{analysis_base}/known_bug_report.md"
+                )
+            if has_known_bug_summary_csv:
+                lines.append(
+                    "- Ground-truth summary (CSV): "
+                    + f"{analysis_base}/known_bug_summary.csv"
+                )
+            if has_known_bug_findings_csv:
+                lines.append(
+                    "- Ground-truth findings (CSV): "
+                    + f"{analysis_base}/known_bug_findings.csv"
+                )
             if has_throughput_summary_csv:
                 lines.append("- Throughput summary (CSV): " + f"{analysis_base}/throughput_summary.csv")
             if has_progress_metrics_summary_csv:

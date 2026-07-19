@@ -321,6 +321,9 @@ jobs:
           done
           cp "${dest_root}/data/broken_invariants.md" "${analysis_dir}/broken_invariants.md"
           cp "${dest_root}/data/broken_invariants.csv" "${analysis_dir}/broken_invariants.csv"
+          cp "${dest_root}/data/known_bug_report.md" "${analysis_dir}/known_bug_report.md"
+          cp "${dest_root}/data/known_bug_summary.csv" "${analysis_dir}/known_bug_summary.csv"
+          cp "${dest_root}/data/known_bug_findings.csv" "${analysis_dir}/known_bug_findings.csv"
           cp "${dest_root}/data/runner_resource_usage.md" "${analysis_dir}/runner_resource_usage.md"
           cp "${dest_root}/data/runner_resource_summary.csv" "${analysis_dir}/runner_resource_summary.csv"
           cp "${dest_root}/data/runner_resource_timeseries.csv" "${analysis_dir}/runner_resource_timeseries.csv"
@@ -412,6 +415,9 @@ jobs:
           done
           aws s3 cp "${analysis_dir}/broken_invariants.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/broken_invariants.md" --content-type text/markdown
           aws s3 cp "${analysis_dir}/broken_invariants.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/broken_invariants.csv" --content-type text/csv
+          aws s3 cp "${analysis_dir}/known_bug_report.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/known_bug_report.md" --content-type text/markdown
+          aws s3 cp "${analysis_dir}/known_bug_summary.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/known_bug_summary.csv" --content-type text/csv
+          aws s3 cp "${analysis_dir}/known_bug_findings.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/known_bug_findings.csv" --content-type text/csv
           aws s3 cp "${analysis_dir}/runner_resource_usage.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_usage.md" --content-type text/markdown
           aws s3 cp "${analysis_dir}/runner_resource_summary.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_summary.csv" --content-type text/csv
           aws s3 cp "${analysis_dir}/runner_resource_timeseries.csv" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/runner_resource_timeseries.csv" --content-type text/csv
@@ -496,6 +502,9 @@ jobs:
             echo "- Analysis bundle: ${bundles_base}/analysis.zip"
             echo "- Broken invariants (Markdown): ${analysis_base}/broken_invariants.md"
             echo "- Broken invariants (CSV): ${analysis_base}/broken_invariants.csv"
+            echo "- Ground-truth known bugs (Markdown): ${analysis_base}/known_bug_report.md"
+            echo "- Ground-truth summary (CSV): ${analysis_base}/known_bug_summary.csv"
+            echo "- Ground-truth findings (CSV): ${analysis_base}/known_bug_findings.csv"
             if [[ -f "${analysis_dir}/throughput_summary.csv" ]]; then
               echo "- Throughput summary (CSV): ${analysis_base}/throughput_summary.csv"
             fi

@@ -39,6 +39,7 @@ class FoundryThroughputEndToEndTests(unittest.TestCase):
                     corpus_dir = "corpus/foundry"
                     TOML
                     }
+                    prepare_shared_seed_corpus() { :; }
                     clone_target() { :; }
                     apply_benchmark_type() { :; }
                     build_target() { :; }

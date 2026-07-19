@@ -99,6 +99,14 @@ jobs:
       - name: Python syntax check
         run: python -m compileall analysis scripts
 
+      - name: Validate benchmark manifests
+        run: |
+          python scripts/validate_target_manifest.py
+          python scripts/validate_known_bugs.py
+          python -m unittest discover -s analysis/tests -p 'test_validate_target_manifest.py'
+          python -m unittest discover -s analysis/tests -p 'test_validate_known_bugs.py'
+          python -m unittest discover -s analysis/tests -p 'test_known_bug_report.py'
+
   docs:
     runs-on: ubuntu-latest
     steps:
