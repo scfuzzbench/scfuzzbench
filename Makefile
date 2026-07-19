@@ -14,9 +14,11 @@ BUCKET ?=
 BENCHMARK_UUID ?=
 EXISTING_BUCKET ?=
 DEST ?= /tmp/scfuzzbench-results-$(RUN_ID)
-ARTIFACT_CATEGORY ?= logs
+# Full analysis consumes both log telemetry and saved corpus sequences.
+ARTIFACT_CATEGORY ?= both
 UNZIPPED_DIR ?= $(DEST)/logs/unzipped
 ANALYSIS_LOGS_DIR ?= $(DEST)/analysis
+SELECTOR_CORPUS_DIR ?= $(DEST)/corpus/unzipped
 ANALYSIS_OUT_DIR ?= $(DEST)/data
 IMAGES_OUT_DIR ?= $(DEST)/images
 # Differential (showmap) coverage: pairing mode for cross-approach statistics and
@@ -45,6 +47,9 @@ THROUGHPUT_SAMPLES_CSV ?= $(ANALYSIS_OUT_DIR)/throughput_samples.csv
 THROUGHPUT_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/throughput_summary.csv
 PROGRESS_METRICS_SAMPLES_CSV ?= $(ANALYSIS_OUT_DIR)/progress_metrics_samples.csv
 PROGRESS_METRICS_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/progress_metrics_summary.csv
+SELECTOR_DISTRIBUTION_CSV ?= $(ANALYSIS_OUT_DIR)/selector_distribution.csv
+SELECTOR_SUMMARY_JSON ?= $(ANALYSIS_OUT_DIR)/selector_summary.json
+EXPECTED_SELECTORS_JSON ?=
 RUNNER_RESOURCE_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/runner_resource_summary.csv
 RUNNER_RESOURCE_TIMESERIES_CSV ?= $(ANALYSIS_OUT_DIR)/runner_resource_timeseries.csv
 RUNNER_RESOURCE_MD ?= $(ANALYSIS_OUT_DIR)/runner_resource_usage.md
@@ -100,6 +105,10 @@ RAW_LABELS_ARG :=
 ifneq ($(strip $(RAW_LABELS)),)
 RAW_LABELS_ARG := --raw-labels
 endif
+EXPECTED_SELECTORS_ARG :=
+ifneq ($(strip $(EXPECTED_SELECTORS_JSON)),)
+EXPECTED_SELECTORS_ARG := --expected-selectors-json $(EXPECTED_SELECTORS_JSON)
+endif
 DURATION_ARG :=
 
 .PHONY: terraform-init terraform-init-backend terraform-fmt terraform-validate terraform-plan terraform-deploy terraform-destroy terraform-destroy-infra analysis-venv results-analyze results-download results-prepare results-analyze-filtered results-analyze-all results-inspect s3-purge-versions report-benchmark report-wide-to-long report-events-to-cumulative report-invariant-overlap report-runner-metrics
@@ -142,7 +151,7 @@ results-prepare:
 	python3 scripts/prepare_analysis_logs.py --unzipped-dir $(UNZIPPED_DIR) --out-dir $(ANALYSIS_LOGS_DIR)
 
 results-analyze-filtered: analysis-venv
-	$(ANALYSIS_PY) scripts/run_analysis_filtered.py --logs-dir $(ANALYSIS_LOGS_DIR) --out-dir $(ANALYSIS_OUT_DIR) $(RUN_ID_ARG) $(EXCLUDE_ARG) $(RAW_LABELS_ARG) $(DIFFERENTIAL_COVERAGE_PAIRING_ARG)
+	$(ANALYSIS_PY) scripts/run_analysis_filtered.py --logs-dir $(ANALYSIS_LOGS_DIR) --corpus-dir $(SELECTOR_CORPUS_DIR) --out-dir $(ANALYSIS_OUT_DIR) $(RUN_ID_ARG) $(EXCLUDE_ARG) $(RAW_LABELS_ARG) $(EXPECTED_SELECTORS_ARG) $(DIFFERENTIAL_COVERAGE_PAIRING_ARG)
 
 results-analyze-all: analysis-venv results-download results-prepare results-analyze-filtered report-events-to-cumulative report-benchmark report-invariant-overlap report-runner-metrics
 
@@ -153,7 +162,7 @@ s3-purge-versions:
 	python3 scripts/purge_s3_versions.py --bucket $(BUCKET) $(PROFILE_ARG)
 
 report-benchmark: analysis-venv
-	$(ANALYSIS_PY) analysis/benchmark_report.py --csv $(REPORT_CSV) --report-outdir $(REPORT_OUT_DIR) --images-outdir $(IMAGES_OUT_DIR) $(REPORT_BUDGET_ARG) --grid_step_min $(REPORT_GRID_STEP_MIN) --checkpoints $(REPORT_CHECKPOINTS) --ks $(REPORT_KS) --throughput-summary-csv $(THROUGHPUT_SUMMARY_CSV) --throughput-samples-csv $(THROUGHPUT_SAMPLES_CSV) --progress-metrics-summary-csv $(PROGRESS_METRICS_SUMMARY_CSV) --progress-metrics-samples-csv $(PROGRESS_METRICS_SAMPLES_CSV) --differential-coverage-statistics-json $(DIFFERENTIAL_COVERAGE_STATISTICS_JSON) $$( [ -f "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)" ] && [ "$$(wc -l < "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)")" -gt 1 ] && printf -- '--relative-scores-csv %s' "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)" ) $(if $(REPORT_ANONYMIZE),--anonymize,)
+	$(ANALYSIS_PY) analysis/benchmark_report.py --csv $(REPORT_CSV) --report-outdir $(REPORT_OUT_DIR) --images-outdir $(IMAGES_OUT_DIR) $(REPORT_BUDGET_ARG) --grid_step_min $(REPORT_GRID_STEP_MIN) --checkpoints $(REPORT_CHECKPOINTS) --ks $(REPORT_KS) --throughput-summary-csv $(THROUGHPUT_SUMMARY_CSV) --throughput-samples-csv $(THROUGHPUT_SAMPLES_CSV) --progress-metrics-summary-csv $(PROGRESS_METRICS_SUMMARY_CSV) --progress-metrics-samples-csv $(PROGRESS_METRICS_SAMPLES_CSV) --selector-summary-json $(SELECTOR_SUMMARY_JSON) --differential-coverage-statistics-json $(DIFFERENTIAL_COVERAGE_STATISTICS_JSON) $$( [ -f "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)" ] && [ "$$(wc -l < "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)")" -gt 1 ] && printf -- '--relative-scores-csv %s' "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)" ) $(if $(REPORT_ANONYMIZE),--anonymize,)
 
 report-wide-to-long: analysis-venv
 	$(ANALYSIS_PY) analysis/wide_to_long.py --wide_csv $(WIDE_CSV) --out_csv $(LONG_CSV)

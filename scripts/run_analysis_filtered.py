@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from analysis import analyze  # noqa: E402
+from analysis import selector_analytics  # noqa: E402
 
 
 @contextmanager
@@ -28,8 +29,20 @@ def timed_step(name: str, timings: Dict[str, float]):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run analysis with optional fuzzer filters.")
     parser.add_argument("--logs-dir", required=True, type=Path)
+    parser.add_argument(
+        "--corpus-dir",
+        type=Path,
+        default=None,
+        help="Optional unzipped corpus artifact directory for selector analytics.",
+    )
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--expected-selectors-json",
+        type=Path,
+        default=None,
+        help="Optional explicit expected-selector catalog (otherwise a conservative peer heuristic is used).",
+    )
     parser.add_argument(
         "--exclude-fuzzers",
         default="",
@@ -132,6 +145,23 @@ def main() -> int:
         analyze.write_progress_metrics_summary_csv(
             progress_metrics_samples, args.out_dir / "progress_metrics_summary.csv"
         )
+    with timed_step("write_selector_analytics_outputs", timings):
+        selector_rows, selector_summary = (
+            selector_analytics.analyze_selector_artifacts(
+                corpus_dir=args.corpus_dir,
+                logs_dir=args.logs_dir,
+                run_id=args.run_id,
+                exclude_fuzzers=exclude,
+                raw_labels=args.raw_labels,
+                expected_selectors_json=args.expected_selectors_json,
+            )
+        )
+        selector_analytics.write_selector_outputs(
+            selector_rows,
+            selector_summary,
+            args.out_dir / "selector_distribution.csv",
+            args.out_dir / "selector_summary.json",
+        )
     with timed_step("write_differential_coverage_outputs", timings):
         analyze.write_differential_coverage_outputs(
             args.logs_dir,
@@ -150,6 +180,8 @@ def main() -> int:
                 "events": len(events),
                 "throughput_samples": len(throughput_samples),
                 "progress_metrics_samples": len(progress_metrics_samples),
+                "selector_distribution_rows": len(selector_rows),
+                "selector_instances": len(selector_summary["instances"]),
                 "timings_seconds": timings,
             },
             handle,

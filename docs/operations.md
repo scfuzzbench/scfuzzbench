@@ -189,7 +189,15 @@ DEST="$(mktemp -d /tmp/scfuzzbench-analysis-1770053924-XXXXXX)"
 make results-analyze-all BUCKET=<bucket-name> RUN_ID=1770053924 BENCHMARK_UUID=<benchmark_uuid> DEST="$DEST" ARTIFACT_CATEGORY=both
 ```
 
-This pipeline now also generates runner resource artifacts (`cpu_usage_over_time.png`, `memory_usage_over_time.png`, `runner_resource_usage.md`, and runner resource CSVs).
+This pipeline also generates runner resource artifacts (`cpu_usage_over_time.png`, `memory_usage_over_time.png`, `runner_resource_usage.md`, and runner resource CSVs) plus saved-corpus selector artifacts (`selector_distribution.csv` and `selector_summary.json`). Keep `ARTIFACT_CATEGORY=both`: selector analytics require downloaded corpus archives.
+
+The default expected-selector list is an explicitly labelled peer-consensus heuristic. To use a reviewed ground-truth catalog instead, pass a JSON array of selectors or objects containing `selector` and optional `signature`/`function_name` fields:
+
+```bash
+make results-analyze-all ... ARTIFACT_CATEGORY=both EXPECTED_SELECTORS_JSON=/path/to/expected-selectors.json
+```
+
+Foundry is reported as selector data `unavailable` when its corpus was not persisted; failure-only log selectors are intentionally not counted as a corpus distribution.
 
 Quick readiness checks:
 
