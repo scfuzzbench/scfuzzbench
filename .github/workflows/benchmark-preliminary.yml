@@ -1,0 +1,227 @@
+name: Benchmark Preliminary Results
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Opaque run ID (optional; use with benchmark UUID)."
+        required: false
+        default: ""
+      benchmark_uuid:
+        description: "Benchmark UUID (optional; use with run ID)."
+        required: false
+        default: ""
+  schedule:
+    # Checkpoints use run-relative boundaries. The offset gives uploads a short
+    # settle window while avoiding a long-running Actions waiter.
+    - cron: "15 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark-preliminary-results
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      has_runs: ${{ steps.discover.outputs.has_runs }}
+      matrix: ${{ steps.discover.outputs.matrix }}
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
+      SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
+    steps:
+      - name: Checkout (tarball)
+        timeout-minutes: 5
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          url="https://codeload.github.com/${REPO}/tar.gz/${SHA}"
+          curl -fsSL "${url}" -o repo.tar.gz
+          topdir="$(tar -tzf repo.tar.gz | sed -n '1p' | cut -d/ -f1)"
+          tar -xzf repo.tar.gz
+          shopt -s dotglob
+          mv "${topdir}"/* .
+          rm -rf "${topdir}" repo.tar.gz
+
+      - name: Ensure AWS configuration is present
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" || -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]]; then
+            echo "Preliminary analysis could not start. Configure the AWS access-key secrets." >&2
+            exit 1
+          fi
+          if [[ -z "${SCFUZZBENCH_BUCKET}" ]]; then
+            echo "Preliminary analysis could not start. Configure SCFUZZBENCH_BUCKET." >&2
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Discover active checkpoints
+        id: discover
+        env:
+          REQUESTED_RUN_ID: ${{ inputs.run_id }}
+          REQUESTED_BENCHMARK_UUID: ${{ inputs.benchmark_uuid }}
+        run: |
+          set -euo pipefail
+          python3 scripts/preliminary_results.py discover \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${REQUESTED_RUN_ID}" \
+            --benchmark-uuid "${REQUESTED_BENCHMARK_UUID}" \
+            --settle-seconds 300
+
+  analyze:
+    needs: discover
+    if: ${{ needs.discover.outputs.has_runs == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
+      SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
+    steps:
+      - name: Checkout (tarball)
+        timeout-minutes: 5
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          url="https://codeload.github.com/${REPO}/tar.gz/${SHA}"
+          curl -fsSL "${url}" -o repo.tar.gz
+          topdir="$(tar -tzf repo.tar.gz | sed -n '1p' | cut -d/ -f1)"
+          tar -xzf repo.tar.gz
+          shopt -s dotglob
+          mv "${topdir}"/* .
+          rm -rf "${topdir}" repo.tar.gz
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install analysis dependencies
+        run: make analysis-venv
+
+      - name: Download and verify one coherent checkpoint
+        env:
+          DEST: ${{ runner.temp }}/preliminary-${{ matrix.run_id }}-${{ matrix.checkpoint_padded }}
+        run: |
+          set -euo pipefail
+          python3 scripts/preliminary_results.py materialize \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${{ matrix.run_id }}" \
+            --benchmark-uuid "${{ matrix.benchmark_uuid }}" \
+            --checkpoint "${{ matrix.checkpoint }}" \
+            --dest "${DEST}/snapshots"
+
+      - name: Derive analysis budget from the verified checkpoint horizon
+        id: analysis_budget
+        env:
+          DEST: ${{ runner.temp }}/preliminary-${{ matrix.run_id }}-${{ matrix.checkpoint_padded }}
+        run: |
+          set -euo pipefail
+          python3 scripts/preliminary_results.py analysis-budget \
+            --run-manifest "${DEST}/snapshots/run.json" \
+            --snapshot-set "${DEST}/snapshots/snapshot-set.json"
+
+      - name: Run existing analysis and reports
+        env:
+          DEST: ${{ runner.temp }}/preliminary-${{ matrix.run_id }}-${{ matrix.checkpoint_padded }}
+          RUN_ID: ${{ matrix.run_id }}
+          REPORT_BUDGET: ${{ steps.analysis_budget.outputs.report_budget_hours }}
+        run: |
+          set -euo pipefail
+          make \
+            results-prepare \
+            results-analyze-filtered \
+            report-events-to-cumulative \
+            report-known-bugs \
+            report-benchmark \
+            report-invariant-overlap \
+            report-runner-metrics \
+            UNZIPPED_DIR="${DEST}/snapshots/unzipped" \
+            ANALYSIS_LOGS_DIR="${DEST}/analysis-logs" \
+            SELECTOR_CORPUS_DIR="${DEST}/snapshots/corpus/unzipped" \
+            ANALYSIS_OUT_DIR="${DEST}/raw/data" \
+            EVENTS_CSV="${DEST}/raw/data/events.csv" \
+            CUMULATIVE_CSV="${DEST}/raw/data/cumulative.csv" \
+            REPORT_CSV="${DEST}/raw/data/cumulative.csv" \
+            REPORT_OUT_DIR="${DEST}/raw/data" \
+            IMAGES_OUT_DIR="${DEST}/raw/images" \
+            REPORT_BUDGET="${REPORT_BUDGET}" \
+            COVERAGE_OVER_TIME=1 \
+            KNOWN_BUG_RUN_MANIFEST="${DEST}/snapshots/run.json" \
+            THROUGHPUT_SAMPLES_CSV="${DEST}/raw/data/throughput_samples.csv" \
+            THROUGHPUT_SUMMARY_CSV="${DEST}/raw/data/throughput_summary.csv" \
+            PROGRESS_METRICS_SAMPLES_CSV="${DEST}/raw/data/progress_metrics_samples.csv" \
+            PROGRESS_METRICS_SUMMARY_CSV="${DEST}/raw/data/progress_metrics_summary.csv" \
+            BROKEN_INVARIANTS_CSV="${DEST}/raw/data/broken_invariants.csv" \
+            BROKEN_INVARIANTS_MD="${DEST}/raw/data/broken_invariants.md" \
+            INVARIANT_OVERLAP_PNG="${DEST}/raw/images/invariant_overlap_upset.png" \
+            RUNNER_RESOURCE_SUMMARY_CSV="${DEST}/raw/data/runner_resource_summary.csv" \
+            RUNNER_RESOURCE_TIMESERIES_CSV="${DEST}/raw/data/runner_resource_timeseries.csv" \
+            RUNNER_RESOURCE_MD="${DEST}/raw/data/runner_resource_usage.md" \
+            CPU_USAGE_PNG="${DEST}/raw/images/cpu_usage_over_time.png" \
+            MEMORY_USAGE_PNG="${DEST}/raw/images/memory_usage_over_time.png" \
+            RUN_ID="${RUN_ID}"
+
+      - name: Watermark copied outputs
+        env:
+          DEST: ${{ runner.temp }}/preliminary-${{ matrix.run_id }}-${{ matrix.checkpoint_padded }}
+        run: |
+          set -euo pipefail
+          .venv-analysis/bin/python scripts/preliminary_results.py watermark \
+            --source "${DEST}/raw" \
+            --dest "${DEST}/publish" \
+            --snapshot-set "${DEST}/snapshots/snapshot-set.json"
+
+      - name: Publish immutable preliminary artifacts
+        env:
+          DEST: ${{ runner.temp }}/preliminary-${{ matrix.run_id }}-${{ matrix.checkpoint_padded }}
+        run: |
+          set -euo pipefail
+          python3 scripts/preliminary_results.py publish \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --source "${DEST}/publish"
+
+      - name: Upload preliminary workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: preliminary-${{ matrix.run_id }}-${{ matrix.benchmark_uuid }}-${{ matrix.checkpoint_padded }}
+          path: ${{ runner.temp }}/preliminary-${{ matrix.run_id }}-${{ matrix.checkpoint_padded }}/publish
+          retention-days: 7
+
+  refresh-docs:
+    needs: [discover, analyze]
+    if: ${{ always() && needs.discover.result == 'success' && (needs.analyze.result == 'success' || needs.analyze.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Refresh preliminary pages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run "Docs Site" --repo "${GITHUB_REPOSITORY}" --ref main

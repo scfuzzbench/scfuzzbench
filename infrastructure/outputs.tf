@@ -9,7 +9,7 @@ output "run_id" {
 }
 
 output "run_started_at_epoch" {
-  description = "Unix timestamp generated with the run identity before Terraform initialization."
+  description = "Unix timestamp generated with the run identity and used to align checkpoints."
   value       = local.run_started_at_epoch
 }
 
@@ -26,6 +26,11 @@ output "run_namespace" {
 output "benchmark_uuid" {
   description = "Benchmark UUID used for S3 prefixes."
   value       = nonsensitive(local.benchmark_uuid)
+}
+
+output "benchmark_manifest" {
+  description = "Non-secret benchmark manifest used by preliminary analysis discovery."
+  value       = local.benchmark_manifest
 }
 
 output "ssh_private_key_path" {

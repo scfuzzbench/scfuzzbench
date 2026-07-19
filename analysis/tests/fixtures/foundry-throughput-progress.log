@@ -1,0 +1,5 @@
+{"timestamp":1771954269,"event":"pulse","contract":"CryticToFoundry","metrics":{"cumulative_edges_seen":0,"cumulative_features_seen":0,"corpus_count":0,"favored_items":0,"broken_invariants":0,"broken_assertions":0},"total_txs":160,"total_gas":3360000,"tps":32.0,"gps":672000.0,"worker":{"id":0,"count":16,"secs_since_new_edge":null}}
+{"timestamp":1771954274,"event":"pulse","contract":"CryticToFoundry","metrics":{"cumulative_edges_seen":0,"cumulative_features_seen":0,"corpus_count":0,"favored_items":0,"broken_invariants":0,"broken_assertions":0},"total_txs":400,"total_gas":9000000,"tps":40.0,"gps":900000.0,"worker":{"id":3,"count":16,"secs_since_new_edge":null}}
+Ran 1 test for test/recon/CryticToFoundry.sol:CryticToFoundry
+[PASS] invariant_noop() (runs: 314, calls: 31400, reverts: 12)
+Suite result: ok. 1 passed; 0 failed; 0 skipped; finished in 10.00s (9.95s CPU time)

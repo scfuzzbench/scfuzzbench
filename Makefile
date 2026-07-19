@@ -15,9 +15,11 @@ BUCKET ?=
 BENCHMARK_UUID ?=
 EXISTING_BUCKET ?=
 DEST ?= /tmp/scfuzzbench-results-$(RUN_ID)
-ARTIFACT_CATEGORY ?= logs
+# Full analysis consumes both log telemetry and saved corpus sequences.
+ARTIFACT_CATEGORY ?= both
 UNZIPPED_DIR ?= $(DEST)/logs/unzipped
 ANALYSIS_LOGS_DIR ?= $(DEST)/analysis
+SELECTOR_CORPUS_DIR ?= $(DEST)/corpus/unzipped
 ANALYSIS_OUT_DIR ?= $(DEST)/data
 IMAGES_OUT_DIR ?= $(DEST)/images
 # Differential (showmap) coverage: pairing mode for cross-approach statistics and
@@ -31,6 +33,12 @@ DURATION_HOURS ?=
 SHOW_MEAN ?=
 EVENTS_CSV ?= $(ANALYSIS_OUT_DIR)/events.csv
 CUMULATIVE_CSV ?= $(ANALYSIS_OUT_DIR)/cumulative.csv
+KNOWN_BUG_CATALOG ?= benchmarks/known_bugs.json
+KNOWN_BUG_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/known_bug_summary.csv
+KNOWN_BUG_FINDINGS_CSV ?= $(ANALYSIS_OUT_DIR)/known_bug_findings.csv
+KNOWN_BUG_REPORT_MD ?= $(ANALYSIS_OUT_DIR)/known_bug_report.md
+KNOWN_BUG_TARGET_ID ?=
+KNOWN_BUG_RUN_MANIFEST ?=
 REPORT_CSV ?= $(CUMULATIVE_CSV)
 REPORT_OUT_DIR ?= $(ANALYSIS_OUT_DIR)
 REPORT_BUDGET ?= $(DURATION_HOURS)
@@ -46,6 +54,14 @@ THROUGHPUT_SAMPLES_CSV ?= $(ANALYSIS_OUT_DIR)/throughput_samples.csv
 THROUGHPUT_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/throughput_summary.csv
 PROGRESS_METRICS_SAMPLES_CSV ?= $(ANALYSIS_OUT_DIR)/progress_metrics_samples.csv
 PROGRESS_METRICS_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/progress_metrics_summary.csv
+SELECTOR_DISTRIBUTION_CSV ?= $(ANALYSIS_OUT_DIR)/selector_distribution.csv
+SELECTOR_SUMMARY_JSON ?= $(ANALYSIS_OUT_DIR)/selector_summary.json
+EXPECTED_SELECTORS_JSON ?=
+COVERAGE_OVER_TIME ?=
+COVERAGE_OVER_TIME_ARG :=
+ifneq ($(filter 1 true yes,$(strip $(COVERAGE_OVER_TIME))),)
+COVERAGE_OVER_TIME_ARG := --coverage-over-time
+endif
 RUNNER_RESOURCE_SUMMARY_CSV ?= $(ANALYSIS_OUT_DIR)/runner_resource_summary.csv
 RUNNER_RESOURCE_TIMESERIES_CSV ?= $(ANALYSIS_OUT_DIR)/runner_resource_timeseries.csv
 RUNNER_RESOURCE_MD ?= $(ANALYSIS_OUT_DIR)/runner_resource_usage.md
@@ -105,9 +121,21 @@ RAW_LABELS_ARG :=
 ifneq ($(strip $(RAW_LABELS)),)
 RAW_LABELS_ARG := --raw-labels
 endif
+EXPECTED_SELECTORS_ARG :=
+ifneq ($(strip $(EXPECTED_SELECTORS_JSON)),)
+EXPECTED_SELECTORS_ARG := --expected-selectors-json "$(EXPECTED_SELECTORS_JSON)"
+endif
+KNOWN_BUG_TARGET_ARG :=
+ifneq ($(strip $(KNOWN_BUG_TARGET_ID)),)
+KNOWN_BUG_TARGET_ARG := --target-id $(KNOWN_BUG_TARGET_ID)
+endif
+KNOWN_BUG_RUN_MANIFEST_ARG :=
+ifneq ($(strip $(KNOWN_BUG_RUN_MANIFEST)),)
+KNOWN_BUG_RUN_MANIFEST_ARG := --run-manifest $(KNOWN_BUG_RUN_MANIFEST)
+endif
 DURATION_ARG :=
 
-.PHONY: terraform-init terraform-init-backend terraform-fmt terraform-validate terraform-plan terraform-deploy terraform-destroy terraform-destroy-infra analysis-venv results-analyze results-download results-prepare results-analyze-filtered results-analyze-all results-inspect s3-purge-versions report-benchmark report-wide-to-long report-events-to-cumulative report-invariant-overlap report-runner-metrics
+.PHONY: terraform-init terraform-init-backend terraform-fmt terraform-validate terraform-plan terraform-deploy terraform-destroy terraform-destroy-infra targets-validate known-bugs-validate analysis-venv results-analyze results-download results-prepare results-analyze-filtered results-analyze-all results-inspect s3-purge-versions report-benchmark report-wide-to-long report-events-to-cumulative report-known-bugs report-invariant-overlap report-runner-metrics
 
 terraform-init:
 	terraform -chdir=$(TF_DIR) init
@@ -131,14 +159,21 @@ terraform-destroy:
 	terraform -chdir=$(TF_DIR) destroy $(TF_ARGS) $(SCFUZZBENCH_COMMIT_ARG) $(EXISTING_BUCKET_ARG)
 
 terraform-destroy-infra:
-	terraform -chdir=$(TF_DIR) destroy $(TF_ARGS) -target=aws_instance.fuzzer -target=aws_iam_instance_profile.fuzzer -target=aws_iam_role_policy.s3_access -target=aws_iam_role.fuzzer -target=aws_key_pair.ssh -target=local_sensitive_file.ssh_private_key -target=tls_private_key.ssh -target=aws_security_group.ssh -target=aws_route_table_association.public -target=aws_route_table.public -target=aws_subnet.public -target=aws_internet_gateway.main -target=aws_vpc.main $(SCFUZZBENCH_COMMIT_ARG) $(EXISTING_BUCKET_ARG)
+	terraform -chdir=$(TF_DIR) destroy $(TF_ARGS) -target=aws_instance.fuzzer -target=aws_iam_instance_profile.echidna_ci -target=aws_iam_role_policy.echidna_ci_access -target=aws_iam_role.echidna_ci -target=aws_iam_instance_profile.fuzzer -target=aws_iam_role_policy.s3_access -target=aws_iam_role.fuzzer -target=aws_key_pair.ssh -target=local_sensitive_file.ssh_private_key -target=tls_private_key.ssh -target=aws_security_group.ssh -target=aws_route_table_association.public -target=aws_route_table.public -target=aws_subnet.public -target=aws_internet_gateway.main -target=aws_vpc.main $(SCFUZZBENCH_COMMIT_ARG) $(EXISTING_BUCKET_ARG)
+
+targets-validate:
+	python3 scripts/validate_target_manifest.py
+	python3 scripts/validate_known_bugs.py
+
+known-bugs-validate:
+	python3 scripts/validate_known_bugs.py
 
 analysis-venv:
 	python3 -m venv $(ANALYSIS_VENV)
 	$(ANALYSIS_PIP) install -r $(ANALYSIS_REQ)
 
 results-analyze: analysis-venv
-	$(ANALYSIS_PY) analysis/analyze.py run --logs-dir $(LOGS_DIR) --out-dir $(OUT_DIR) $(RUN_ID_ARG) $(RAW_LABELS_ARG) $(DIFFERENTIAL_COVERAGE_PAIRING_ARG)
+	$(ANALYSIS_PY) analysis/analyze.py run --logs-dir $(LOGS_DIR) --out-dir $(OUT_DIR) $(RUN_ID_ARG) $(RAW_LABELS_ARG) $(COVERAGE_OVER_TIME_ARG) $(DIFFERENTIAL_COVERAGE_PAIRING_ARG)
 
 results-download:
 	python3 scripts/download_run_artifacts.py --bucket $(BUCKET) --run-id $(RUN_ID) $(BENCHMARK_UUID_ARG) --dest $(DEST) --category $(ARTIFACT_CATEGORY) $(PROFILE_ARG) $(NO_UNZIP_ARG)
@@ -147,9 +182,9 @@ results-prepare:
 	python3 scripts/prepare_analysis_logs.py --unzipped-dir $(UNZIPPED_DIR) --out-dir $(ANALYSIS_LOGS_DIR)
 
 results-analyze-filtered: analysis-venv
-	$(ANALYSIS_PY) scripts/run_analysis_filtered.py --logs-dir $(ANALYSIS_LOGS_DIR) --out-dir $(ANALYSIS_OUT_DIR) $(RUN_ID_ARG) $(EXCLUDE_ARG) $(RAW_LABELS_ARG) $(DIFFERENTIAL_COVERAGE_PAIRING_ARG)
+	$(ANALYSIS_PY) scripts/run_analysis_filtered.py --logs-dir $(ANALYSIS_LOGS_DIR) --corpus-dir $(SELECTOR_CORPUS_DIR) --out-dir $(ANALYSIS_OUT_DIR) $(RUN_ID_ARG) $(EXCLUDE_ARG) $(RAW_LABELS_ARG) $(EXPECTED_SELECTORS_ARG) $(COVERAGE_OVER_TIME_ARG) $(DIFFERENTIAL_COVERAGE_PAIRING_ARG)
 
-results-analyze-all: analysis-venv results-download results-prepare results-analyze-filtered report-events-to-cumulative report-benchmark report-invariant-overlap report-runner-metrics
+results-analyze-all: analysis-venv results-download results-prepare results-analyze-filtered report-events-to-cumulative report-known-bugs report-benchmark report-invariant-overlap report-runner-metrics
 
 results-inspect:
 	python3 scripts/inspect_logs.py --logs-dir $(ANALYSIS_LOGS_DIR)
@@ -158,13 +193,16 @@ s3-purge-versions:
 	python3 scripts/purge_s3_versions.py --bucket $(BUCKET) $(PROFILE_ARG)
 
 report-benchmark: analysis-venv
-	$(ANALYSIS_PY) analysis/benchmark_report.py --csv $(REPORT_CSV) --report-outdir $(REPORT_OUT_DIR) --images-outdir $(IMAGES_OUT_DIR) $(REPORT_BUDGET_ARG) --grid_step_min $(REPORT_GRID_STEP_MIN) --checkpoints $(REPORT_CHECKPOINTS) --ks $(REPORT_KS) --throughput-summary-csv $(THROUGHPUT_SUMMARY_CSV) --throughput-samples-csv $(THROUGHPUT_SAMPLES_CSV) --progress-metrics-summary-csv $(PROGRESS_METRICS_SUMMARY_CSV) --progress-metrics-samples-csv $(PROGRESS_METRICS_SAMPLES_CSV) --differential-coverage-statistics-json $(DIFFERENTIAL_COVERAGE_STATISTICS_JSON) $$( [ -f "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)" ] && [ "$$(wc -l < "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)")" -gt 1 ] && printf -- '--relative-scores-csv %s' "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)" ) $(if $(REPORT_ANONYMIZE),--anonymize,)
+	$(ANALYSIS_PY) analysis/benchmark_report.py --csv $(REPORT_CSV) --report-outdir $(REPORT_OUT_DIR) --images-outdir $(IMAGES_OUT_DIR) $(REPORT_BUDGET_ARG) --grid_step_min $(REPORT_GRID_STEP_MIN) --checkpoints $(REPORT_CHECKPOINTS) --ks $(REPORT_KS) --throughput-summary-csv $(THROUGHPUT_SUMMARY_CSV) --throughput-samples-csv $(THROUGHPUT_SAMPLES_CSV) --progress-metrics-summary-csv $(PROGRESS_METRICS_SUMMARY_CSV) --progress-metrics-samples-csv $(PROGRESS_METRICS_SAMPLES_CSV) --selector-summary-json $(SELECTOR_SUMMARY_JSON) $(COVERAGE_OVER_TIME_ARG) --differential-coverage-statistics-json $(DIFFERENTIAL_COVERAGE_STATISTICS_JSON) $$( [ -f "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)" ] && [ "$$(wc -l < "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)")" -gt 1 ] && printf -- '--relative-scores-csv %s' "$(DIFFERENTIAL_COVERAGE_RELSCORES_CSV)" ) $(if $(REPORT_ANONYMIZE),--anonymize,)
 
 report-wide-to-long: analysis-venv
 	$(ANALYSIS_PY) analysis/wide_to_long.py --wide_csv $(WIDE_CSV) --out_csv $(LONG_CSV)
 
 report-events-to-cumulative: analysis-venv
 	$(ANALYSIS_PY) analysis/events_to_cumulative.py --events-csv $(EVENTS_CSV) --out-csv $(CUMULATIVE_CSV) --logs-dir $(ANALYSIS_LOGS_DIR) $(RUN_ID_ARG) $(EXCLUDE_ARG) $(RAW_LABELS_ARG)
+
+report-known-bugs: analysis-venv
+	$(ANALYSIS_PY) analysis/known_bug_report.py --events-csv $(EVENTS_CSV) --logs-dir $(ANALYSIS_LOGS_DIR) --catalog $(KNOWN_BUG_CATALOG) --summary-out $(KNOWN_BUG_SUMMARY_CSV) --findings-out $(KNOWN_BUG_FINDINGS_CSV) --report-out $(KNOWN_BUG_REPORT_MD) $(RUN_ID_ARG) $(EXCLUDE_ARG) $(KNOWN_BUG_TARGET_ARG) $(KNOWN_BUG_RUN_MANIFEST_ARG)
 
 report-invariant-overlap: analysis-venv
 	$(ANALYSIS_PY) analysis/invariant_overlap_report.py --events-csv $(EVENTS_CSV) --logs-dir $(ANALYSIS_LOGS_DIR) --out-md $(BROKEN_INVARIANTS_MD) --out-csv $(BROKEN_INVARIANTS_CSV) --out-png $(INVARIANT_OVERLAP_PNG) $(INVARIANT_BUDGET_ARG) --top-k $(INVARIANT_TOP_K) $(RAW_LABELS_ARG)

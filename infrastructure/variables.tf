@@ -46,6 +46,24 @@ variable "timeout_hours" {
   default     = 24
 }
 
+variable "preliminary_interval_seconds" {
+  type        = number
+  description = "Interval between preliminary log checkpoints. Zero disables preliminary results."
+  default     = 3600
+
+  validation {
+    condition = (
+      var.preliminary_interval_seconds == floor(var.preliminary_interval_seconds) &&
+      (
+        var.preliminary_interval_seconds == 0 ||
+        var.preliminary_interval_seconds >= 60
+      ) &&
+      var.preliminary_interval_seconds <= 86400
+    )
+    error_message = "preliminary_interval_seconds must be zero or a whole number in [60, 86400]."
+  }
+}
+
 variable "target_repo_url" {
   type        = string
   description = "Target repository URL."
@@ -72,7 +90,7 @@ variable "benchmark_type" {
 
 variable "foundry_version" {
   type        = string
-  description = "Pinned Foundry version (tag used by foundryup). Only used when foundry_git_repo is empty."
+  description = "Foundry release tag used by foundryup only when foundry_git_repo is empty. Cloud workflows do not expose this local/manual fallback."
   default     = "v1.7.1"
 }
 
@@ -94,10 +112,142 @@ variable "echidna_version" {
   default     = "2.3.1"
 }
 
+variable "echidna_ci_repo" {
+  type        = string
+  description = "Public GitHub repository whose completed Actions run produced an opt-in Echidna Linux artifact. Blank keeps the stable release path."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_repo == "" || can(regex("^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\\.git)?/?$", var.echidna_ci_repo))
+    error_message = "echidna_ci_repo must be blank or https://github.com/<org>/<repo>."
+  }
+}
+
+variable "echidna_ci_run_id" {
+  type        = string
+  description = "GitHub Actions run ID for the opt-in Echidna artifact."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_run_id == "" || can(regex("^[1-9][0-9]*$", var.echidna_ci_run_id))
+    error_message = "echidna_ci_run_id must be blank or a positive integer."
+  }
+}
+
+variable "echidna_ci_artifact_name" {
+  type        = string
+  description = "Exact Linux artifact name within echidna_ci_run_id."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_artifact_name == "" || can(regex("^[A-Za-z0-9._-]+$", var.echidna_ci_artifact_name))
+    error_message = "echidna_ci_artifact_name may contain only letters, digits, dot, underscore, and dash."
+  }
+}
+
+variable "echidna_ci_artifact_sha256" {
+  type        = string
+  description = "Expected SHA-256 of the GitHub Actions artifact ZIP (the API digest without its sha256: prefix)."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_artifact_sha256 == "" || can(regex("^[A-Fa-f0-9]{64}$", var.echidna_ci_artifact_sha256))
+    error_message = "echidna_ci_artifact_sha256 must be blank or a 64-character SHA-256 digest."
+  }
+}
+
+variable "echidna_ci_commit" {
+  type        = string
+  description = "Full immutable head commit expected for echidna_ci_run_id."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_commit == "" || can(regex("^[A-Fa-f0-9]{40}$", var.echidna_ci_commit))
+    error_message = "echidna_ci_commit must be blank or a full 40-character commit SHA."
+  }
+}
+
+variable "echidna_ci_token_ssm_parameter_name" {
+  type        = string
+  description = "SecureString parameter containing a token with Actions read access. Only the parameter name enters Terraform state."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_token_ssm_parameter_name == "" || can(regex("^/scfuzzbench/[A-Za-z0-9_./-]+$", var.echidna_ci_token_ssm_parameter_name))
+    error_message = "echidna_ci_token_ssm_parameter_name must be blank or start with /scfuzzbench/."
+  }
+}
+
+variable "echidna_ci_token_kms_key_arn" {
+  type        = string
+  description = "Optional exact customer-managed KMS key ARN for the Echidna token SecureString. Blank uses the account's aws/ssm managed key."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_token_kms_key_arn == "" || can(regex("^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]{36}$", var.echidna_ci_token_kms_key_arn))
+    error_message = "echidna_ci_token_kms_key_arn must be blank or an exact customer-managed KMS key ARN (aliases and wildcards are not accepted)."
+  }
+}
+
 variable "medusa_version" {
   type        = string
   description = "Pinned Medusa version."
   default     = "1.4.1"
+}
+
+variable "medusa_git_repo" {
+  type        = string
+  description = "Public GitHub repository for an opt-in Medusa source build. Blank keeps the stable release path."
+  default     = ""
+
+  validation {
+    condition     = var.medusa_git_repo == "" || can(regex("^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\\.git)?/?$", var.medusa_git_repo))
+    error_message = "medusa_git_repo must be blank or https://github.com/<org>/<repo>."
+  }
+}
+
+variable "medusa_git_ref" {
+  type        = string
+  description = "Human-readable Medusa branch/tag/ref that must still resolve to medusa_git_commit."
+  default     = ""
+
+  validation {
+    condition     = var.medusa_git_ref == "" || can(regex("^[A-Za-z0-9._/-]+$", var.medusa_git_ref))
+    error_message = "medusa_git_ref contains unsupported characters."
+  }
+}
+
+variable "medusa_git_commit" {
+  type        = string
+  description = "Full immutable Medusa source commit expected for medusa_git_ref."
+  default     = ""
+
+  validation {
+    condition     = var.medusa_git_commit == "" || can(regex("^[A-Fa-f0-9]{40}$", var.medusa_git_commit))
+    error_message = "medusa_git_commit must be blank or a full 40-character commit SHA."
+  }
+}
+
+variable "medusa_go_version" {
+  type        = string
+  description = "Pinned official Go toolchain used only for Medusa source builds."
+  default     = "1.24.0"
+
+  validation {
+    condition     = can(regex("^[0-9]+\\.[0-9]+(\\.[0-9]+)?$", var.medusa_go_version))
+    error_message = "medusa_go_version must look like 1.24.0."
+  }
+}
+
+variable "medusa_go_sha256" {
+  type        = string
+  description = "SHA-256 for go<medusa_go_version>.linux-amd64.tar.gz."
+  default     = "dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858"
+
+  validation {
+    condition     = can(regex("^[A-Fa-f0-9]{64}$", var.medusa_go_sha256))
+    error_message = "medusa_go_sha256 must be a 64-character SHA-256 digest."
+  }
 }
 
 variable "recon_version" {
@@ -218,4 +368,107 @@ variable "fuzzer_env" {
   type        = map(string)
   description = "Fuzzer environment variable overrides passed to fuzzer run scripts."
   default     = {}
+
+  validation {
+    condition = length(setintersection(toset(keys(var.fuzzer_env)), toset([
+      "ECHIDNA_VERSION",
+      "ECHIDNA_CI_TOKEN",
+      "ECHIDNA_CI_TOKEN_SSM_PARAMETER",
+      "ECHIDNA_CI_REPO",
+      "ECHIDNA_CI_RUN_ID",
+      "ECHIDNA_CI_ARTIFACT_NAME",
+      "ECHIDNA_CI_ARTIFACT_SHA256",
+      "ECHIDNA_CI_COMMIT",
+      "ECHIDNA_CI_TOKEN_KMS_KEY_ARN",
+      "FOUNDRY_GIT_REF",
+      "FOUNDRY_GIT_REPO",
+      "FOUNDRY_VERSION",
+      "SCFUZZBENCH_FOUNDRY_SOURCE_PATCH",
+      "MEDUSA_VERSION",
+      "MEDUSA_GIT_REPO",
+      "MEDUSA_GIT_REF",
+      "MEDUSA_GIT_COMMIT",
+      "MEDUSA_GO_VERSION",
+      "MEDUSA_GO_SHA256",
+      "RECON_VERSION",
+    ]))) == 0
+    error_message = "Tool settings must use their dedicated variables, not fuzzer_env."
+  }
+
+  validation {
+    condition = alltrue([
+      for key in keys(var.fuzzer_env) :
+      !contains([
+        "SCFUZZBENCH_SEED_CORPUS_SOURCE",
+        "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
+        "SCFUZZBENCH_SEED_CORPUS_HELPER",
+        "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
+        "SCFUZZBENCH_PROPERTIES_PATH",
+      ], key)
+    ])
+    error_message = "fuzzer_env cannot override framework-owned benchmark variables."
+  }
+
+  validation {
+    condition = length(setintersection(toset(keys(var.fuzzer_env)), toset([
+      "AWS_ACCESS_KEY_ID",
+      "AWS_DEFAULT_REGION",
+      "AWS_REGION",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_SESSION_TOKEN",
+      "SCFUZZBENCH_AWS_CREDS_ENV_FILE",
+      "SCFUZZBENCH_BENCHMARK_MANIFEST_B64",
+      "SCFUZZBENCH_BENCHMARK_TYPE",
+      "SCFUZZBENCH_BENCHMARK_UUID",
+      "SCFUZZBENCH_BIN_DIR",
+      "SCFUZZBENCH_COMMIT",
+      "SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE",
+      "SCFUZZBENCH_FUZZER_KEY",
+      "SCFUZZBENCH_FUZZER_LABEL",
+      "SCFUZZBENCH_GIT_TOKEN_SSM_PARAMETER",
+      "SCFUZZBENCH_LOCAL_MODE",
+      "SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS",
+      "SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT",
+      "SCFUZZBENCH_REPO_URL",
+      "SCFUZZBENCH_ROOT",
+      "SCFUZZBENCH_RUN_HEARTBEAT_SECONDS",
+      "SCFUZZBENCH_RUN_ID",
+      "SCFUZZBENCH_RUN_INDEX",
+      "SCFUZZBENCH_RUN_STARTED_AT_EPOCH",
+      "SCFUZZBENCH_S3_BUCKET",
+      "SCFUZZBENCH_SHUTDOWN_GRACE_SECONDS",
+      "SCFUZZBENCH_TIMEOUT_SECONDS",
+      "SCFUZZBENCH_WORKDIR",
+    ]))) == 0
+    error_message = "fuzzer_env cannot override immutable runner identity, credentials, paths, or timing."
+  }
+}
+
+variable "properties_path" {
+  type        = string
+  description = "Optional repo-relative properties path for benchmark mode switching."
+  default     = ""
+
+  validation {
+    condition = var.properties_path == "" || (
+      !startswith(var.properties_path, "/") &&
+      can(regex("^[A-Za-z0-9_./-]+$", var.properties_path)) &&
+      length(regexall("(^|/)\\.\\.?(/|$)", var.properties_path)) == 0
+    )
+    error_message = "properties_path must be empty or a safe repo-relative path without '.' or '..' segments."
+  }
+}
+
+variable "shared_seed_corpus_source" {
+  type        = string
+  description = "Optional shared seed corpus directory or s3://bucket/prefix. Relative directories resolve inside the cloned target; absolute paths must exist on each runner."
+  default     = ""
+
+  validation {
+    condition = var.shared_seed_corpus_source == "" || (
+      can(regex("^(s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/)?[A-Za-z0-9/._+~-]+/?$", var.shared_seed_corpus_source)) &&
+      length(regexall("(^|/)\\.\\.?(/|$)", var.shared_seed_corpus_source)) == 0
+    )
+    error_message = "shared_seed_corpus_source must be empty, a safe local path, or an s3://bucket/prefix without '.'/'..' segments, spaces, query parameters, or shell metacharacters."
+  }
 }

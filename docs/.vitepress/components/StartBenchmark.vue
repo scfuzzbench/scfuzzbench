@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import targetManifest from "../../../benchmarks/targets.json";
 import ec2Pricing from "../generated/ec2-pricing.json";
 
 type BenchmarkType = "property" | "optimization";
@@ -9,52 +10,26 @@ type PreconfiguredTarget = {
   label: string;
   repoUrl: string;
   commit: string;
+  propertiesPath: string;
 };
 
 const REPO_OWNER = "scfuzzbench";
 const REPO_NAME = "scfuzzbench";
 const NEW_ISSUE_URL = `https://github.com/${REPO_OWNER}/${REPO_NAME}/issues/new`;
-// Convention: every target is a fork under the scfuzzbench org; `main` holds the
-// harnessed code the benchmark consumes and `pre-target` the pristine upstream
-// baseline (compare pre-target...main to see the harness).
-const PRECONFIGURED_TARGETS: PreconfiguredTarget[] = [
-  {
-    id: "aave-v4",
-    label: "Aave v4",
-    repoUrl: "https://github.com/scfuzzbench/aave-v4-scfuzzbench",
-    commit: "main",
-  },
-  {
-    id: "superform-v2-periphery",
-    label: "Superform v2-periphery",
-    repoUrl: "https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench",
-    commit: "main",
-  },
-  {
-    id: "liquity-v2-governance",
-    label: "Liquity v2 Governance",
-    repoUrl: "https://github.com/scfuzzbench/liquity-V2-gov-scfuzzbench",
-    commit: "main",
-  },
-  {
-    id: "origin-dollar",
-    label: "Origin Dollar (OUSD)",
-    repoUrl: "https://github.com/scfuzzbench/origin-dollar-scfuzzbench",
-    commit: "main",
-  },
-  {
-    id: "drips",
-    label: "Drips",
-    repoUrl: "https://github.com/scfuzzbench/drips-fuzzing-scfuzzbench",
-    commit: "main",
-  },
-];
+const PRECONFIGURED_TARGETS: PreconfiguredTarget[] = targetManifest.targets.map((target) => ({
+  id: target.id,
+  label: target.label,
+  repoUrl: target.repo,
+  commit: target.commit,
+  propertiesPath: target.properties_path,
+}));
 const CUSTOM_TARGET_ID = "custom";
 
 // Defaults are intentionally aligned with the repo's typical local `.env` values.
 // Avoid putting anything secret here: this is a fully static site.
 const targetRepoUrl = ref(PRECONFIGURED_TARGETS[0].repoUrl);
 const targetCommit = ref(PRECONFIGURED_TARGETS[0].commit);
+const propertiesPath = ref(PRECONFIGURED_TARGETS[0].propertiesPath);
 const selectedPreconfiguredTargetId = ref(PRECONFIGURED_TARGETS[0].id);
 const isApplyingPreconfiguredTarget = ref(false);
 
@@ -62,6 +37,7 @@ const benchmarkType = ref<BenchmarkType>("property");
 const instanceType = ref("c6a.4xlarge");
 const instancesPerFuzzer = ref(4);
 const timeoutHours = ref(1);
+const preliminaryIntervalMinutes = ref(60);
 
 // Dynamically discover fuzzers from committed run scripts.
 // In CI tarball checkouts, this naturally reflects the tracked repo content.
@@ -97,17 +73,27 @@ const participatingFuzzerKeys = computed(() => {
 });
 
 // Advanced / optional overrides.
-const foundryVersion = ref("");
 const foundryGitRepo = ref("");
 const foundryGitRef = ref("");
 
 const echidnaVersion = ref("");
+const echidnaCiRepo = ref("");
+const echidnaCiRunId = ref("");
+const echidnaCiArtifactName = ref("");
+const echidnaCiArtifactSha256 = ref("");
+const echidnaCiCommit = ref("");
+const echidnaCiTokenSsmParameterName = ref("");
+const echidnaCiTokenKmsKeyArn = ref("");
 const medusaVersion = ref("");
+const medusaGitRepo = ref("");
+const medusaGitRef = ref("");
+const medusaGitCommit = ref("");
+const medusaGoVersion = ref("1.24.0");
+const medusaGoSha256 = ref("dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858");
 const reconVersion = ref("");
 
 const gitTokenSsmParameterName = ref("/scfuzzbench/recon/github_token");
 
-const propertiesPath = ref("");
 const fuzzerEnvJson = ref("");
 
 function normalizeRepoUrl(raw: string): string {
@@ -121,6 +107,10 @@ function normalizeRepoUrl(raw: string): string {
 
 function normalizeCommitRef(raw: string): string {
   return raw.trim();
+}
+
+function shortCommit(raw: string): string {
+  return raw.slice(0, 12);
 }
 
 function findPreconfiguredTarget(repoUrl: string, commit: string): PreconfiguredTarget | null {
@@ -146,6 +136,7 @@ watch(selectedPreconfiguredTargetId, (selectedId) => {
   isApplyingPreconfiguredTarget.value = true;
   targetRepoUrl.value = selected.repoUrl;
   targetCommit.value = selected.commit;
+  propertiesPath.value = selected.propertiesPath;
   isApplyingPreconfiguredTarget.value = false;
 });
 
@@ -216,14 +207,26 @@ const requestJson = computed(() => {
     instance_type: instanceType.value.trim(),
     instances_per_fuzzer: instancesPerFuzzer.value,
     timeout_hours: timeoutHours.value,
+    preliminary_interval_minutes: preliminaryIntervalMinutes.value,
     fuzzers: participatingFuzzerKeys.value,
 
-    foundry_version: foundryVersion.value.trim(),
     foundry_git_repo: foundryGitRepo.value.trim(),
     foundry_git_ref: foundryGitRef.value.trim(),
 
     echidna_version: echidnaVersion.value.trim(),
+    echidna_ci_repo: echidnaCiRepo.value.trim(),
+    echidna_ci_run_id: echidnaCiRunId.value.trim(),
+    echidna_ci_artifact_name: echidnaCiArtifactName.value.trim(),
+    echidna_ci_artifact_sha256: echidnaCiArtifactSha256.value.trim(),
+    echidna_ci_commit: echidnaCiCommit.value.trim(),
+    echidna_ci_token_ssm_parameter_name: echidnaCiTokenSsmParameterName.value.trim(),
+    echidna_ci_token_kms_key_arn: echidnaCiTokenKmsKeyArn.value.trim(),
     medusa_version: medusaVersion.value.trim(),
+    medusa_git_repo: medusaGitRepo.value.trim(),
+    medusa_git_ref: medusaGitRef.value.trim(),
+    medusa_git_commit: medusaGitCommit.value.trim(),
+    medusa_go_version: medusaGoVersion.value.trim(),
+    medusa_go_sha256: medusaGoSha256.value.trim(),
     recon_version: reconVersion.value.trim(),
 
     git_token_ssm_parameter_name: gitTokenSsmParameterName.value.trim(),
@@ -256,7 +259,8 @@ const issueBody = computed(() => {
     "",
     "Notes:",
     "- Do not include secrets in this issue.",
-    "- `target_commit` may be a commit SHA, tag, or branch name.",
+    "- Preconfigured targets use an immutable commit from the in-repo target manifest.",
+    "- Custom `target_commit` values may be a commit SHA, tag, or branch name.",
   ].join("\n");
 });
 
@@ -284,7 +288,7 @@ const showAdvanced = ref(false);
               :key="target.id"
               :value="target.id"
             >
-              {{ target.label }} ({{ target.commit }})
+              {{ target.label }} ({{ shortCommit(target.commit) }})
             </option>
             <option :value="CUSTOM_TARGET_ID">Custom</option>
           </select>
@@ -337,6 +341,18 @@ const showAdvanced = ref(false);
           />
         </label>
 
+        <label class="sb-start__field">
+          <div class="sb-start__label">Preliminary updates (minutes; 0 turns them off)</div>
+          <input
+            v-model.number="preliminaryIntervalMinutes"
+            class="sb-start__input"
+            type="number"
+            min="0"
+            max="1440"
+            step="1"
+          />
+        </label>
+
         <label class="sb-start__field sb-start__field--full">
           <div class="sb-start__label">Fuzzers</div>
           <div class="sb-start__fuzzers">
@@ -376,11 +392,6 @@ const showAdvanced = ref(false);
           </label>
 
           <label class="sb-start__field">
-            <div class="sb-start__label">Foundry version override (optional)</div>
-            <input v-model="foundryVersion" class="sb-start__input" type="text" placeholder="e.g. v1.7.1" />
-          </label>
-
-          <label class="sb-start__field">
             <div class="sb-start__label">Foundry git repo (build from source, optional)</div>
             <input v-model="foundryGitRepo" class="sb-start__input" type="text" />
           </label>
@@ -396,8 +407,78 @@ const showAdvanced = ref(false);
           </label>
 
           <label class="sb-start__field">
+            <div class="sb-start__label">Echidna CI repository (artifact mode)</div>
+            <input v-model="echidnaCiRepo" class="sb-start__input" type="text" placeholder="https://github.com/crytic/echidna" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Echidna CI run ID</div>
+            <input v-model="echidnaCiRunId" class="sb-start__input" type="text" inputmode="numeric" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Echidna Linux artifact name</div>
+            <input v-model="echidnaCiArtifactName" class="sb-start__input" type="text" placeholder="echidna-Linux" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Echidna artifact SHA-256</div>
+            <input v-model="echidnaCiArtifactSha256" class="sb-start__input" type="text" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Echidna CI full commit SHA</div>
+            <input v-model="echidnaCiCommit" class="sb-start__input" type="text" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Echidna artifact token SSM parameter</div>
+            <input
+              v-model="echidnaCiTokenSsmParameterName"
+              class="sb-start__input"
+              type="text"
+              placeholder="/scfuzzbench/echidna/actions_token"
+            />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Echidna token KMS key ARN (optional)</div>
+            <input
+              v-model="echidnaCiTokenKmsKeyArn"
+              class="sb-start__input"
+              type="text"
+              placeholder="Blank for the aws/ssm managed key"
+            />
+          </label>
+
+          <label class="sb-start__field">
             <div class="sb-start__label">Medusa version override (optional)</div>
             <input v-model="medusaVersion" class="sb-start__input" type="text" placeholder="e.g. 1.4.1" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Medusa git repository (source mode)</div>
+            <input v-model="medusaGitRepo" class="sb-start__input" type="text" placeholder="https://github.com/crytic/medusa" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Medusa git ref</div>
+            <input v-model="medusaGitRef" class="sb-start__input" type="text" placeholder="master" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Medusa full commit SHA</div>
+            <input v-model="medusaGitCommit" class="sb-start__input" type="text" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Medusa source Go version</div>
+            <input v-model="medusaGoVersion" class="sb-start__input" type="text" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Medusa Go archive SHA-256</div>
+            <input v-model="medusaGoSha256" class="sb-start__input" type="text" />
           </label>
 
           <label class="sb-start__field">
@@ -422,6 +503,9 @@ const showAdvanced = ref(false);
         </div>
 
         <p class="sb-start__hint">
+          Cloud runs build Foundry from the pinned git ref. The <code>--foundry-version</code> release override is
+          available only through <code>scripts/local-run.sh</code>.
+          <br />
           Note: setting <code>properties_path</code> or <code>fuzzer_env_json</code> causes the workflow to pass a
           complete <code>fuzzer_env</code> map to Terraform (overriding its defaults). Leave these blank unless you know
           you want that.

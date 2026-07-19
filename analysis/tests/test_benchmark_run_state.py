@@ -35,6 +35,35 @@ class BenchmarkRunStateTests(unittest.TestCase):
             first["terraform_backend_key"], retry["terraform_backend_key"]
         )
 
+    def test_tool_sources_are_normalized_once_before_admission(self):
+        medusa_commit = "a" * 40
+        normalized = self.module.normalize_tool_sources(
+            {
+                "MEDUSA_SOURCE_JSON": (
+                    '{"medusa_git_repo":"https://github.com/crytic/medusa",'
+                    '"medusa_git_ref":"master",'
+                    f'"medusa_git_commit":"{medusa_commit}"'
+                    "}"
+                )
+            }
+        )
+
+        self.assertEqual(
+            "https://github.com/crytic/medusa",
+            normalized["medusa_git_repo"],
+        )
+        self.assertEqual(medusa_commit, normalized["medusa_git_commit"])
+        self.assertEqual("1.24.0", normalized["medusa_go_version"])
+        self.assertRegex(normalized["medusa_go_sha256"], r"^[0-9a-f]{64}$")
+
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            self.module.normalize_tool_sources(
+                {
+                    "ECHIDNA_CI_JSON": '{"echidna_ci_repo":"json"}',
+                    "CALL_ECHIDNA_CI_REPO": "direct",
+                }
+            )
+
     def test_two_overlapping_admissions_cannot_both_take_one_slot(self):
         first_allowed, first_occupied = self.module.can_admit(
             "gh-100-1", 1, [], []
@@ -316,6 +345,18 @@ class BenchmarkRunStateTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "may not override"):
             self.module.validate_benchmark_inputs(values)
+        for protected in (
+            "SCFUZZBENCH_BENCHMARK_TYPE",
+            "SCFUZZBENCH_PROPERTIES_PATH",
+        ):
+            with self.subTest(protected=protected):
+                with self.assertRaisesRegex(ValueError, "may not override"):
+                    self.module.validate_benchmark_inputs(
+                        {
+                            **values,
+                            "FUZZER_ENV_JSON": f'{{"{protected}":"foreign"}}',
+                        }
+                    )
 
     def test_cloud_input_validation_accepts_supported_request(self):
         values = {
@@ -330,6 +371,49 @@ class BenchmarkRunStateTests(unittest.TestCase):
         }
         normalized = self.module.validate_benchmark_inputs(values)
         self.assertEqual(["echidna", "foundry"], normalized["fuzzers"])
+        self.assertEqual(3600, normalized["preliminary_interval_seconds"])
+
+    def test_cloud_input_validation_covers_new_tool_seed_and_checkpoint_inputs(self):
+        values = {
+            "TARGET_REPO_URL": "https://github.com/example/target",
+            "TARGET_COMMIT": "a" * 40,
+            "BENCHMARK_TYPE": "property",
+            "INSTANCE_TYPE": "c6a.4xlarge",
+            "INSTANCES_PER_FUZZER": "2",
+            "TIMEOUT_HOURS": "4",
+            "PRELIMINARY_INTERVAL_MINUTES": "60",
+            "FUZZERS_JSON": '["echidna","medusa"]',
+            "ECHIDNA_CI_REPO": "https://github.com/crytic/echidna",
+            "ECHIDNA_CI_RUN_ID": "123",
+            "ECHIDNA_CI_ARTIFACT_NAME": "echidna-linux",
+            "ECHIDNA_CI_ARTIFACT_SHA256": "b" * 64,
+            "ECHIDNA_CI_COMMIT": "c" * 40,
+            "ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME": "/scfuzzbench/echidna",
+            "MEDUSA_GIT_REPO": "https://github.com/crytic/medusa",
+            "MEDUSA_GIT_REF": "master",
+            "MEDUSA_GIT_COMMIT": "d" * 40,
+            "MEDUSA_GO_VERSION": "1.24.0",
+            "MEDUSA_GO_SHA256": "e" * 64,
+            "SHARED_SEED_CORPUS_SOURCE": "s3://seed-bucket/corpus/v1",
+        }
+        normalized = self.module.validate_benchmark_inputs(values)
+        self.assertEqual(3600, normalized["preliminary_interval_seconds"])
+
+        with self.assertRaisesRegex(ValueError, "whole seconds"):
+            self.module.validate_benchmark_inputs(
+                {**values, "PRELIMINARY_INTERVAL_MINUTES": "1.001"}
+            )
+        with self.assertRaisesRegex(ValueError, "dot path segments"):
+            self.module.validate_benchmark_inputs(
+                {**values, "SHARED_SEED_CORPUS_SOURCE": "seed/../foreign"}
+            )
+        with self.assertRaisesRegex(ValueError, "may not override"):
+            self.module.validate_benchmark_inputs(
+                {
+                    **values,
+                    "FUZZER_ENV_JSON": '{"MEDUSA_GIT_REPO":"foreign"}',
+                }
+            )
 
     def test_recovery_inputs_require_exact_identity_and_shared_bucket(self):
         payload = {
@@ -384,6 +468,26 @@ class BenchmarkRunStateTests(unittest.TestCase):
             benchmark.index("Validate all cloud inputs before admission"),
             benchmark.index("Atomically reserve repository run capacity"),
         )
+        self.assertLess(
+            benchmark.index("Normalize bleeding-edge tool inputs before admission"),
+            benchmark.index("Atomically reserve repository run capacity"),
+        )
+        self.assertLess(
+            benchmark.index("Preflight bleeding-edge tool pins before admission"),
+            benchmark.index("Atomically reserve repository run capacity"),
+        )
+        self.assertNotIn("inputs.foundry_version", benchmark)
+        self.assertNotIn("run_id=\"${run_started_at_epoch}\"", benchmark)
+        for expected in (
+            '"preliminary_interval_seconds": preliminary_interval_seconds',
+            '"shared_seed_corpus_source": os.environ["SHARED_SEED_CORPUS_SOURCE"]',
+            '"ECHIDNA_CI_REPO": "echidna_ci_repo"',
+            '"MEDUSA_GIT_REPO": "medusa_git_repo"',
+            '"PROPERTIES_PATH": "properties_path"',
+            'reservation["nonsecret_optional_inputs"]',
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, benchmark)
         self.assertIn("validate-recovery-inputs", cleanup)
         self.assertIn("validate-state-outputs", cleanup)
         self.assertIn("--mode inspect", recovery)
@@ -396,8 +500,35 @@ class BenchmarkRunStateTests(unittest.TestCase):
         self.assertIn("run_name_hash", terraform)
         self.assertIn("sha256(tostring(local.run_id))", terraform)
         self.assertIn(
+            "preliminary/${local.run_id}/${local.benchmark_uuid}/snapshots/*",
+            terraform,
+        )
+        self.assertIn(
+            "run-state/heartbeats/${local.run_id}/${local.benchmark_uuid}/*",
+            terraform,
+        )
+        self.assertNotIn(
             "preliminary/${local.run_id}/${local.benchmark_uuid}/*",
             terraform,
+        )
+        self.assertIn(
+            'run_name_token = substr(replace(lower(tostring(local.run_id)), '
+            '"/[^a-z0-9-]/", "-"), 0, 18)',
+            terraform,
+        )
+        self.assertRegex(
+            terraform,
+            r"properties_path\s+= var\.properties_path",
+        )
+        self.assertEqual(
+            1,
+            (
+                Path(__file__).resolve().parents[2]
+                / "infrastructure"
+                / "variables.tf"
+            )
+            .read_text()
+            .count('variable "run_started_at_epoch"'),
         )
 
     def test_new_run_start_requires_manifest_timestamp(self):

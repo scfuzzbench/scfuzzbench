@@ -36,8 +36,28 @@ IMMUTABLE_FUZZER_ENV_KEYS = {
     "AWS_REGION",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
+    "ECHIDNA_CI_ARTIFACT_NAME",
+    "ECHIDNA_CI_ARTIFACT_SHA256",
+    "ECHIDNA_CI_COMMIT",
+    "ECHIDNA_CI_REPO",
+    "ECHIDNA_CI_RUN_ID",
+    "ECHIDNA_CI_TOKEN",
+    "ECHIDNA_CI_TOKEN_KMS_KEY_ARN",
+    "ECHIDNA_CI_TOKEN_SSM_PARAMETER",
+    "ECHIDNA_VERSION",
+    "FOUNDRY_GIT_REF",
+    "FOUNDRY_GIT_REPO",
+    "FOUNDRY_VERSION",
+    "MEDUSA_GIT_COMMIT",
+    "MEDUSA_GIT_REF",
+    "MEDUSA_GIT_REPO",
+    "MEDUSA_GO_SHA256",
+    "MEDUSA_GO_VERSION",
+    "MEDUSA_VERSION",
+    "RECON_VERSION",
     "SCFUZZBENCH_AWS_CREDS_ENV_FILE",
     "SCFUZZBENCH_BENCHMARK_MANIFEST_B64",
+    "SCFUZZBENCH_BENCHMARK_TYPE",
     "SCFUZZBENCH_BENCHMARK_UUID",
     "SCFUZZBENCH_BIN_DIR",
     "SCFUZZBENCH_COMMIT",
@@ -46,8 +66,10 @@ IMMUTABLE_FUZZER_ENV_KEYS = {
     "SCFUZZBENCH_LOCAL_MODE",
     "SCFUZZBENCH_FUZZER_KEY",
     "SCFUZZBENCH_FUZZER_LABEL",
+    "SCFUZZBENCH_FOUNDRY_SOURCE_PATCH",
     "SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS",
     "SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT",
+    "SCFUZZBENCH_PROPERTIES_PATH",
     "SCFUZZBENCH_REPO_URL",
     "SCFUZZBENCH_ROOT",
     "SCFUZZBENCH_RUN_HEARTBEAT_SECONDS",
@@ -55,6 +77,10 @@ IMMUTABLE_FUZZER_ENV_KEYS = {
     "SCFUZZBENCH_RUN_INDEX",
     "SCFUZZBENCH_RUN_STARTED_AT_EPOCH",
     "SCFUZZBENCH_S3_BUCKET",
+    "SCFUZZBENCH_SEED_CORPUS_HELPER",
+    "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
+    "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
+    "SCFUZZBENCH_SEED_CORPUS_SOURCE",
     "SCFUZZBENCH_SHUTDOWN_GRACE_SECONDS",
     "SCFUZZBENCH_TIMEOUT_SECONDS",
     "SCFUZZBENCH_WORKDIR",
@@ -175,6 +201,90 @@ def parse_max_concurrent_runs(raw: str | int | None) -> int:
     return parsed
 
 
+def normalize_tool_sources(values: dict[str, str]) -> dict[str, str]:
+    """Normalize manual JSON and reusable-workflow tool source inputs."""
+
+    groups = {
+        "echidna": {
+            "raw": str(values.get("ECHIDNA_CI_JSON", "")).strip(),
+            "keys": (
+                "echidna_ci_repo",
+                "echidna_ci_run_id",
+                "echidna_ci_artifact_name",
+                "echidna_ci_artifact_sha256",
+                "echidna_ci_commit",
+                "echidna_ci_token_ssm_parameter_name",
+                "echidna_ci_token_kms_key_arn",
+            ),
+            "identity_keys": (
+                "echidna_ci_repo",
+                "echidna_ci_run_id",
+                "echidna_ci_artifact_name",
+                "echidna_ci_artifact_sha256",
+                "echidna_ci_commit",
+                "echidna_ci_token_ssm_parameter_name",
+            ),
+        },
+        "medusa": {
+            "raw": str(values.get("MEDUSA_SOURCE_JSON", "")).strip(),
+            "keys": (
+                "medusa_git_repo",
+                "medusa_git_ref",
+                "medusa_git_commit",
+                "medusa_go_version",
+                "medusa_go_sha256",
+            ),
+            "identity_keys": (
+                "medusa_git_repo",
+                "medusa_git_ref",
+                "medusa_git_commit",
+            ),
+        },
+    }
+    output: dict[str, str] = {}
+    for group in groups.values():
+        keys = group["keys"]
+        direct = {
+            key: str(values.get(f"CALL_{key.upper()}", ""))
+            for key in keys
+        }
+        raw = group["raw"]
+        if raw:
+            if any(direct[key] for key in group["identity_keys"]):
+                raise ValueError(
+                    "manual JSON tool inputs cannot be combined with "
+                    "reusable-workflow tool inputs"
+                )
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid bleeding-edge tool JSON: {exc}") from exc
+            if not isinstance(parsed, dict):
+                raise ValueError("bleeding-edge tool JSON must be an object")
+            unexpected = sorted(set(parsed) - set(keys))
+            if unexpected:
+                raise ValueError(
+                    "unexpected bleeding-edge tool keys: "
+                    + ", ".join(unexpected)
+                )
+            direct = {key: parsed.get(key, "") for key in keys}
+        for key, raw_value in direct.items():
+            if not isinstance(raw_value, str):
+                raise ValueError(f"{key} must be a string")
+            if "\n" in raw_value or "\r" in raw_value:
+                raise ValueError(f"{key} must be a single line")
+            if len(raw_value) > 500:
+                raise ValueError(f"{key} is too long")
+            output[key] = raw_value
+
+    output["medusa_go_version"] = output["medusa_go_version"] or "1.24.0"
+    output["medusa_go_sha256"] = (
+        output["medusa_go_sha256"]
+        or "dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858"
+    )
+    return output
+
+
 def validate_benchmark_inputs(values: dict[str, str]) -> dict[str, Any]:
     """Validate every cloud input before admission creates persistent objects."""
 
@@ -210,6 +320,22 @@ def validate_benchmark_inputs(values: dict[str, str]) -> dict[str, Any]:
         raise ValueError("timeout_hours must be a number") from exc
     if not math.isfinite(timeout_hours) or not 0.25 <= timeout_hours <= 72:
         raise ValueError("timeout_hours must be in [0.25, 72]")
+    try:
+        preliminary_minutes = float(value("PRELIMINARY_INTERVAL_MINUTES") or "60")
+    except ValueError as exc:
+        raise ValueError("preliminary_interval_minutes must be a number") from exc
+    preliminary_seconds = preliminary_minutes * 60
+    if (
+        not math.isfinite(preliminary_minutes)
+        or preliminary_minutes < 0
+        or preliminary_minutes > 1440
+        or (preliminary_minutes != 0 and preliminary_minutes < 1)
+        or not preliminary_seconds.is_integer()
+    ):
+        raise ValueError(
+            "preliminary_interval_minutes must be 0 or a value in [1, 1440] "
+            "that resolves to whole seconds"
+        )
 
     try:
         fuzzers = json.loads(
@@ -232,7 +358,6 @@ def validate_benchmark_inputs(values: dict[str, str]) -> dict[str, Any]:
 
     safe_token = re.compile(r"^[A-Za-z0-9._+-]*$")
     for name in (
-        "FOUNDRY_VERSION",
         "ECHIDNA_VERSION",
         "MEDUSA_VERSION",
         "RECON_VERSION",
@@ -248,6 +373,115 @@ def validate_benchmark_inputs(values: dict[str, str]) -> dict[str, Any]:
     foundry_ref = value("FOUNDRY_GIT_REF")
     if foundry_ref and not re.fullmatch(r"[A-Za-z0-9._/-]+", foundry_ref):
         raise ValueError("foundry_git_ref contains unsupported characters")
+
+    echidna_ci_names = (
+        "ECHIDNA_CI_REPO",
+        "ECHIDNA_CI_RUN_ID",
+        "ECHIDNA_CI_ARTIFACT_NAME",
+        "ECHIDNA_CI_ARTIFACT_SHA256",
+        "ECHIDNA_CI_COMMIT",
+        "ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME",
+    )
+    echidna_ci = {name: value(name) for name in echidna_ci_names}
+    echidna_count = sum(bool(item) for item in echidna_ci.values())
+    if echidna_count not in {0, len(echidna_ci_names)}:
+        raise ValueError(
+            "Echidna CI mode requires repo, run ID, artifact name, artifact "
+            "SHA-256, full commit, and token SSM parameter together"
+        )
+    echidna_kms_arn = value("ECHIDNA_CI_TOKEN_KMS_KEY_ARN")
+    if echidna_count:
+        if value("ECHIDNA_VERSION"):
+            raise ValueError(
+                "echidna_version and Echidna CI artifact mode are mutually exclusive"
+            )
+        if "echidna" not in fuzzers:
+            raise ValueError("Echidna CI artifact mode requires echidna")
+        if not re.fullmatch(
+            r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?/?",
+            echidna_ci["ECHIDNA_CI_REPO"],
+        ):
+            raise ValueError("echidna_ci_repo must be a GitHub HTTPS repository")
+        if (
+            not echidna_ci["ECHIDNA_CI_RUN_ID"].isdigit()
+            or int(echidna_ci["ECHIDNA_CI_RUN_ID"]) < 1
+        ):
+            raise ValueError("echidna_ci_run_id must be a positive integer")
+        artifact_name = echidna_ci["ECHIDNA_CI_ARTIFACT_NAME"]
+        if (
+            not re.fullmatch(r"[A-Za-z0-9._-]+", artifact_name)
+            or "linux" not in artifact_name.lower()
+        ):
+            raise ValueError("echidna_ci_artifact_name must identify Linux")
+        if not re.fullmatch(
+            r"[A-Fa-f0-9]{64}", echidna_ci["ECHIDNA_CI_ARTIFACT_SHA256"]
+        ):
+            raise ValueError("echidna_ci_artifact_sha256 must be a SHA-256")
+        if not re.fullmatch(
+            r"[A-Fa-f0-9]{40}", echidna_ci["ECHIDNA_CI_COMMIT"]
+        ):
+            raise ValueError("echidna_ci_commit must be a full commit SHA")
+        if not re.fullmatch(
+            r"/scfuzzbench/[A-Za-z0-9_./-]+",
+            echidna_ci["ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME"],
+        ):
+            raise ValueError(
+                "echidna_ci_token_ssm_parameter_name must start with /scfuzzbench/"
+            )
+    elif echidna_kms_arn:
+        raise ValueError(
+            "echidna_ci_token_kms_key_arn requires Echidna CI artifact mode"
+        )
+    if echidna_kms_arn and not re.fullmatch(
+        r"arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]{36}",
+        echidna_kms_arn,
+    ):
+        raise ValueError("echidna_ci_token_kms_key_arn must be an exact KMS key ARN")
+
+    medusa_source_names = (
+        "MEDUSA_GIT_REPO",
+        "MEDUSA_GIT_REF",
+        "MEDUSA_GIT_COMMIT",
+    )
+    medusa_source = {name: value(name) for name in medusa_source_names}
+    medusa_count = sum(bool(item) for item in medusa_source.values())
+    if medusa_count not in {0, len(medusa_source_names)}:
+        raise ValueError(
+            "Medusa source mode requires git repo, git ref, and full commit together"
+        )
+    medusa_go_version = value("MEDUSA_GO_VERSION") or "1.24.0"
+    medusa_go_sha256 = (
+        value("MEDUSA_GO_SHA256")
+        or "dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858"
+    )
+    if not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", medusa_go_version):
+        raise ValueError("medusa_go_version must look like 1.24.0")
+    if not re.fullmatch(r"[A-Fa-f0-9]{64}", medusa_go_sha256):
+        raise ValueError("medusa_go_sha256 must be a SHA-256")
+    if medusa_count:
+        if value("MEDUSA_VERSION"):
+            raise ValueError(
+                "medusa_version and Medusa source mode are mutually exclusive"
+            )
+        if "medusa" not in fuzzers:
+            raise ValueError("Medusa source mode requires medusa")
+        if not re.fullmatch(
+            r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?/?",
+            medusa_source["MEDUSA_GIT_REPO"],
+        ):
+            raise ValueError("medusa_git_repo must be a GitHub HTTPS repository")
+        medusa_ref = medusa_source["MEDUSA_GIT_REF"]
+        if (
+            not re.fullmatch(r"[A-Za-z0-9._/-]+", medusa_ref)
+            or medusa_ref.startswith("-")
+            or ".." in medusa_ref
+            or "//" in medusa_ref
+        ):
+            raise ValueError("medusa_git_ref contains unsupported characters")
+        if not re.fullmatch(
+            r"[A-Fa-f0-9]{40}", medusa_source["MEDUSA_GIT_COMMIT"]
+        ):
+            raise ValueError("medusa_git_commit must be a full commit SHA")
     ssm_name = value("GIT_TOKEN_SSM_PARAMETER_NAME")
     if ssm_name and not re.fullmatch(r"/scfuzzbench/[A-Za-z0-9_./-]+", ssm_name):
         raise ValueError(
@@ -260,6 +494,21 @@ def validate_benchmark_inputs(values: dict[str, str]) -> dict[str, Any]:
         or not re.fullmatch(r"[A-Za-z0-9_./-]+", properties_path)
     ):
         raise ValueError("properties_path must be a safe repo-relative path")
+    seed_source = value("SHARED_SEED_CORPUS_SOURCE")
+    if seed_source:
+        if not re.fullmatch(
+            r"(?:s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/)?"
+            r"[A-Za-z0-9/._+~-]+/?",
+            seed_source,
+        ):
+            raise ValueError(
+                "shared_seed_corpus_source must be a safe target-relative "
+                "path or s3://bucket/prefix"
+            )
+        if "/./" in f"/{seed_source}/" or "/../" in f"/{seed_source}/":
+            raise ValueError(
+                "shared_seed_corpus_source must not contain dot path segments"
+            )
 
     fuzzer_env_raw = value("FUZZER_ENV_JSON")
     fuzzer_env: dict[str, str] = {}
@@ -289,6 +538,7 @@ def validate_benchmark_inputs(values: dict[str, str]) -> dict[str, Any]:
     return {
         "fuzzers": fuzzers,
         "fuzzer_env": fuzzer_env,
+        "preliminary_interval_seconds": int(preliminary_seconds),
         "timeout_hours": timeout_hours,
     }
 
@@ -525,6 +775,16 @@ def cmd_identity(args: argparse.Namespace) -> int:
             for key, value in identity.items():
                 output.write(f"{key}={value}\n")
     print(json.dumps(identity, sort_keys=True))
+    return 0
+
+
+def cmd_normalize_tools(args: argparse.Namespace) -> int:
+    normalized = normalize_tool_sources(dict(os.environ))
+    if args.github_output:
+        with Path(args.github_output).open("a") as output:
+            for key, value in normalized.items():
+                output.write(f"{key}={value}\n")
+    print(json.dumps(normalized, sort_keys=True))
     return 0
 
 
@@ -795,6 +1055,10 @@ def build_parser() -> argparse.ArgumentParser:
     identity.add_argument("--started-at-epoch", type=int, default=0)
     identity.add_argument("--github-output", default="")
     identity.set_defaults(func=cmd_identity)
+
+    normalize_tools = subparsers.add_parser("normalize-tools")
+    normalize_tools.add_argument("--github-output", default="")
+    normalize_tools.set_defaults(func=cmd_normalize_tools)
 
     admit = subparsers.add_parser("admit")
     admit.add_argument("--bucket", required=True)

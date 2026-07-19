@@ -40,15 +40,13 @@ A fuzzer is currently considered in-scope when it is:
 
 ## Benchmark Targets
 
-Every target is a fork under the scfuzzbench org. The benchmark always consumes the
-target's `main` branch (upstream code plus harness); `pre-target` holds the pristine
-upstream baseline, so `compare pre-target...main` shows exactly what the harness adds.
-
-- [Aave v4](https://github.com/scfuzzbench/aave-v4-scfuzzbench)
-- [Superform v2-periphery](https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench)
-- [Liquity v2 Governance](https://github.com/scfuzzbench/liquity-V2-gov-scfuzzbench)
-- [Origin Dollar (OUSD)](https://github.com/scfuzzbench/origin-dollar-scfuzzbench)
-- [Drips](https://github.com/scfuzzbench/drips-fuzzing-scfuzzbench)
+Every target is a fork under the scfuzzbench org. Its `main` branch holds upstream
+code plus the harness, while `pre-target` holds the pristine upstream baseline.
+The benchmark consumes the immutable commit recorded in the authoritative
+[`benchmarks/targets.json`](benchmarks/targets.json) catalog, with
+revision-locked known-bug mappings in
+[`benchmarks/known_bugs.json`](benchmarks/known_bugs.json). See
+[`benchmarks/README.md`](benchmarks/README.md) for fields and maintenance.
 
 Use the target onboarding skill for new targets:
 
@@ -63,6 +61,7 @@ For all technical/operational details, use the docs site pages:
 - Start benchmark request: `docs/start.md`
 - Methodology: `docs/methodology.md`
 - Operations guide (Terraform, running, reruns, analysis, CI workflows): `docs/operations.md`
+- Active preliminary results: `docs/preliminary/index.md`
 - Target onboarding skill (machine-oriented): `skills/target-onboarding/SKILL.md`
 
 Rendered docs navigation and run/benchmark pages are available under `docs/`.

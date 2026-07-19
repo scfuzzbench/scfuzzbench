@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
+import html
 import json
 import os
 from pathlib import Path
@@ -10,8 +12,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.parse import urljoin
+from urllib.parse import quote
 from dataclasses import dataclass
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +27,22 @@ from analysis.trial_run import (  # noqa: E402
     format_trial_run_warning,
 )
 from scripts.benchmark_run_state import run_started_at_epoch  # noqa: E402
+from scripts.preliminary_results import (  # noqa: E402
+    ANALYSIS_META_RE,
+    FINALIZED_KEY_RE,
+    MAX_JSON_BYTES,
+    MAX_LIST_KEYS,
+    MAX_LIST_PAGES,
+    MAX_RUN_MANIFESTS,
+    MAX_SELECTED_RUNS,
+    RESULT_SCHEMA,
+    RUN_KEY_RE as PRELIMINARY_RUN_KEY_RE,
+    format_duration,
+    s3_object_identity_args,
+    validate_finalized_marker,
+    validate_result_metadata,
+    validate_run_manifest,
+)
 
 
 RUN_MANIFEST_RE = re.compile(
@@ -79,19 +99,40 @@ def aws_text(args: list[str], *, profile: str | None) -> str:
 
 def list_keys(bucket: str, prefix: str, *, profile: str | None) -> list[str]:
     keys: list[str] = []
-    token: str | None = None
+    token = ""
+    pages = 0
     while True:
+        pages += 1
+        if pages > MAX_LIST_PAGES:
+            raise ValueError(
+                f"S3 listing exceeded {MAX_LIST_PAGES} pages under {prefix}"
+            )
         cmd = ["s3api", "list-objects-v2", "--bucket", bucket, "--prefix", prefix]
         if token:
             cmd += ["--continuation-token", token]
         data = aws_json(cmd, profile=profile)
-        keys.extend([obj["Key"] for obj in data.get("Contents", [])])
+        contents = data.get("Contents", [])
+        if not isinstance(contents, list):
+            raise ValueError("S3 listing Contents must be a list")
+        page_keys = [
+            str(item["Key"])
+            for item in contents
+            if isinstance(item, dict) and "Key" in item
+        ]
+        if len(page_keys) != len(contents):
+            raise ValueError("S3 listing contained an invalid object entry")
+        if len(keys) + len(page_keys) > MAX_LIST_KEYS:
+            raise ValueError(
+                f"S3 listing exceeded {MAX_LIST_KEYS} keys under {prefix}"
+            )
+        keys.extend(page_keys)
         if not data.get("IsTruncated"):
-            break
-        token = data.get("NextContinuationToken")
+            return keys
+        token = str(data.get("NextContinuationToken", ""))
         if not token:
-            break
-    return keys
+            raise RuntimeError(
+                "S3 pagination was truncated without a continuation token"
+            )
 
 
 def head_exists(bucket: str, key: str, *, profile: str | None) -> bool:
@@ -416,6 +457,14 @@ def format_fuzzer_lines(manifest: dict) -> list[str]:
         git_ref = str(manifest.get("foundry_git_ref", "") or "").strip()
         if git_ref:
             versions["foundry"] = f"git:{git_ref[:7]}"
+    if "echidna" not in versions:
+        ci_commit = str(manifest.get("echidna_ci_commit", "") or "").strip()
+        if ci_commit:
+            versions["echidna"] = f"ci:{ci_commit[:7]}"
+    if "medusa" not in versions:
+        git_commit = str(manifest.get("medusa_git_commit", "") or "").strip()
+        if git_commit:
+            versions["medusa"] = f"git:{git_commit[:7]}"
 
     lines: list[str] = []
     for fuzzer in ordered_fuzzers:
@@ -426,6 +475,33 @@ def format_fuzzer_lines(manifest: dict) -> list[str]:
                 version = versions.get(alias, "").strip()
         line = f"{fuzzer} ({version})" if version else fuzzer
         lines.append(f"`{line}`")
+    return lines
+
+
+def format_seed_corpus_lines(manifest: dict) -> list[str]:
+    seed_corpus = manifest.get("seed_corpus")
+    if not isinstance(seed_corpus, dict):
+        return []
+
+    lines: list[str] = []
+    fields = (
+        ("seed_corpus_source", "source"),
+        ("seed_corpus_source_type", "source_type"),
+        ("seed_corpus_file_count", "file_count"),
+        ("seed_corpus_size_bytes", "size_bytes"),
+        ("seed_corpus_sha256", "sha256"),
+        ("seed_corpus_digest_algorithm", "digest_algorithm"),
+        ("seed_corpus_copy_semantics", "copy_semantics"),
+        ("seed_corpus_source_immutability", "source_immutability"),
+        ("seed_corpus_s3_listing_sha256", "s3_listing_sha256"),
+    )
+    for label, key in fields:
+        value = seed_corpus.get(key)
+        if value is None:
+            continue
+        rendered = str(value).strip()
+        if rendered:
+            lines.append(f"- {label}: `{rendered}`")
     return lines
 
 
@@ -469,6 +545,405 @@ def rm_tree_children(dir_path: Path, *, keep_files: set[str], dir_name_re: re.Pa
             if dir_name_re and not dir_name_re.match(child.name):
                 continue
             shutil.rmtree(child)
+
+
+def preliminary_warning_lines(metadata: dict) -> list[str]:
+    expected = int(metadata.get("expected_snapshots", 0))
+    present = int(metadata.get("present_snapshots", 0))
+    missing = max(0, expected - present)
+    return [
+        "::: danger PRELIMINARY — DO NOT COMPARE OR STOP",
+        "This view is incomplete and non-terminal. Wait for the canonical release.",
+        "",
+        f"- As of: `{metadata.get('as_of_utc', 'not available')}`",
+        f"- Elapsed: `{format_duration(int(metadata.get('elapsed_seconds', 0)))}` "
+        f"of `{format_duration(int(metadata.get('planned_timeout_seconds', 0)))}`",
+        f"- Snapshot coverage: `{present}/{expected}` replicates (`{missing}` missing)",
+        "",
+        "Do not use this page for rankings, pass/fail decisions, or optional stopping.",
+        "Saved-corpus selector distributions are unavailable in preliminary "
+        "log-only checkpoints; wait for the canonical release.",
+        ":::",
+        "",
+    ]
+
+
+def preliminary_object_head(
+    bucket: str,
+    key: str,
+    *,
+    profile: str | None,
+    max_bytes: int,
+    expected_sha256: str = "",
+) -> dict:
+    head = aws_json(
+        ["s3api", "head-object", "--bucket", bucket, "--key", key],
+        profile=profile,
+    )
+    try:
+        size = int(head.get("ContentLength"))
+    except (TypeError, ValueError):
+        raise ValueError(f"{key} has invalid ContentLength") from None
+    digest = str(head.get("Metadata", {}).get("sha256", ""))
+    if size < 0 or size > max_bytes:
+        raise ValueError(f"{key} exceeds its docs byte cap")
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError(f"{key} is missing immutable SHA-256 metadata")
+    if expected_sha256 and digest != expected_sha256:
+        raise ValueError(f"{key} SHA-256 metadata disagrees with its analysis manifest")
+    return head
+
+
+def preliminary_text(
+    bucket: str,
+    key: str,
+    *,
+    profile: str | None,
+    max_bytes: int,
+    expected_sha256: str = "",
+) -> str:
+    if (
+        not isinstance(max_bytes, int)
+        or isinstance(max_bytes, bool)
+        or max_bytes < 1
+    ):
+        raise ValueError("docs byte cap must be a positive integer")
+    head = preliminary_object_head(
+        bucket,
+        key,
+        profile=profile,
+        max_bytes=max_bytes,
+        expected_sha256=expected_sha256,
+    )
+    identity_args = s3_object_identity_args(head, key)
+    with tempfile.TemporaryDirectory(prefix="scfuzzbench-docs-s3-") as tmp:
+        destination = Path(tmp) / "object"
+        subprocess.check_call(
+            [
+                "aws",
+                "s3api",
+                "get-object",
+                "--bucket",
+                bucket,
+                "--key",
+                key,
+                "--range",
+                f"bytes=0-{max_bytes}",
+                *identity_args,
+                str(destination),
+            ],
+            env=aws_env(profile),
+            stdout=subprocess.DEVNULL,
+        )
+        downloaded_size = destination.stat().st_size
+        if downloaded_size > max_bytes:
+            raise ValueError(f"{key} downloaded object exceeds its docs byte cap")
+        if downloaded_size != int(head["ContentLength"]):
+            raise ValueError(f"{key} downloaded size disagrees with S3 metadata")
+        encoded = destination.read_bytes()
+    if len(encoded) != int(head["ContentLength"]):
+        raise ValueError(f"{key} downloaded size disagrees with S3 metadata")
+    actual = hashlib.sha256(encoded).hexdigest()
+    expected = str(head["Metadata"]["sha256"])
+    if actual != expected:
+        raise ValueError(f"{key} downloaded SHA-256 disagrees with S3 metadata")
+    return encoded.decode("utf-8")
+
+
+def sanitize_preliminary_markdown(value: str) -> str:
+    if len(value.encode("utf-8")) > 2 * 1024 * 1024:
+        raise ValueError("preliminary report exceeds its docs byte cap")
+    if "PRELIMINARY — INCOMPLETE — DO NOT COMPARE OR STOP" not in value:
+        raise ValueError("preliminary report is missing its required warning")
+    # Reports contain target-controlled invariant names. Preserve Markdown
+    # structure while neutralizing raw HTML/Vue templates and active URL schemes.
+    sanitized = html.escape(value.replace("\x00", ""), quote=False)
+    sanitized = sanitized.replace("{", "&#123;").replace("}", "&#125;")
+    sanitized = re.sub(
+        r"(?i)(!?\[[^\]\r\n]*\]\()\s*(?:javascript|data|vbscript):",
+        r"\1blocked:",
+        sanitized,
+    )
+    return sanitized
+
+
+def preliminary_s3_url(bucket: str, region: str, key: str) -> str:
+    return f"https://{bucket}.s3.{region}.amazonaws.com/{quote(key, safe='/')}"
+
+
+def render_preliminary_page(
+    *,
+    manifest: dict,
+    metadata: dict | None,
+    report_markdown: str,
+    chart_urls: list[tuple[str, str]],
+    generated_at: str,
+) -> str:
+    run_id = str(manifest["run_id"])
+    uuid = str(manifest["benchmark_uuid"])
+    lines = [
+        "---",
+        "aside: false",
+        "---",
+        "",
+        f"# Preliminary run `{run_id}`",
+        "",
+    ]
+    if metadata is None:
+        lines.extend(
+            [
+                "::: danger PRELIMINARY — NO CHECKPOINT YET",
+                "The run is active, but no settled checkpoint has been published.",
+                "Wait for the next preliminary update. Do not make benchmark decisions.",
+                ":::",
+                "",
+            ]
+        )
+    else:
+        lines.extend(preliminary_warning_lines(metadata))
+    lines.extend(
+        [
+            f"- Benchmark: `{uuid}`",
+            f"- Started: `{utc_ts(int(manifest['run_started_at_epoch']))}`",
+            f"- Planned timeout: `{float(manifest['timeout_hours']):g}h`",
+            f"- Page generated: `{generated_at}`",
+            "",
+        ]
+    )
+    if chart_urls:
+        lines.extend(["## Watermarked charts", ""])
+        for label, url in chart_urls:
+            lines.append(f"![PRELIMINARY — {label}]({url})")
+            lines.append("")
+    if report_markdown.strip():
+        lines.extend(["## Watermarked report", ""])
+        lines.extend(rewrite_headings(report_markdown, add=2).splitlines())
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def generate_preliminary_pages(
+    *,
+    bucket: str,
+    region: str,
+    profile: str | None,
+    docs_dir: Path,
+    now: int,
+    generated_at: str,
+) -> None:
+    keys = list_keys(bucket, "preliminary/", profile=profile)
+    run_keys = sorted(key for key in keys if PRELIMINARY_RUN_KEY_RE.fullmatch(key))
+    if len(run_keys) > MAX_RUN_MANIFESTS:
+        raise ValueError(
+            f"preliminary docs exceeded {MAX_RUN_MANIFESTS} run manifests"
+        )
+    finalized: set[tuple[str, str]] = set()
+    for key in sorted(item for item in keys if FINALIZED_KEY_RE.fullmatch(item)):
+        match = FINALIZED_KEY_RE.fullmatch(key)
+        if match is None:
+            raise AssertionError("finalized key filter disagrees with parser")
+        try:
+            marker = json.loads(
+                preliminary_text(
+                    bucket,
+                    key,
+                    profile=profile,
+                    max_bytes=MAX_JSON_BYTES,
+                )
+            )
+            validate_finalized_marker(
+                marker,
+                run_id=match["run"],
+                benchmark_uuid=match["uuid"],
+            )
+        except Exception as exc:
+            print(
+                f"WARNING: ignoring invalid preliminary finalization marker "
+                f"{key}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        finalized.add((match["run"], match["uuid"]))
+    analysis_by_run: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    for key in keys:
+        match = ANALYSIS_META_RE.fullmatch(key)
+        if match:
+            analysis_by_run.setdefault((match["run"], match["uuid"]), []).append(
+                (int(match["checkpoint"]), key)
+            )
+
+    active: list[tuple[dict, dict | None, str, list[tuple[str, str]]]] = []
+    for key in run_keys:
+        match = PRELIMINARY_RUN_KEY_RE.fullmatch(key)
+        run_id, uuid = match["run"], match["uuid"]
+        try:
+            manifest = json.loads(
+                preliminary_text(
+                    bucket,
+                    key,
+                    profile=profile,
+                    max_bytes=1024 * 1024,
+                )
+            )
+            manifest = validate_run_manifest(
+                manifest, run_id=run_id, benchmark_uuid=uuid
+            )
+        except Exception as exc:
+            print(f"WARNING: skipping malformed preliminary manifest {key}: {exc}", file=sys.stderr)
+            continue
+        if not manifest["preliminary"]["enabled"] or (run_id, uuid) in finalized:
+            continue
+        deadline = manifest["run_started_at_epoch"] + int(
+            manifest["timeout_hours"] * 3600
+        )
+        if now < manifest["run_started_at_epoch"] or now >= deadline:
+            continue
+
+        metadata = None
+        report_markdown = ""
+        chart_urls: list[tuple[str, str]] = []
+        checkpoints = analysis_by_run.get((run_id, uuid), [])
+        if checkpoints:
+            checkpoint, metadata_key = max(checkpoints)
+            try:
+                metadata = json.loads(
+                    preliminary_text(
+                        bucket,
+                        metadata_key,
+                        profile=profile,
+                        max_bytes=2 * 1024 * 1024,
+                    )
+                )
+                metadata = validate_result_metadata(
+                    metadata,
+                    run_id=run_id,
+                    benchmark_uuid=uuid,
+                    checkpoint=checkpoint,
+                )
+                prefix = metadata_key.removesuffix("/preliminary.json")
+                report_key = f"{prefix}/data/REPORT.md"
+                published_hashes = metadata["published_file_sha256"]
+                report_digest = str(published_hashes.get("data/REPORT.md", ""))
+                if report_digest:
+                    report_markdown = sanitize_preliminary_markdown(
+                        preliminary_text(
+                            bucket,
+                            report_key,
+                            profile=profile,
+                            max_bytes=2 * 1024 * 1024,
+                            expected_sha256=report_digest,
+                        )
+                    )
+                chart_prefix = f"{prefix}/images/"
+                for chart_key in sorted(
+                    item
+                    for item in keys
+                    if item.startswith(chart_prefix) and item.endswith(".png")
+                ):
+                    relative = chart_key.removeprefix(f"{prefix}/")
+                    if not re.fullmatch(
+                        r"images/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.png",
+                        relative,
+                    ):
+                        continue
+                    expected_digest = str(published_hashes.get(relative, ""))
+                    if not expected_digest:
+                        continue
+                    preliminary_object_head(
+                        bucket,
+                        chart_key,
+                        profile=profile,
+                        max_bytes=64 * 1024 * 1024,
+                        expected_sha256=expected_digest,
+                    )
+                    label = Path(chart_key).stem.replace("_", " ").title()
+                    chart_urls.append(
+                        (label, preliminary_s3_url(bucket, region, chart_key))
+                    )
+            except Exception as exc:
+                print(
+                    f"WARNING: skipping malformed preliminary analysis {metadata_key}: {exc}",
+                    file=sys.stderr,
+                )
+                metadata = None
+                report_markdown = ""
+                chart_urls = []
+        active.append((manifest, metadata, report_markdown, chart_urls))
+        if len(active) > MAX_SELECTED_RUNS:
+            raise ValueError(
+                f"preliminary docs exceeded {MAX_SELECTED_RUNS} active runs"
+            )
+
+    active.sort(
+        key=lambda item: (
+            int(item[0]["run_started_at_epoch"]),
+            str(item[0]["run_id"]),
+        ),
+        reverse=True,
+    )
+    rm_tree_children(
+        docs_dir / "preliminary",
+        keep_files={"index.md"},
+        dir_name_re=None,
+    )
+    index_lines = [
+        "---",
+        "aside: false",
+        "---",
+        "",
+        "# Active preliminary results",
+        "",
+        "::: danger Preliminary views are not benchmark results",
+        "These pages are incomplete. Do not compare fuzzers, declare success or failure, or stop a run early.",
+        "Saved-corpus selector distributions are unavailable in these log-only checkpoints; wait for the canonical release.",
+        ":::",
+        "",
+        f"_Generated at: **{generated_at}** (UTC)_",
+        "",
+    ]
+    if not active:
+        index_lines.extend(["_No active preliminary runs._", ""])
+    else:
+        index_lines.extend(
+            [
+                "| Run | Started (UTC) | Benchmark | Latest checkpoint | Snapshot coverage |",
+                "|---|---|---|---:|---:|",
+            ]
+        )
+        for manifest, metadata, _, _ in active:
+            run_id = str(manifest["run_id"])
+            uuid = str(manifest["benchmark_uuid"])
+            checkpoint = str(metadata["checkpoint"]) if metadata else "waiting"
+            coverage = (
+                f"{metadata['present_snapshots']}/{metadata['expected_snapshots']}"
+                if metadata
+                else "0/0"
+            )
+            index_lines.append(
+                f"| [`{run_id}`](./{run_id}/{uuid}/) | "
+                f"`{utc_ts(int(manifest['run_started_at_epoch']))}` | "
+                f"`{uuid}` | {checkpoint} | {coverage} |"
+            )
+        index_lines.append("")
+    write_text(
+        docs_dir / "preliminary" / "index.md",
+        "\n".join(index_lines).rstrip() + "\n",
+    )
+    for manifest, metadata, report, charts in active:
+        write_text(
+            docs_dir
+            / "preliminary"
+            / str(manifest["run_id"])
+            / str(manifest["benchmark_uuid"])
+            / "index.md",
+            render_preliminary_page(
+                manifest=manifest,
+                metadata=metadata,
+                report_markdown=report,
+                chart_urls=charts,
+                generated_at=generated_at,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -583,6 +1058,15 @@ def main() -> int:
         reverse=True,
     )
     print(f"Found {len(complete_runs)} complete runs (timeout + grace)")
+
+    generate_preliminary_pages(
+        bucket=bucket,
+        region=region,
+        profile=profile,
+        docs_dir=docs_dir,
+        now=now,
+        generated_at=generated_at,
+    )
 
     # Build compile-time EC2 pricing table for the Start Benchmark page.
     pricing_instance_types = {
@@ -912,14 +1396,28 @@ def main() -> int:
         memory_chart_key = f"{r.analysis_prefix}/memory_usage_over_time.png"
         broken_md_key = f"{r.analysis_prefix}/broken_invariants.md"
         broken_csv_key = f"{r.analysis_prefix}/broken_invariants.csv"
+        known_bug_md_key = f"{r.analysis_prefix}/known_bug_report.md"
+        known_bug_summary_csv_key = f"{r.analysis_prefix}/known_bug_summary.csv"
+        known_bug_findings_csv_key = f"{r.analysis_prefix}/known_bug_findings.csv"
         throughput_summary_csv_key = f"{r.analysis_prefix}/throughput_summary.csv"
         progress_metrics_summary_csv_key = (
             f"{r.analysis_prefix}/progress_metrics_summary.csv"
         )
+        selector_distribution_csv_key = (
+            f"{r.analysis_prefix}/selector_distribution.csv"
+        )
+        selector_summary_json_key = f"{r.analysis_prefix}/selector_summary.json"
         txps_over_time_chart_key = f"{r.analysis_prefix}/tx_per_second_over_time.png"
         gasps_over_time_chart_key = f"{r.analysis_prefix}/gas_per_second_over_time.png"
         seqps_over_time_chart_key = f"{r.analysis_prefix}/seq_per_second_over_time.png"
-        coverage_over_time_chart_key = f"{r.analysis_prefix}/coverage_proxy_over_time.png"
+        coverage_over_time_chart_name = "coverage_over_time.png"
+        coverage_over_time_chart_key = (
+            f"{r.analysis_prefix}/{coverage_over_time_chart_name}"
+        )
+        legacy_coverage_over_time_chart_name = "coverage_proxy_over_time.png"
+        legacy_coverage_over_time_chart_key = (
+            f"{r.analysis_prefix}/{legacy_coverage_over_time_chart_name}"
+        )
         corpus_over_time_chart_key = f"{r.analysis_prefix}/corpus_size_over_time.png"
         runner_md_key = f"{r.analysis_prefix}/runner_resource_usage.md"
         runner_summary_csv_key = f"{r.analysis_prefix}/runner_resource_summary.csv"
@@ -939,6 +1437,18 @@ def main() -> int:
         has_broken_csv = (
             r.analysis_kind == "analysis" and head_exists(bucket, broken_csv_key, profile=profile)
         )
+        has_known_bug_md = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, known_bug_md_key, profile=profile)
+        )
+        has_known_bug_summary_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, known_bug_summary_csv_key, profile=profile)
+        )
+        has_known_bug_findings_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, known_bug_findings_csv_key, profile=profile)
+        )
         has_throughput_summary_csv = (
             r.analysis_kind == "analysis"
             and head_exists(bucket, throughput_summary_csv_key, profile=profile)
@@ -946,6 +1456,14 @@ def main() -> int:
         has_progress_metrics_summary_csv = (
             r.analysis_kind == "analysis"
             and head_exists(bucket, progress_metrics_summary_csv_key, profile=profile)
+        )
+        has_selector_distribution_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, selector_distribution_csv_key, profile=profile)
+        )
+        has_selector_summary_json = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, selector_summary_json_key, profile=profile)
         )
         has_txps_over_time_chart = (
             r.analysis_kind == "analysis"
@@ -959,10 +1477,17 @@ def main() -> int:
             r.analysis_kind == "analysis"
             and head_exists(bucket, seqps_over_time_chart_key, profile=profile)
         )
-        has_coverage_over_time_chart = (
-            r.analysis_kind == "analysis"
-            and head_exists(bucket, coverage_over_time_chart_key, profile=profile)
-        )
+        has_coverage_over_time_chart = False
+        if r.analysis_kind == "analysis":
+            if head_exists(bucket, coverage_over_time_chart_key, profile=profile):
+                has_coverage_over_time_chart = True
+            elif head_exists(
+                bucket, legacy_coverage_over_time_chart_key, profile=profile
+            ):
+                has_coverage_over_time_chart = True
+                coverage_over_time_chart_name = (
+                    legacy_coverage_over_time_chart_name
+                )
         has_corpus_over_time_chart = (
             r.analysis_kind == "analysis"
             and head_exists(bucket, corpus_over_time_chart_key, profile=profile)
@@ -990,7 +1515,9 @@ def main() -> int:
                 if has_invariant_chart:
                     lines.append(f"![Invariant Overlap (UpSet)]({analysis_base}/invariant_overlap_upset.png)")
                 if has_coverage_over_time_chart:
-                    lines.append(f"![Coverage Over Time]({analysis_base}/coverage_proxy_over_time.png)")
+                    lines.append(
+                        f"![Coverage Over Time]({analysis_base}/{coverage_over_time_chart_name})"
+                    )
                 if has_corpus_over_time_chart:
                     lines.append(f"![Corpus Size Over Time]({analysis_base}/corpus_size_over_time.png)")
                 if has_seqps_over_time_chart:
@@ -1035,6 +1562,17 @@ def main() -> int:
                 except Exception:
                     lines.append("_Failed to fetch broken_invariants.md from S3._")
                     lines.append("")
+            if has_known_bug_md:
+                try:
+                    known_bug_raw = aws_text(
+                        ["s3", "cp", f"s3://{bucket}/{known_bug_md_key}", "-"],
+                        profile=profile,
+                    )
+                    lines.append(rewrite_headings(known_bug_raw, add=2).rstrip())
+                    lines.append("")
+                except Exception:
+                    lines.append("_Failed to fetch known_bug_report.md from S3._")
+                    lines.append("")
             if has_runner_md:
                 try:
                     runner_raw = aws_text(
@@ -1073,11 +1611,24 @@ def main() -> int:
         add_kv("foundry_version", m.get("foundry_version"))
         add_kv("foundry_git_repo", m.get("foundry_git_repo"))
         add_kv("foundry_git_ref", m.get("foundry_git_ref"))
+        add_kv("foundry_source_patch", m.get("foundry_source_patch"))
         add_kv("echidna_version", m.get("echidna_version"))
+        add_kv("echidna_ci_repo", m.get("echidna_ci_repo"))
+        add_kv("echidna_ci_run_id", m.get("echidna_ci_run_id"))
+        add_kv("echidna_ci_artifact", m.get("echidna_ci_artifact"))
+        add_kv("echidna_ci_sha256", m.get("echidna_ci_sha256"))
+        add_kv("echidna_ci_commit", m.get("echidna_ci_commit"))
+        add_kv("echidna_ci_token_kms_key_arn", m.get("echidna_ci_token_kms_key_arn"))
         add_kv("medusa_version", m.get("medusa_version"))
+        add_kv("medusa_git_repo", m.get("medusa_git_repo"))
+        add_kv("medusa_git_ref", m.get("medusa_git_ref"))
+        add_kv("medusa_git_commit", m.get("medusa_git_commit"))
+        add_kv("medusa_go_version", m.get("medusa_go_version"))
+        add_kv("medusa_go_sha256", m.get("medusa_go_sha256"))
         add_kv("recon_version", m.get("recon_version"))
         if isinstance(m.get("fuzzer_keys"), list):
             lines.append(f"- fuzzer_keys: `{', '.join([str(x) for x in m.get('fuzzer_keys', [])])}`")
+        lines.extend(format_seed_corpus_lines(m))
         lines.append("")
 
         # Artifact links.
@@ -1092,12 +1643,37 @@ def main() -> int:
                 lines.append("- Broken invariants (Markdown): " + f"{analysis_base}/broken_invariants.md")
             if has_broken_csv:
                 lines.append("- Broken invariants (CSV): " + f"{analysis_base}/broken_invariants.csv")
+            if has_known_bug_md:
+                lines.append(
+                    "- Ground-truth known bugs (Markdown): "
+                    + f"{analysis_base}/known_bug_report.md"
+                )
+            if has_known_bug_summary_csv:
+                lines.append(
+                    "- Ground-truth summary (CSV): "
+                    + f"{analysis_base}/known_bug_summary.csv"
+                )
+            if has_known_bug_findings_csv:
+                lines.append(
+                    "- Ground-truth findings (CSV): "
+                    + f"{analysis_base}/known_bug_findings.csv"
+                )
             if has_throughput_summary_csv:
                 lines.append("- Throughput summary (CSV): " + f"{analysis_base}/throughput_summary.csv")
             if has_progress_metrics_summary_csv:
                 lines.append(
                     "- Progress metrics summary (CSV): "
                     + f"{analysis_base}/progress_metrics_summary.csv"
+                )
+            if has_selector_distribution_csv:
+                lines.append(
+                    "- Function selector distribution (CSV): "
+                    + f"{analysis_base}/selector_distribution.csv"
+                )
+            if has_selector_summary_json:
+                lines.append(
+                    "- Function selector summary and health (JSON): "
+                    + f"{analysis_base}/selector_summary.json"
                 )
             if has_runner_md:
                 lines.append("- Runner resource usage (Markdown): " + f"{analysis_base}/runner_resource_usage.md")
