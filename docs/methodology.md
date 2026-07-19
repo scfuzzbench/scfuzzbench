@@ -19,9 +19,12 @@ Core inputs are defined through Terraform vars and/or workflow dispatch:
 - Mode: `benchmark_type` (`property` or `optimization`)
 - Infra: `instance_type`, `instances_per_fuzzer`, `timeout_hours`
 - Fuzzer set: `fuzzers` (or default all available)
-- Tool versions: `foundry_version`, `echidna_version`, `medusa_version`, `recon_version`
+- Tool versions: `foundry_git_repo`/`foundry_git_ref`, `echidna_version`, `medusa_version`, `recon_version`
+- Optional shared input: `shared_seed_corpus_source` (empty by default)
 
 In CI (`.github/workflows/benchmark-run.yml`), inputs are validated before apply (value ranges, formats, and conservative character constraints).
+Cloud runs build Foundry from the pinned git source. The release-tag `foundry_version` path is available only to
+`scripts/local-run.sh` (or a low-level Terraform invocation with `foundry_git_repo` explicitly empty).
 
 ### 2) Compute run identity and benchmark identity
 
@@ -38,7 +41,8 @@ Terraform computes two IDs used across the pipeline:
 - `scfuzzbench_commit`, `target_repo_url`, `target_commit`
 - `benchmark_type`, `instance_type`, `instances_per_fuzzer`, `timeout_hours`
 - `aws_region`, `ubuntu_ami_id`
-- tool versions and selected `fuzzer_keys`
+- tool versions, `foundry_source_patch`, and selected `fuzzer_keys`
+- shared seed source/type/copy semantics when a seed corpus is configured
 
 This means changing any of those manifest fields changes `benchmark_uuid`.
 
@@ -58,9 +62,24 @@ Runner lifecycle is defined in `infrastructure/user_data.sh.tftpl` and `fuzzers/
 - Install only that runner's fuzzer implementation (`fuzzers/<name>/install.sh`).
 - Clone target repository and checkout the pinned commit.
 - Build with `forge build`.
+- Reset the fuzzer corpus and optionally copy the same shared seed tree into it.
 - Run fuzzer command under `timeout` (`SCFUZZBENCH_TIMEOUT_SECONDS`).
 - Collect host metrics periodically into `runner_metrics.csv` (enabled by default).
 - Upload artifacts to S3, then self-shutdown.
+
+Medusa's pinned 1.4.1 release normally starts a separate corpus-pruner
+goroutine every five minutes when coverage is enabled. Comparative runs set
+`fuzzing.pruneFrequency` to `0` in a temporary working config so this auxiliary
+CPU work does not sit outside the normalized worker count. The target's config
+is not modified. Operators can explicitly set `MEDUSA_PRUNE_FREQUENCY` to a
+positive minute interval for non-comparative experiments.
+
+Pinned Echidna 2.3.1 does not spawn a separate minimization worker. Its
+[`runFuzzWorker`](https://github.com/crytic/echidna/blob/v2.3.1/lib/Echidna/Campaign.hs#L353-L418)
+performs shrinking inline on the same fuzzing worker that found the failure
+before that worker resumes fuzzing. Its `shrinkLimit` therefore bounds
+worker-local work and is configured separately; it is not a background-thread
+control and is unchanged by the Medusa pruning policy.
 
 Instances are intentionally one-shot:
 
@@ -84,6 +103,14 @@ Each instance uploads:
 - Benchmark manifest:
   - `logs/<run_id>/<benchmark_uuid>/manifest.json`
   - `runs/<run_id>/<benchmark_uuid>/manifest.json` (timestamp-first index used by docs)
+- Shared-seed provenance, when configured:
+  - `seed_corpus.json` inside each logs zip
+  - `seed_corpus` in the benchmark manifest (redacted/collision-safe source,
+    fixed limits, per-file hashes, tree SHA-256, and S3 object identity)
+
+Canonical manifests are create-once objects. Concurrent instances may confirm
+that an existing object is byte-identical, but cannot overwrite a different
+manifest.
 
 ## What Counts as a Complete Run
 
@@ -120,20 +147,24 @@ This expands to:
 2. Collect `*.log` files, runner metrics, and Foundry showmap artifacts into analysis layout (`scripts/prepare_analysis_logs.py`)
 3. Parse events, summaries, and differential coverage artifacts (`scripts/run_analysis_filtered.py` -> `analysis/analyze.py`)
 4. Convert event stream to cumulative series (`analysis/events_to_cumulative.py`)
-5. Build report + charts (`analysis/benchmark_report.py`)
-6. Build broken-invariant overlap artifacts (`analysis/invariant_overlap_report.py`)
-7. Build runner CPU/memory artifacts (`analysis/runner_metrics_report.py`)
+5. Map events to revision-locked known-bug IDs (`analysis/known_bug_report.py`)
+6. Build report + charts (`analysis/benchmark_report.py`)
+7. Build broken-invariant overlap artifacts (`analysis/invariant_overlap_report.py`)
+8. Build runner CPU/memory artifacts (`analysis/runner_metrics_report.py`)
 
 Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_MIN`, `REPORT_CHECKPOINTS`, `REPORT_KS`, `INVARIANT_TOP_K`, `RUNNER_METRICS_BIN_SECONDS`, and `COVERAGE_OVER_TIME`.
 
 ### Event extraction semantics (`analysis/analyze.py`)
 
 - Parser is fuzzer-aware:
-  - Foundry: parse JSON lines, count events only from records with `event=failure`, and use the first JSON `timestamp` as the elapsed-time baseline.
+  - Foundry: parse JSON lines, count bug events only from records with `event=failure`, recover tx/gas throughput from `event=pulse`, and use the first JSON `timestamp` as the elapsed-time baseline.
   - Medusa: parse elapsed markers and failed assertions/properties from textual logs.
   - Echidna and Recon Fuzzer: parse falsification markers from textual logs.
   - Unknown fuzzers: fall back to generic pattern parsing.
-- Event de-duplication is per run-instance stream (same event name counted once per run).
+- Event de-duplication is per run-instance stream (same event name counted once
+  per replicate).
+  These are normalized failure identities, not crash inputs and not necessarily
+  confirmed root-cause bugs.
 - Outputs:
   - `events.csv` (raw event stream)
   - `summary.csv` (run-level aggregates)
@@ -149,6 +180,53 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - `differential_coverage_relcov.csv` (pairwise non-self relcov values computed from normalized AFL showmap campaigns)
   - `showmap_campaign_manifest.json` (raw showmap inputs, skipped inputs, and normalized campaign summaries)
   - `showmap_campaigns/` (canonical `approach/trial.txt` campaign directories used for relscore scoring)
+
+### Foundry throughput semantics
+
+- Upstream Foundry PR [#14266](https://github.com/foundry-rs/foundry/pull/14266) supplies cumulative
+  accepted-call and gas counters plus average rates. The pinned upstream source gates those pulses
+  behind mutually incompatible display/coverage conditions, so scfuzzbench applies the
+  digest-verified `fuzzers/foundry/throughput-progress.patch` only at the exact default source pin.
+- The patch changes reporting reachability only. It keeps `--show-progress` (and therefore graceful
+  SIGINT/final summaries), automatic invariant workers, the natural campaign timeout, and the
+  corpus-off memory safeguard unchanged.
+- `total_txs` counts completed non-discard calls; `total_gas` sums their reported gas. `tps` and
+  `gps` are campaign-to-date averages, not instantaneous rates. With multiple invariant workers the
+  totals are campaign-wide; the pulse's `worker.id` only identifies the worker that emitted that
+  interval.
+- Pulses are cadence-gated at roughly five seconds and occur after a completed invariant run. A
+  long in-flight transaction can therefore create a wider gap. Source overrides that resolve away
+  from the exact pinned commit do not receive the patch and may legitimately produce no Foundry
+  throughput samples.
+- The existing release pipeline publishes `throughput_samples.csv`,
+  `throughput_summary.csv`, `tx_per_second_over_time.png`, and
+  `gas_per_second_over_time.png`; no rate is inferred from host CPU or other proxy telemetry.
+
+### Ground-truth known-bug mapping (`analysis/known_bug_report.py`)
+
+- [`benchmarks/known_bugs.json`](../benchmarks/known_bugs.json) is the
+  authoritative, schema-validated mapping from target-specific canonical IDs to
+  fuzzer event aliases.
+- Mapping is applied only when the run repository and commit exactly match the
+  evidence-pinned target catalog. Runs against mutable or different revisions
+  receive an explicit "mapping unavailable" report instead of speculative
+  classifications.
+- Qualified names, Solidity signatures, assertion suffixes, and legacy Foundry
+  assertion-wrapper prefixes are normalized before alias lookup.
+- Multiple aliases for one canonical bug count at most once per replicate,
+  identified by `(run_id, instance_id, fuzzer)`. Crash
+  inputs and corpus entries are never used as bug identities.
+- Health-check canaries have their own denominator and never contribute to the
+  real known-bug hit rate.
+- Unknown event identities remain explicit `unmapped` rows. They are triage
+  candidates, not claimed bugs.
+- Hit rate is computed per fuzzer as canonical known-bug/replicate hits divided
+  by `(known bugs discoverable by that fuzzer × configured replicates)`.
+  Configured replicates with missing logs remain in the denominator.
+- Outputs:
+  - `known_bug_report.md` (human-readable hit rates, catalog entries, and unmapped identities)
+  - `known_bug_summary.csv` (per-fuzzer known-bug and canary hit rates)
+  - `known_bug_findings.csv` (per-run canonical mappings and unmapped identities)
 
 ### Differential coverage from Foundry showmap
 
@@ -204,6 +282,8 @@ Foundry showmap is intentionally separate. It is an opt-in, post-campaign edge r
 ### Cumulative conversion (`analysis/events_to_cumulative.py`)
 
 - Produces long-form CSV: `fuzzer, run_id, time_hours, bugs_found`.
+- `bugs_found` is a legacy compatibility name for cumulative normalized event
+  identities. Use the ground-truth outputs for confirmed known-bug claims.
 - Run keys are stabilized as `run_id:instance_id`.
 - When `--logs-dir` is provided, runs with zero detected events still emit a time `0` row (unless `--no-zero`).
 
@@ -221,7 +301,18 @@ Foundry showmap is intentionally separate. It is an opt-in, post-campaign edge r
   - late discovery share
   - time-to-k median + reach rate
   - final distribution (median + IQR)
-- Note: these report scorecards are count-based. They do not score severity or root-cause uniqueness.
+- Compares each fuzzer pair's end-of-budget bug counts with a two-sided
+  Mann-Whitney U test, applies a Bonferroni correction, and reports the
+  Vargha-Delaney A12 effect size. A12 is expressed as the probability that
+  Fuzzer A outperforms Fuzzer B (ties count as half); values above `0.5` favor
+  A and values below `0.5` favor B. Effect magnitudes are classified by
+  distance from `0.5` as negligible (`<0.06`), small (`<0.14`), medium
+  (`<0.21`), or large (`>=0.21`). These magnitude thresholds are descriptive
+  rules of thumb; neither A12 nor statistical significance establishes
+  practical importance, causation, or performance beyond the observed runs.
+- Note: these report scorecards use normalized event-identity counts. They do
+  not count crash inputs, but they also do not establish severity or root-cause
+  uniqueness. Use `known_bug_report.md` and its CSVs for ground-truth hit rates.
 - If `throughput_summary.csv` is present, the report also includes tx/s and gas/s summary tables.
 - If `throughput_samples.csv` is present, the report also emits throughput trend charts (`tx_per_second_over_time.png`, `gas_per_second_over_time.png`).
 - If `progress_metrics_summary.csv` is present, the report also includes per-fuzzer progress proxy tables (seq/s and corpus).
@@ -306,12 +397,15 @@ Recommended operational policy for this repository:
 5. Track overlap groups (for forks/wrappers/shared-core code) and keep only one representative per overlap group unless explicitly justified.
 6. Keep the selection manifest in-repo so additions/removals are reviewable.
 
-Suggested manifest fields per target:
+The authoritative catalog is
+[`benchmarks/targets.json`](https://github.com/scfuzzbench/scfuzzbench/blob/main/benchmarks/targets.json);
+its validation and maintenance workflow are documented in
+[`benchmarks/README.md`](https://github.com/scfuzzbench/scfuzzbench/blob/main/benchmarks/README.md).
+It records:
 
 - repository URL
 - pinned commit
 - properties path (`SCFUZZBENCH_PROPERTIES_PATH`)
-- benchmark mode(s) intended
 - rationale
 - related-work reference(s)
 - overlap group / exclusion notes

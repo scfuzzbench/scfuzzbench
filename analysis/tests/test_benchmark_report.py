@@ -122,6 +122,8 @@ class BenchmarkReportTests(unittest.TestCase):
             self.assertIn("count-based", report)
             self.assertIn("broken_invariants.md", report)
             self.assertIn("broken_invariants.csv", report)
+            self.assertIn("known_bug_report.md", report)
+            self.assertIn("not confirmed root-cause bug counts", report)
 
     def test_write_report_includes_throughput_section(self):
         metrics = [
@@ -898,6 +900,8 @@ class StatisticalTestsTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0].significant)
         self.assertEqual(results[0].direction, ">")
+        self.assertEqual(results[0].a12, 1.0)
+        self.assertEqual(results[0].effect_magnitude, "large")
         self.assertLess(results[0].p_corrected, 0.05)
 
     def test_identical_distributions(self):
@@ -909,6 +913,54 @@ class StatisticalTestsTests(unittest.TestCase):
         self.assertFalse(results[0].significant)
         self.assertEqual(results[0].p_value, 1.0)
         self.assertEqual(results[0].direction, "=")
+        self.assertEqual(results[0].a12, 0.5)
+        self.assertEqual(results[0].effect_magnitude, "negligible")
+
+    def test_a12_counts_ties_as_half(self):
+        m_a = _make_metrics("a", [2, 2])
+        m_b = _make_metrics("b", [1, 2])
+        results, _ = benchmark_report.compute_statistical_tests([m_a, m_b])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].a12, 0.75)
+        self.assertEqual(results[0].direction, ">")
+
+    def test_a12_reversing_unequal_tied_samples_complements_value(self):
+        m_a = _make_metrics("a", [2, 2, 3])
+        m_b = _make_metrics("b", [1, 2])
+
+        forward, _ = benchmark_report.compute_statistical_tests([m_a, m_b])
+        reverse, _ = benchmark_report.compute_statistical_tests([m_b, m_a])
+
+        self.assertAlmostEqual(forward[0].a12, 5.0 / 6.0)
+        self.assertAlmostEqual(reverse[0].a12, 1.0 / 6.0)
+        self.assertAlmostEqual(forward[0].a12 + reverse[0].a12, 1.0)
+        self.assertEqual(forward[0].direction, ">")
+        self.assertEqual(reverse[0].direction, "<")
+
+    def test_a12_magnitude_thresholds_are_symmetric(self):
+        cases = [
+            (0.50, "negligible"),
+            (0.55, "negligible"),
+            (0.56, "small"),
+            (0.63, "small"),
+            (0.64, "medium"),
+            (0.70, "medium"),
+            (0.71, "large"),
+            (0.44, "small"),
+            (0.36, "medium"),
+            (0.29, "large"),
+        ]
+        for a12, expected in cases:
+            with self.subTest(a12=a12):
+                self.assertEqual(
+                    benchmark_report.classify_a12_magnitude(a12), expected
+                )
+
+    def test_a12_magnitude_rejects_out_of_range_values(self):
+        for a12 in (-0.01, 1.01):
+            with self.subTest(a12=a12):
+                with self.assertRaisesRegex(ValueError, "between 0 and 1"):
+                    benchmark_report.classify_a12_magnitude(a12)
 
     def test_single_fuzzer_returns_empty(self):
         m = _make_metrics("only_one", [5, 6, 7])
@@ -941,13 +993,30 @@ class StatisticalTestsTests(unittest.TestCase):
         self.assertEqual(len(results), 0)
         self.assertTrue(any("fewer than 2 runs" in w for w in warnings))
 
+    def test_empty_final_sample_is_skipped(self):
+        m_a = _make_metrics("a", [5, 6])
+        m_a.final_values = np.array([], dtype=float)
+        m_b = _make_metrics("b", [3, 4])
+        results, warnings = benchmark_report.compute_statistical_tests([m_a, m_b])
+        self.assertEqual(results, [])
+        self.assertTrue(any("fewer than 2 runs" in w for w in warnings))
+
     def test_natural_language_conclusions(self):
         m_a = _make_metrics("echidna", [7, 8, 7, 8, 7, 8, 7, 8, 7, 8])
         m_b = _make_metrics("medusa", [2, 3, 3, 2, 3, 2, 3, 2, 3, 2])
         results, warnings = benchmark_report.compute_statistical_tests([m_a, m_b])
         lines = benchmark_report.format_statistical_report(results, warnings)
         text = "\n".join(lines)
-        self.assertIn("echidna finds significantly more bugs than medusa", text)
+        self.assertIn(
+            "echidna's end-of-budget bug counts tended to be higher than medusa's",
+            text,
+        )
+        self.assertIn("A12=1.000, large effect", text)
+        self.assertIn("after Bonferroni correction (adjusted p=", text)
+        self.assertIn(
+            "Neither the effect size nor statistical significance establishes", text
+        )
+        self.assertNotIn("finds significantly more bugs", text)
 
     def test_no_significant_fallback_text(self):
         m_a = _make_metrics("a", [5, 5, 5, 5, 5])
@@ -974,8 +1043,12 @@ class StatisticalTestsTests(unittest.TestCase):
                 stat_warnings=warnings,
             )
             report = outpath.read_text(encoding="utf-8")
-            self.assertIn("## Statistical comparison (Mann-Whitney U test)", report)
-            self.assertIn("Mann-Whitney U test assesses", report)
+            self.assertIn(
+                "## Statistical comparison (Mann-Whitney U and Vargha-Delaney A12)",
+                report,
+            )
+            self.assertIn("| A12 (A over B) | Effect magnitude |", report)
+            self.assertIn("counting ties as half", report)
             # Should appear after Milestones and before Shape-based
             milestones_pos = report.index("## Milestones")
             stat_pos = report.index("## Statistical comparison")
@@ -1028,7 +1101,11 @@ class StatisticalTestsTests(unittest.TestCase):
                 ]
             )
             report = (out_dir / "REPORT.md").read_text(encoding="utf-8")
-            self.assertIn("## Statistical comparison (Mann-Whitney U test)", report)
+            self.assertIn(
+                "## Statistical comparison (Mann-Whitney U and Vargha-Delaney A12)",
+                report,
+            )
+            self.assertIn("| 1.000 | large |", report)
             self.assertIn("echidna", report)
             self.assertIn("medusa", report)
 

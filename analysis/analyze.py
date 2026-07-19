@@ -320,17 +320,29 @@ def parse_optional_float(value: Any) -> Optional[float]:
         return None
     if isinstance(value, bool):
         return None
+    parsed: float
     if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
+        try:
+            parsed = float(value)
+        except OverflowError:
+            return None
+    elif isinstance(value, str):
         text = value.strip()
         if not text:
             return None
         try:
-            return float(text)
-        except ValueError:
+            parsed = float(text)
+        except (OverflowError, ValueError):
             return None
-    return None
+    else:
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def nonnegative_metric(value: Optional[float]) -> Optional[float]:
+    if value is None or value < 0.0:
+        return None
+    return value
 
 
 def normalize_metric_key(key: str) -> str:
@@ -450,15 +462,15 @@ def parse_throughput_from_payload(
     payload: Dict[str, Any], elapsed_seconds: Optional[float]
 ) -> Tuple[Optional[float], Optional[float], Optional[str]]:
     metric_values = flatten_numeric_values(payload)
-    tx_rate = pick_metric_value(metric_values, TX_RATE_KEYS)
-    gas_rate = pick_metric_value(metric_values, GAS_RATE_KEYS)
+    tx_rate = nonnegative_metric(pick_metric_value(metric_values, TX_RATE_KEYS))
+    gas_rate = nonnegative_metric(pick_metric_value(metric_values, GAS_RATE_KEYS))
 
     source = None
     if tx_rate is not None or gas_rate is not None:
         source = "json-rate"
 
-    tx_count = pick_metric_value(metric_values, TX_COUNT_KEYS)
-    gas_count = pick_metric_value(metric_values, GAS_COUNT_KEYS)
+    tx_count = nonnegative_metric(pick_metric_value(metric_values, TX_COUNT_KEYS))
+    gas_count = nonnegative_metric(pick_metric_value(metric_values, GAS_COUNT_KEYS))
     needs_count_derivation = (tx_rate is None and tx_count is not None) or (
         gas_rate is None and gas_count is not None
     )
@@ -1016,11 +1028,19 @@ def parse_throughput_log(
                     last_elapsed = elapsed_seconds
                 tx_rate, gas_rate, source = parse_throughput_from_payload(payload, elapsed_seconds)
             else:
-                tx_rate = parse_rate_from_text(clean_line, TX_RATE_PATTERNS)
-                gas_rate = parse_rate_from_text(clean_line, GAS_RATE_PATTERNS)
+                tx_rate = nonnegative_metric(
+                    parse_rate_from_text(clean_line, TX_RATE_PATTERNS)
+                )
+                gas_rate = nonnegative_metric(
+                    parse_rate_from_text(clean_line, GAS_RATE_PATTERNS)
+                )
                 if elapsed_seconds is not None and elapsed_seconds > 0.0:
-                    tx_count = parse_count_from_text(clean_line, TEXT_TX_COUNT_PATTERNS)
-                    gas_count = parse_count_from_text(clean_line, TEXT_GAS_COUNT_PATTERNS)
+                    tx_count = nonnegative_metric(
+                        parse_count_from_text(clean_line, TEXT_TX_COUNT_PATTERNS)
+                    )
+                    gas_count = nonnegative_metric(
+                        parse_count_from_text(clean_line, TEXT_GAS_COUNT_PATTERNS)
+                    )
                     if tx_rate is None and tx_count is not None:
                         tx_rate = tx_count / elapsed_seconds
                         source = "text-cumulative"
