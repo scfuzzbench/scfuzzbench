@@ -24,10 +24,13 @@ class FoundryVersionScopeTests(unittest.TestCase):
         self.assertNotIn("foundryVersion", start_page)
         self.assertNotIn("foundry_version", start_page)
 
-    def test_legacy_nonempty_request_is_rejected_with_local_guidance(self):
+    def test_legacy_request_accepts_only_missing_or_blank_string_values(self):
         workflow = self.read(".github/workflows/benchmark-request.yml")
 
         self.assertIn("foundry_version is local-only", workflow)
+        self.assertIn('const foundryVersionRaw = payload["foundry_version"]', workflow)
+        self.assertIn('typeof foundryVersionRaw !== "string"', workflow)
+        self.assertIn("foundryVersionRaw.trim()", workflow)
         self.assertNotIn('core.setOutput("foundry_version"', workflow)
         self.assertNotIn("needs.prepare.outputs.foundry_version", workflow)
 
@@ -40,6 +43,19 @@ class FoundryVersionScopeTests(unittest.TestCase):
         self.assertIn(
             'default     = "https://github.com/foundry-rs/foundry"',
             terraform_variables,
+        )
+
+    def test_source_build_provenance_does_not_claim_release_tag(self):
+        terraform = self.read("infrastructure/main.tf")
+
+        self.assertIn(
+            'foundry_release_version = var.foundry_git_repo == "" ? var.foundry_version : ""',
+            terraform,
+        )
+        self.assertIn("foundry_version      = local.foundry_release_version", terraform)
+        self.assertIn(
+            "foundry_version              = local.foundry_release_version",
+            terraform,
         )
 
 

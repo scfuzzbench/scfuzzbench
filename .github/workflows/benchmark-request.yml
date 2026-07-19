@@ -303,9 +303,12 @@ jobs:
             }
 
             // Optional fields.
-            const foundry_version = mustString(payload, "foundry_version", { required: false, maxLen: 64 });
-            if (!foundry_version.ok) errors.push(foundry_version.message);
-            if (foundry_version.ok && foundry_version.value) {
+            const foundryVersionRaw = payload["foundry_version"];
+            if (
+              foundryVersionRaw !== undefined &&
+              foundryVersionRaw !== null &&
+              (typeof foundryVersionRaw !== "string" || foundryVersionRaw.trim())
+            ) {
               errors.push(
                 "foundry_version is local-only and is not supported by cloud benchmark requests; remove it to use the pinned Foundry git build"
               );
