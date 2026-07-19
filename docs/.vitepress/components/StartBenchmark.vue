@@ -102,7 +102,18 @@ const foundryGitRepo = ref("");
 const foundryGitRef = ref("");
 
 const echidnaVersion = ref("");
+const echidnaCiRepo = ref("");
+const echidnaCiRunId = ref("");
+const echidnaCiArtifactName = ref("");
+const echidnaCiArtifactSha256 = ref("");
+const echidnaCiCommit = ref("");
+const echidnaCiTokenSsmParameterName = ref("");
 const medusaVersion = ref("");
+const medusaGitRepo = ref("");
+const medusaGitRef = ref("");
+const medusaGitCommit = ref("");
+const medusaGoVersion = ref("1.24.0");
+const medusaGoSha256 = ref("dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858");
 const reconVersion = ref("");
 
 const gitTokenSsmParameterName = ref("/scfuzzbench/recon/github_token");
@@ -223,7 +234,18 @@ const requestJson = computed(() => {
     foundry_git_ref: foundryGitRef.value.trim(),
 
     echidna_version: echidnaVersion.value.trim(),
+    echidna_ci_repo: echidnaCiRepo.value.trim(),
+    echidna_ci_run_id: echidnaCiRunId.value.trim(),
+    echidna_ci_artifact_name: echidnaCiArtifactName.value.trim(),
+    echidna_ci_artifact_sha256: echidnaCiArtifactSha256.value.trim(),
+    echidna_ci_commit: echidnaCiCommit.value.trim(),
+    echidna_ci_token_ssm_parameter_name: echidnaCiTokenSsmParameterName.value.trim(),
     medusa_version: medusaVersion.value.trim(),
+    medusa_git_repo: medusaGitRepo.value.trim(),
+    medusa_git_ref: medusaGitRef.value.trim(),
+    medusa_git_commit: medusaGitCommit.value.trim(),
+    medusa_go_version: medusaGoVersion.value.trim(),
+    medusa_go_sha256: medusaGoSha256.value.trim(),
     recon_version: reconVersion.value.trim(),
 
     git_token_ssm_parameter_name: gitTokenSsmParameterName.value.trim(),
@@ -396,8 +418,68 @@ const showAdvanced = ref(false);
           </label>
 
           <label class="sb-start__field">
+            <div class="sb-start__label">Echidna CI repository (artifact mode)</div>
+            <input v-model="echidnaCiRepo" class="sb-start__input" type="text" placeholder="https://github.com/crytic/echidna" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Echidna CI run ID</div>
+            <input v-model="echidnaCiRunId" class="sb-start__input" type="text" inputmode="numeric" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Echidna Linux artifact name</div>
+            <input v-model="echidnaCiArtifactName" class="sb-start__input" type="text" placeholder="echidna-Linux" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Echidna artifact SHA-256</div>
+            <input v-model="echidnaCiArtifactSha256" class="sb-start__input" type="text" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Echidna CI full commit SHA</div>
+            <input v-model="echidnaCiCommit" class="sb-start__input" type="text" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Echidna artifact token SSM parameter</div>
+            <input
+              v-model="echidnaCiTokenSsmParameterName"
+              class="sb-start__input"
+              type="text"
+              placeholder="/scfuzzbench/echidna/actions_token"
+            />
+          </label>
+
+          <label class="sb-start__field">
             <div class="sb-start__label">Medusa version override (optional)</div>
             <input v-model="medusaVersion" class="sb-start__input" type="text" placeholder="e.g. 1.4.1" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Medusa git repository (source mode)</div>
+            <input v-model="medusaGitRepo" class="sb-start__input" type="text" placeholder="https://github.com/crytic/medusa" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Medusa git ref</div>
+            <input v-model="medusaGitRef" class="sb-start__input" type="text" placeholder="master" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Medusa full commit SHA</div>
+            <input v-model="medusaGitCommit" class="sb-start__input" type="text" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Medusa source Go version</div>
+            <input v-model="medusaGoVersion" class="sb-start__input" type="text" />
+          </label>
+
+          <label class="sb-start__field">
+            <div class="sb-start__label">Medusa Go archive SHA-256</div>
+            <input v-model="medusaGoSha256" class="sb-start__input" type="text" />
           </label>
 
           <label class="sb-start__field">

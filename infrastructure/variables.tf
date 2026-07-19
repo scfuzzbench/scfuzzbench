@@ -94,10 +94,131 @@ variable "echidna_version" {
   default     = "2.3.1"
 }
 
+variable "echidna_ci_repo" {
+  type        = string
+  description = "Public GitHub repository whose completed Actions run produced an opt-in Echidna Linux artifact. Blank keeps the stable release path."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_repo == "" || can(regex("^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\\.git)?/?$", var.echidna_ci_repo))
+    error_message = "echidna_ci_repo must be blank or https://github.com/<org>/<repo>."
+  }
+}
+
+variable "echidna_ci_run_id" {
+  type        = string
+  description = "GitHub Actions run ID for the opt-in Echidna artifact."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_run_id == "" || can(regex("^[1-9][0-9]*$", var.echidna_ci_run_id))
+    error_message = "echidna_ci_run_id must be blank or a positive integer."
+  }
+}
+
+variable "echidna_ci_artifact_name" {
+  type        = string
+  description = "Exact Linux artifact name within echidna_ci_run_id."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_artifact_name == "" || can(regex("^[A-Za-z0-9._-]+$", var.echidna_ci_artifact_name))
+    error_message = "echidna_ci_artifact_name may contain only letters, digits, dot, underscore, and dash."
+  }
+}
+
+variable "echidna_ci_artifact_sha256" {
+  type        = string
+  description = "Expected SHA-256 of the GitHub Actions artifact ZIP (the API digest without its sha256: prefix)."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_artifact_sha256 == "" || can(regex("^[A-Fa-f0-9]{64}$", var.echidna_ci_artifact_sha256))
+    error_message = "echidna_ci_artifact_sha256 must be blank or a 64-character SHA-256 digest."
+  }
+}
+
+variable "echidna_ci_commit" {
+  type        = string
+  description = "Full immutable head commit expected for echidna_ci_run_id."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_commit == "" || can(regex("^[A-Fa-f0-9]{40}$", var.echidna_ci_commit))
+    error_message = "echidna_ci_commit must be blank or a full 40-character commit SHA."
+  }
+}
+
+variable "echidna_ci_token_ssm_parameter_name" {
+  type        = string
+  description = "SecureString parameter containing a token with Actions read access. Only the parameter name enters Terraform state."
+  default     = ""
+
+  validation {
+    condition     = var.echidna_ci_token_ssm_parameter_name == "" || can(regex("^/scfuzzbench/[A-Za-z0-9_./-]+$", var.echidna_ci_token_ssm_parameter_name))
+    error_message = "echidna_ci_token_ssm_parameter_name must be blank or start with /scfuzzbench/."
+  }
+}
+
 variable "medusa_version" {
   type        = string
   description = "Pinned Medusa version."
   default     = "1.4.1"
+}
+
+variable "medusa_git_repo" {
+  type        = string
+  description = "Public GitHub repository for an opt-in Medusa source build. Blank keeps the stable release path."
+  default     = ""
+
+  validation {
+    condition     = var.medusa_git_repo == "" || can(regex("^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\\.git)?/?$", var.medusa_git_repo))
+    error_message = "medusa_git_repo must be blank or https://github.com/<org>/<repo>."
+  }
+}
+
+variable "medusa_git_ref" {
+  type        = string
+  description = "Human-readable Medusa branch/tag/ref that must still resolve to medusa_git_commit."
+  default     = ""
+
+  validation {
+    condition     = var.medusa_git_ref == "" || can(regex("^[A-Za-z0-9._/-]+$", var.medusa_git_ref))
+    error_message = "medusa_git_ref contains unsupported characters."
+  }
+}
+
+variable "medusa_git_commit" {
+  type        = string
+  description = "Full immutable Medusa source commit expected for medusa_git_ref."
+  default     = ""
+
+  validation {
+    condition     = var.medusa_git_commit == "" || can(regex("^[A-Fa-f0-9]{40}$", var.medusa_git_commit))
+    error_message = "medusa_git_commit must be blank or a full 40-character commit SHA."
+  }
+}
+
+variable "medusa_go_version" {
+  type        = string
+  description = "Pinned official Go toolchain used only for Medusa source builds."
+  default     = "1.24.0"
+
+  validation {
+    condition     = can(regex("^[0-9]+\\.[0-9]+(\\.[0-9]+)?$", var.medusa_go_version))
+    error_message = "medusa_go_version must look like 1.24.0."
+  }
+}
+
+variable "medusa_go_sha256" {
+  type        = string
+  description = "SHA-256 for go<medusa_go_version>.linux-amd64.tar.gz."
+  default     = "dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858"
+
+  validation {
+    condition     = can(regex("^[A-Fa-f0-9]{64}$", var.medusa_go_sha256))
+    error_message = "medusa_go_sha256 must be a 64-character SHA-256 digest."
+  }
 }
 
 variable "recon_version" {
@@ -191,4 +312,22 @@ variable "fuzzer_env" {
   type        = map(string)
   description = "Fuzzer environment variable overrides passed to fuzzer run scripts."
   default     = {}
+
+  validation {
+    condition = length(setintersection(toset(keys(var.fuzzer_env)), toset([
+      "ECHIDNA_CI_TOKEN",
+      "ECHIDNA_CI_TOKEN_SSM_PARAMETER",
+      "ECHIDNA_CI_REPO",
+      "ECHIDNA_CI_RUN_ID",
+      "ECHIDNA_CI_ARTIFACT_NAME",
+      "ECHIDNA_CI_ARTIFACT_SHA256",
+      "ECHIDNA_CI_COMMIT",
+      "MEDUSA_GIT_REPO",
+      "MEDUSA_GIT_REF",
+      "MEDUSA_GIT_COMMIT",
+      "MEDUSA_GO_VERSION",
+      "MEDUSA_GO_SHA256",
+    ]))) == 0
+    error_message = "Bleeding-edge tool settings must use their dedicated variables, not fuzzer_env."
+  }
 }

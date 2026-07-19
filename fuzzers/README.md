@@ -17,13 +17,21 @@ Each fuzzer lives in `fuzzers/<name>/` with an `install.sh` and `run.sh`. Common
 ## Echidna
 
 Environment variables:
-- `ECHIDNA_VERSION` (required)
+- `ECHIDNA_VERSION` (required for the default stable release path)
+- CI artifact mode (all required together): `ECHIDNA_CI_REPO`,
+  `ECHIDNA_CI_RUN_ID`, `ECHIDNA_CI_ARTIFACT_NAME`,
+  `ECHIDNA_CI_ARTIFACT_SHA256`, `ECHIDNA_CI_COMMIT`
+- CI artifact authentication: `ECHIDNA_CI_TOKEN_SSM_PARAMETER` (cloud) or
+  `ECHIDNA_CI_TOKEN` (local only; never pass it as a Terraform variable)
 - `ECHIDNA_CONFIG` or `ECHIDNA_TARGET` (required; add `ECHIDNA_CONTRACT` if needed)
 - `ECHIDNA_WORKERS`, `ECHIDNA_TEST_MODE`, `ECHIDNA_EXTRA_ARGS`
 - `ECHIDNA_CORPUS_DIR`
 - `ECHIDNA_RTS_ARGS` (optional; defaults to `-A1g`; set to empty to disable RTS args)
 
 Notes:
+- CI artifact mode verifies run/commit/artifact metadata, expiry, archive and
+  binary digests, safe extraction, and Linux x86-64 ELF identity. It installs
+  the canonical `echidna` command and records `tool_provenance.json`.
 - In `property` mode, the runner rewrites `prefix: "invariant_"` to `prefix: "echidna_"` inside the config file so global properties are treated like assertions.
 - By default, the runner appends `+RTS -A1g -RTS` to reduce GC overhead on multicore instances.
 
@@ -42,9 +50,16 @@ Notes:
 ## Medusa
 
 Environment variables:
-- `MEDUSA_VERSION` (required)
+- `MEDUSA_VERSION` (required for the default stable release path)
+- Source mode (all required together): `MEDUSA_GIT_REPO`, `MEDUSA_GIT_REF`,
+  `MEDUSA_GIT_COMMIT`, `MEDUSA_GO_VERSION`, `MEDUSA_GO_SHA256`
 - `MEDUSA_CONFIG` (required)
 - `MEDUSA_WORKERS`, `MEDUSA_CORPUS_DIR`
+
+Source mode verifies that the ref still resolves to the requested full commit,
+checks the official Go distribution digest, uses `GOTOOLCHAIN=local`, verifies
+the module cache against `go.sum`, builds with readonly module semantics, and
+records source/toolchain/binary provenance in `tool_provenance.json`.
 
 ## Foundry
 

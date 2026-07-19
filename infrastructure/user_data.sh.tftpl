@@ -23,7 +23,12 @@ cat <<'RUN' >/opt/scfuzzbench/fuzzers/${fuzzer_key}/run.sh
 ${run_sh}
 RUN
 
+cat <<'ECHIDNA_CI_EXTRACTOR' >/opt/scfuzzbench/extract_echidna_ci_artifact.py
+${echidna_ci_extractor}
+ECHIDNA_CI_EXTRACTOR
+
 chmod +x /opt/scfuzzbench/common.sh \
+  /opt/scfuzzbench/extract_echidna_ci_artifact.py \
   /opt/scfuzzbench/fuzzers/${fuzzer_key}/install.sh \
   /opt/scfuzzbench/fuzzers/${fuzzer_key}/run.sh
 
@@ -45,7 +50,18 @@ export FOUNDRY_VERSION="${foundry_version}"
 export FOUNDRY_GIT_REPO="${foundry_git_repo}"
 export FOUNDRY_GIT_REF="${foundry_git_ref}"
 export ECHIDNA_VERSION="${echidna_version}"
+export ECHIDNA_CI_REPO="${echidna_ci_repo}"
+export ECHIDNA_CI_RUN_ID="${echidna_ci_run_id}"
+export ECHIDNA_CI_ARTIFACT_NAME="${echidna_ci_artifact_name}"
+export ECHIDNA_CI_ARTIFACT_SHA256="${echidna_ci_artifact_sha256}"
+export ECHIDNA_CI_COMMIT="${echidna_ci_commit}"
+export ECHIDNA_CI_TOKEN_SSM_PARAMETER="${echidna_ci_token_ssm_parameter_name}"
 export MEDUSA_VERSION="${medusa_version}"
+export MEDUSA_GIT_REPO="${medusa_git_repo}"
+export MEDUSA_GIT_REF="${medusa_git_ref}"
+export MEDUSA_GIT_COMMIT="${medusa_git_commit}"
+export MEDUSA_GO_VERSION="${medusa_go_version}"
+export MEDUSA_GO_SHA256="${medusa_go_sha256}"
 export RECON_VERSION="${recon_version}"
 export SCFUZZBENCH_GIT_TOKEN_SSM_PARAMETER="${git_token_ssm_parameter_name}"
 %{ for key, value in fuzzer_env ~}

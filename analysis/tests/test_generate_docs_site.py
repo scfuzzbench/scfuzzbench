@@ -107,6 +107,20 @@ class GenerateDocsSiteTests(unittest.TestCase):
 
         self.assertEqual(["`foundry (1.3.6-dev)`"], lines)
 
+    def test_format_fuzzer_lines_shows_opt_in_tool_commits(self):
+        module = load_generate_docs_site()
+        manifest = {
+            "fuzzer_keys": ["echidna", "medusa"],
+            "echidna_version": "",
+            "echidna_ci_commit": "9680bb1ef8bf0e11c00fff3e29c5f244d6eb1c85",
+            "medusa_version": "",
+            "medusa_git_commit": "3857153837ab90ed73adc484414b4b43703a54fb",
+        }
+
+        lines = module.format_fuzzer_lines(manifest)
+
+        self.assertEqual(["`echidna (ci:9680bb1)`", "`medusa (git:3857153)`"], lines)
+
     def test_run_social_description_is_url_specific(self):
         module = load_generate_docs_site()
         run = module.Run(

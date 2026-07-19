@@ -413,6 +413,14 @@ def format_fuzzer_lines(manifest: dict) -> list[str]:
         git_ref = str(manifest.get("foundry_git_ref", "") or "").strip()
         if git_ref:
             versions["foundry"] = f"git:{git_ref[:7]}"
+    if "echidna" not in versions:
+        ci_commit = str(manifest.get("echidna_ci_commit", "") or "").strip()
+        if ci_commit:
+            versions["echidna"] = f"ci:{ci_commit[:7]}"
+    if "medusa" not in versions:
+        git_commit = str(manifest.get("medusa_git_commit", "") or "").strip()
+        if git_commit:
+            versions["medusa"] = f"git:{git_commit[:7]}"
 
     lines: list[str] = []
     for fuzzer in ordered_fuzzers:
@@ -1057,7 +1065,17 @@ def main() -> int:
         add_kv("foundry_git_repo", m.get("foundry_git_repo"))
         add_kv("foundry_git_ref", m.get("foundry_git_ref"))
         add_kv("echidna_version", m.get("echidna_version"))
+        add_kv("echidna_ci_repo", m.get("echidna_ci_repo"))
+        add_kv("echidna_ci_run_id", m.get("echidna_ci_run_id"))
+        add_kv("echidna_ci_artifact", m.get("echidna_ci_artifact"))
+        add_kv("echidna_ci_sha256", m.get("echidna_ci_sha256"))
+        add_kv("echidna_ci_commit", m.get("echidna_ci_commit"))
         add_kv("medusa_version", m.get("medusa_version"))
+        add_kv("medusa_git_repo", m.get("medusa_git_repo"))
+        add_kv("medusa_git_ref", m.get("medusa_git_ref"))
+        add_kv("medusa_git_commit", m.get("medusa_git_commit"))
+        add_kv("medusa_go_version", m.get("medusa_go_version"))
+        add_kv("medusa_go_sha256", m.get("medusa_go_sha256"))
         add_kv("recon_version", m.get("recon_version"))
         if isinstance(m.get("fuzzer_keys"), list):
             lines.append(f"- fuzzer_keys: `{', '.join([str(x) for x in m.get('fuzzer_keys', [])])}`")

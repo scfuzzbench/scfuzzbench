@@ -11,8 +11,22 @@ if [[ -z "${HOME:-}" ]]; then
 fi
 export PATH="${HOME}/.foundry/bin:${PATH}"
 
-require_env ECHIDNA_VERSION
-SCFUZZBENCH_FUZZER_LABEL="echidna-v${ECHIDNA_VERSION}"
+if [[ -n "${ECHIDNA_CI_REPO:-}" ]]; then
+  commit_file="${SCFUZZBENCH_ROOT}/echidna_ci_commit"
+  if [[ ! -f "${commit_file}" ]]; then
+    log "Missing resolved Echidna CI commit provenance: ${commit_file}"
+    exit 1
+  fi
+  echidna_ci_commit=$(<"${commit_file}")
+  if [[ ! "${echidna_ci_commit}" =~ ^[A-Fa-f0-9]{40}$ ]]; then
+    log "Invalid resolved Echidna CI commit provenance"
+    exit 1
+  fi
+  SCFUZZBENCH_FUZZER_LABEL="echidna-ci-${echidna_ci_commit:0:12}"
+else
+  require_env ECHIDNA_VERSION
+  SCFUZZBENCH_FUZZER_LABEL="echidna-v${ECHIDNA_VERSION}"
+fi
 export SCFUZZBENCH_FUZZER_LABEL
 
 clone_target

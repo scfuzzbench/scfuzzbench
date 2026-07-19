@@ -5,6 +5,25 @@ locals {
   timeout_seconds = var.timeout_hours * 3600
   run_id          = var.run_id != "" ? var.run_id : time_static.run.unix
 
+  echidna_ci_inputs = [
+    var.echidna_ci_repo,
+    var.echidna_ci_run_id,
+    var.echidna_ci_artifact_name,
+    var.echidna_ci_artifact_sha256,
+    var.echidna_ci_commit,
+    var.echidna_ci_token_ssm_parameter_name,
+  ]
+  echidna_ci_input_count = length(compact(local.echidna_ci_inputs))
+  echidna_ci_enabled     = local.echidna_ci_input_count > 0
+
+  medusa_source_inputs = [
+    var.medusa_git_repo,
+    var.medusa_git_ref,
+    var.medusa_git_commit,
+  ]
+  medusa_source_input_count = length(compact(local.medusa_source_inputs))
+  medusa_source_enabled     = local.medusa_source_input_count > 0
+
   # Pick an AZ that supports the requested instance type to avoid flaky applies
   # when AWS auto-selects an AZ where the type isn't offered.
   subnet_availability_zone = var.availability_zone != "" ? var.availability_zone : sort(data.aws_ec2_instance_type_offerings.fuzzer.locations)[0]
@@ -22,8 +41,18 @@ locals {
     foundry_version      = var.foundry_version
     foundry_git_repo     = var.foundry_git_repo
     foundry_git_ref      = var.foundry_git_ref
-    echidna_version      = var.echidna_version
-    medusa_version       = var.medusa_version
+    echidna_version      = local.echidna_ci_enabled ? "" : var.echidna_version
+    echidna_ci_repo      = var.echidna_ci_repo
+    echidna_ci_run_id    = var.echidna_ci_run_id
+    echidna_ci_artifact  = var.echidna_ci_artifact_name
+    echidna_ci_sha256    = lower(var.echidna_ci_artifact_sha256)
+    echidna_ci_commit    = lower(var.echidna_ci_commit)
+    medusa_version       = local.medusa_source_enabled ? "" : var.medusa_version
+    medusa_git_repo      = var.medusa_git_repo
+    medusa_git_ref       = var.medusa_git_ref
+    medusa_git_commit    = lower(var.medusa_git_commit)
+    medusa_go_version    = local.medusa_source_enabled ? var.medusa_go_version : ""
+    medusa_go_sha256     = local.medusa_source_enabled ? lower(var.medusa_go_sha256) : ""
     recon_version        = var.recon_version
     fuzzer_keys          = sort([for fuzzer in local.fuzzer_definitions : fuzzer.key])
   }
@@ -229,9 +258,10 @@ resource "aws_s3_bucket_versioning" "logs" {
 }
 
 locals {
-  bucket_name                 = var.existing_bucket_name != "" ? var.existing_bucket_name : try(aws_s3_bucket.logs[0].bucket, "")
-  git_token_ssm_parameter_arn = var.git_token_ssm_parameter_name != "" ? "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${trimprefix(var.git_token_ssm_parameter_name, "/")}" : ""
-  ssm_parameter_arns          = local.git_token_ssm_parameter_arn != "" ? [local.git_token_ssm_parameter_arn] : []
+  bucket_name                        = var.existing_bucket_name != "" ? var.existing_bucket_name : try(aws_s3_bucket.logs[0].bucket, "")
+  git_token_ssm_parameter_arn        = var.git_token_ssm_parameter_name != "" ? "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${trimprefix(var.git_token_ssm_parameter_name, "/")}" : ""
+  echidna_ci_token_ssm_parameter_arn = var.echidna_ci_token_ssm_parameter_name != "" ? "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${trimprefix(var.echidna_ci_token_ssm_parameter_name, "/")}" : ""
+  ssm_parameter_arns                 = distinct(compact([local.git_token_ssm_parameter_arn, local.echidna_ci_token_ssm_parameter_arn]))
 }
 
 resource "tls_private_key" "ssh" {
@@ -346,27 +376,39 @@ resource "aws_instance" "fuzzer" {
   user_data_replace_on_change          = true
 
   user_data_base64 = base64gzip(templatefile("${path.module}/user_data.sh.tftpl", {
-    fuzzer_key                   = each.value.fuzzer.key
-    shared_sh                    = file("${path.module}/../fuzzers/_shared/common.sh")
-    install_sh                   = file(each.value.fuzzer.install_path)
-    run_sh                       = file(each.value.fuzzer.run_path)
-    aws_region                   = var.aws_region
-    s3_bucket                    = local.bucket_name
-    run_id                       = local.run_id
-    benchmark_uuid               = local.benchmark_uuid
-    benchmark_manifest_b64       = local.benchmark_manifest_b64
-    timeout_seconds              = local.timeout_seconds
-    repo_url                     = var.target_repo_url
-    repo_commit                  = var.target_commit
-    benchmark_type               = var.benchmark_type
-    foundry_version              = var.foundry_version
-    foundry_git_repo             = var.foundry_git_repo
-    foundry_git_ref              = var.foundry_git_ref
-    echidna_version              = var.echidna_version
-    medusa_version               = var.medusa_version
-    recon_version                = var.recon_version
-    git_token_ssm_parameter_name = var.git_token_ssm_parameter_name
-    fuzzer_env                   = local.merged_fuzzer_env
+    fuzzer_key                          = each.value.fuzzer.key
+    shared_sh                           = file("${path.module}/../fuzzers/_shared/common.sh")
+    install_sh                          = file(each.value.fuzzer.install_path)
+    run_sh                              = file(each.value.fuzzer.run_path)
+    echidna_ci_extractor                = file("${path.module}/../fuzzers/echidna/extract_ci_artifact.py")
+    aws_region                          = var.aws_region
+    s3_bucket                           = local.bucket_name
+    run_id                              = local.run_id
+    benchmark_uuid                      = local.benchmark_uuid
+    benchmark_manifest_b64              = local.benchmark_manifest_b64
+    timeout_seconds                     = local.timeout_seconds
+    repo_url                            = var.target_repo_url
+    repo_commit                         = var.target_commit
+    benchmark_type                      = var.benchmark_type
+    foundry_version                     = var.foundry_version
+    foundry_git_repo                    = var.foundry_git_repo
+    foundry_git_ref                     = var.foundry_git_ref
+    echidna_version                     = var.echidna_version
+    echidna_ci_repo                     = var.echidna_ci_repo
+    echidna_ci_run_id                   = var.echidna_ci_run_id
+    echidna_ci_artifact_name            = var.echidna_ci_artifact_name
+    echidna_ci_artifact_sha256          = var.echidna_ci_artifact_sha256
+    echidna_ci_commit                   = var.echidna_ci_commit
+    echidna_ci_token_ssm_parameter_name = var.echidna_ci_token_ssm_parameter_name
+    medusa_version                      = var.medusa_version
+    medusa_git_repo                     = var.medusa_git_repo
+    medusa_git_ref                      = var.medusa_git_ref
+    medusa_git_commit                   = var.medusa_git_commit
+    medusa_go_version                   = var.medusa_go_version
+    medusa_go_sha256                    = var.medusa_go_sha256
+    recon_version                       = var.recon_version
+    git_token_ssm_parameter_name        = var.git_token_ssm_parameter_name
+    fuzzer_env                          = local.merged_fuzzer_env
   }))
 
   root_block_device {
@@ -376,6 +418,23 @@ resource "aws_instance" "fuzzer" {
 
   metadata_options {
     http_tokens = "required"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = local.echidna_ci_input_count == 0 || local.echidna_ci_input_count == length(local.echidna_ci_inputs)
+      error_message = "Echidna CI artifact mode requires repo, run ID, artifact name, artifact SHA-256, full commit, and token SSM parameter together."
+    }
+
+    precondition {
+      condition     = !local.echidna_ci_enabled || can(regex("(?i)linux", var.echidna_ci_artifact_name))
+      error_message = "Echidna CI artifact mode requires an artifact name identifying Linux."
+    }
+
+    precondition {
+      condition     = local.medusa_source_input_count == 0 || local.medusa_source_input_count == length(local.medusa_source_inputs)
+      error_message = "Medusa source mode requires git repo, git ref, and full commit together."
+    }
   }
 
   tags = merge(local.tags, {

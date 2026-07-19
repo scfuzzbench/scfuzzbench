@@ -51,8 +51,16 @@ on:
         description: "Override Echidna version (optional)."
         required: false
         default: ""
+      echidna_ci_json:
+        description: "Optional JSON object with the six non-secret echidna_ci_* artifact inputs."
+        required: false
+        default: ""
       medusa_version:
         description: "Override Medusa version (optional)."
+        required: false
+        default: ""
+      medusa_source_json:
+        description: "Optional JSON object with medusa_git_* and medusa_go_* source inputs."
         required: false
         default: ""
       recon_version:
@@ -131,11 +139,66 @@ on:
         required: false
         type: string
         default: ""
+      echidna_ci_repo:
+        description: "GitHub repo for an opt-in Echidna Actions artifact."
+        required: false
+        type: string
+        default: ""
+      echidna_ci_run_id:
+        description: "Successful GitHub Actions run ID for Echidna artifact mode."
+        required: false
+        type: string
+        default: ""
+      echidna_ci_artifact_name:
+        description: "Exact Linux Echidna artifact name."
+        required: false
+        type: string
+        default: ""
+      echidna_ci_artifact_sha256:
+        description: "Expected Actions artifact ZIP SHA-256."
+        required: false
+        type: string
+        default: ""
+      echidna_ci_commit:
+        description: "Full head commit expected for the Echidna Actions run."
+        required: false
+        type: string
+        default: ""
+      echidna_ci_token_ssm_parameter_name:
+        description: "SecureString path containing a token with Actions read access."
+        required: false
+        type: string
+        default: ""
       medusa_version:
         description: "Override Medusa version (optional)."
         required: false
         type: string
         default: ""
+      medusa_git_repo:
+        description: "GitHub repo for an opt-in Medusa source build."
+        required: false
+        type: string
+        default: ""
+      medusa_git_ref:
+        description: "Medusa source branch/tag/ref."
+        required: false
+        type: string
+        default: ""
+      medusa_git_commit:
+        description: "Full immutable commit expected for the Medusa ref."
+        required: false
+        type: string
+        default: ""
+      medusa_go_version:
+        description: "Pinned Go toolchain for Medusa source mode."
+        required: false
+        type: string
+        default: "1.24.0"
+      medusa_go_sha256:
+        description: "SHA-256 for the official Go linux-amd64 distribution."
+        required: false
+        type: string
+        default: "dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858"
       recon_version:
         description: "Override Recon Fuzzer version (optional)."
         required: false
@@ -210,6 +273,100 @@ jobs:
           shopt -s dotglob
           mv "${topdir}"/* .
           rm -rf "${topdir}" repo.tar.gz
+
+      - name: Normalize bleeding-edge tool inputs
+        id: tool_sources
+        env:
+          ECHIDNA_CI_JSON: ${{ inputs.echidna_ci_json }}
+          MEDUSA_SOURCE_JSON: ${{ inputs.medusa_source_json }}
+          CALL_ECHIDNA_CI_REPO: ${{ inputs.echidna_ci_repo }}
+          CALL_ECHIDNA_CI_RUN_ID: ${{ inputs.echidna_ci_run_id }}
+          CALL_ECHIDNA_CI_ARTIFACT_NAME: ${{ inputs.echidna_ci_artifact_name }}
+          CALL_ECHIDNA_CI_ARTIFACT_SHA256: ${{ inputs.echidna_ci_artifact_sha256 }}
+          CALL_ECHIDNA_CI_COMMIT: ${{ inputs.echidna_ci_commit }}
+          CALL_ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.echidna_ci_token_ssm_parameter_name }}
+          CALL_MEDUSA_GIT_REPO: ${{ inputs.medusa_git_repo }}
+          CALL_MEDUSA_GIT_REF: ${{ inputs.medusa_git_ref }}
+          CALL_MEDUSA_GIT_COMMIT: ${{ inputs.medusa_git_commit }}
+          CALL_MEDUSA_GO_VERSION: ${{ inputs.medusa_go_version }}
+          CALL_MEDUSA_GO_SHA256: ${{ inputs.medusa_go_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+
+          groups = {
+              "echidna": {
+                  "raw": os.environ.get("ECHIDNA_CI_JSON", "").strip(),
+                  "keys": [
+                      "echidna_ci_repo",
+                      "echidna_ci_run_id",
+                      "echidna_ci_artifact_name",
+                      "echidna_ci_artifact_sha256",
+                      "echidna_ci_commit",
+                      "echidna_ci_token_ssm_parameter_name",
+                  ],
+                  "identity_keys": [
+                      "echidna_ci_repo",
+                      "echidna_ci_run_id",
+                      "echidna_ci_artifact_name",
+                      "echidna_ci_artifact_sha256",
+                      "echidna_ci_commit",
+                      "echidna_ci_token_ssm_parameter_name",
+                  ],
+              },
+              "medusa": {
+                  "raw": os.environ.get("MEDUSA_SOURCE_JSON", "").strip(),
+                  "keys": [
+                      "medusa_git_repo",
+                      "medusa_git_ref",
+                      "medusa_git_commit",
+                      "medusa_go_version",
+                      "medusa_go_sha256",
+                  ],
+                  "identity_keys": ["medusa_git_repo", "medusa_git_ref", "medusa_git_commit"],
+              },
+          }
+
+          output = {}
+          for group in groups.values():
+              direct = {
+                  key: os.environ.get(f"CALL_{key.upper()}", "")
+                  for key in group["keys"]
+              }
+              raw = group["raw"]
+              if raw:
+                  if any(direct[key] for key in group["identity_keys"]):
+                      raise SystemExit("manual JSON tool inputs cannot be combined with reusable-workflow tool inputs")
+                  try:
+                      parsed = json.loads(raw)
+                  except Exception as exc:
+                      raise SystemExit(f"invalid bleeding-edge tool JSON: {exc}")
+                  if not isinstance(parsed, dict):
+                      raise SystemExit("bleeding-edge tool JSON must be an object")
+                  unexpected = sorted(set(parsed) - set(group["keys"]))
+                  if unexpected:
+                      raise SystemExit(f"unexpected bleeding-edge tool keys: {', '.join(unexpected)}")
+                  direct = {key: parsed.get(key, "") for key in group["keys"]}
+              for key, value in direct.items():
+                  if not isinstance(value, str):
+                      raise SystemExit(f"{key} must be a string")
+                  if "\n" in value or "\r" in value:
+                      raise SystemExit(f"{key} must be a single line")
+                  if len(value) > 500:
+                      raise SystemExit(f"{key} is too long")
+                  output[key] = value
+
+          output["medusa_go_version"] = output["medusa_go_version"] or "1.24.0"
+          output["medusa_go_sha256"] = (
+              output["medusa_go_sha256"]
+              or "dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858"
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              for key, value in output.items():
+                  handle.write(f"{key}={value}\n")
+          PY
 
       - name: Setup Terraform
         if: ${{ !inputs.dry_run }}
@@ -292,7 +449,18 @@ jobs:
           FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
           FOUNDRY_GIT_REF: ${{ inputs.foundry_git_ref }}
           ECHIDNA_VERSION: ${{ inputs.echidna_version }}
+          ECHIDNA_CI_REPO: ${{ steps.tool_sources.outputs.echidna_ci_repo }}
+          ECHIDNA_CI_RUN_ID: ${{ steps.tool_sources.outputs.echidna_ci_run_id }}
+          ECHIDNA_CI_ARTIFACT_NAME: ${{ steps.tool_sources.outputs.echidna_ci_artifact_name }}
+          ECHIDNA_CI_ARTIFACT_SHA256: ${{ steps.tool_sources.outputs.echidna_ci_artifact_sha256 }}
+          ECHIDNA_CI_COMMIT: ${{ steps.tool_sources.outputs.echidna_ci_commit }}
+          ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ steps.tool_sources.outputs.echidna_ci_token_ssm_parameter_name }}
           MEDUSA_VERSION: ${{ inputs.medusa_version }}
+          MEDUSA_GIT_REPO: ${{ steps.tool_sources.outputs.medusa_git_repo }}
+          MEDUSA_GIT_REF: ${{ steps.tool_sources.outputs.medusa_git_ref }}
+          MEDUSA_GIT_COMMIT: ${{ steps.tool_sources.outputs.medusa_git_commit }}
+          MEDUSA_GO_VERSION: ${{ steps.tool_sources.outputs.medusa_go_version }}
+          MEDUSA_GO_SHA256: ${{ steps.tool_sources.outputs.medusa_go_sha256 }}
           RECON_VERSION: ${{ inputs.recon_version }}
           GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
           PROPERTIES_PATH: ${{ inputs.properties_path }}
@@ -356,9 +524,72 @@ jobs:
           if [[ -n "${ECHIDNA_VERSION}" ]]; then
             require_safe "echidna_version" "${ECHIDNA_VERSION}"
           fi
+
+          echidna_ci_count=0
+          for value in \
+            "${ECHIDNA_CI_REPO}" \
+            "${ECHIDNA_CI_RUN_ID}" \
+            "${ECHIDNA_CI_ARTIFACT_NAME}" \
+            "${ECHIDNA_CI_ARTIFACT_SHA256}" \
+            "${ECHIDNA_CI_COMMIT}" \
+            "${ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME}"; do
+            [[ -z "${value}" ]] || echidna_ci_count=$((echidna_ci_count + 1))
+          done
+          if (( echidna_ci_count != 0 && echidna_ci_count != 6 )); then
+            fail "Echidna CI mode requires repo, run ID, artifact name, artifact SHA-256, full commit, and token SSM parameter together"
+          fi
+          if (( echidna_ci_count == 6 )); then
+            [[ -z "${ECHIDNA_VERSION}" ]] || fail "echidna_version and Echidna CI artifact mode are mutually exclusive"
+            require_safe "echidna_ci_repo" "${ECHIDNA_CI_REPO}"
+            require_safe "echidna_ci_run_id" "${ECHIDNA_CI_RUN_ID}"
+            require_safe "echidna_ci_artifact_name" "${ECHIDNA_CI_ARTIFACT_NAME}"
+            require_safe "echidna_ci_artifact_sha256" "${ECHIDNA_CI_ARTIFACT_SHA256}"
+            require_safe "echidna_ci_commit" "${ECHIDNA_CI_COMMIT}"
+            require_safe "echidna_ci_token_ssm_parameter_name" "${ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME}"
+            [[ "${ECHIDNA_CI_REPO}" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?/?$ ]] \
+              || fail "echidna_ci_repo must be https://github.com/<org>/<repo>"
+            [[ "${ECHIDNA_CI_RUN_ID}" =~ ^[1-9][0-9]*$ ]] \
+              || fail "echidna_ci_run_id must be a positive integer"
+            [[ "${ECHIDNA_CI_ARTIFACT_NAME}" =~ ^[A-Za-z0-9._-]+$ && "${ECHIDNA_CI_ARTIFACT_NAME,,}" == *linux* ]] \
+              || fail "echidna_ci_artifact_name must be a Linux artifact name without spaces"
+            [[ "${ECHIDNA_CI_ARTIFACT_SHA256}" =~ ^[A-Fa-f0-9]{64}$ ]] \
+              || fail "echidna_ci_artifact_sha256 must be a 64-character digest"
+            [[ "${ECHIDNA_CI_COMMIT}" =~ ^[A-Fa-f0-9]{40}$ ]] \
+              || fail "echidna_ci_commit must be a full 40-character SHA"
+            [[ "${ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME}" =~ ^/scfuzzbench/[A-Za-z0-9_./-]+$ ]] \
+              || fail "echidna_ci_token_ssm_parameter_name must start with /scfuzzbench/"
+          fi
+
           if [[ -n "${MEDUSA_VERSION}" ]]; then
             require_safe "medusa_version" "${MEDUSA_VERSION}"
           fi
+
+          medusa_source_count=0
+          for value in "${MEDUSA_GIT_REPO}" "${MEDUSA_GIT_REF}" "${MEDUSA_GIT_COMMIT}"; do
+            [[ -z "${value}" ]] || medusa_source_count=$((medusa_source_count + 1))
+          done
+          if (( medusa_source_count != 0 && medusa_source_count != 3 )); then
+            fail "Medusa source mode requires git repo, git ref, and full commit together"
+          fi
+          require_safe "medusa_go_version" "${MEDUSA_GO_VERSION}"
+          require_safe "medusa_go_sha256" "${MEDUSA_GO_SHA256}"
+          [[ "${MEDUSA_GO_VERSION}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] \
+            || fail "medusa_go_version must look like 1.24.0"
+          [[ "${MEDUSA_GO_SHA256}" =~ ^[A-Fa-f0-9]{64}$ ]] \
+            || fail "medusa_go_sha256 must be a 64-character digest"
+          if (( medusa_source_count == 3 )); then
+            [[ -z "${MEDUSA_VERSION}" ]] || fail "medusa_version and Medusa source mode are mutually exclusive"
+            require_safe "medusa_git_repo" "${MEDUSA_GIT_REPO}"
+            require_safe "medusa_git_ref" "${MEDUSA_GIT_REF}"
+            require_safe "medusa_git_commit" "${MEDUSA_GIT_COMMIT}"
+            [[ "${MEDUSA_GIT_REPO}" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?/?$ ]] \
+              || fail "medusa_git_repo must be https://github.com/<org>/<repo>"
+            [[ "${MEDUSA_GIT_REF}" =~ ^[A-Za-z0-9._/-]+$ ]] \
+              || fail "medusa_git_ref contains unsupported characters"
+            [[ "${MEDUSA_GIT_COMMIT}" =~ ^[A-Fa-f0-9]{40}$ ]] \
+              || fail "medusa_git_commit must be a full 40-character SHA"
+          fi
+
           if [[ -n "${RECON_VERSION}" ]]; then
             require_safe "recon_version" "${RECON_VERSION}"
           fi
@@ -451,9 +682,25 @@ jobs:
               raise SystemExit("fuzzer_env_json has too many keys (max 64)")
           key_re = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
           forbidden = re.compile(r'[\r\n"`$\\\\]')
+          protected_tool_keys = {
+              "ECHIDNA_CI_TOKEN",
+              "ECHIDNA_CI_TOKEN_SSM_PARAMETER",
+              "ECHIDNA_CI_REPO",
+              "ECHIDNA_CI_RUN_ID",
+              "ECHIDNA_CI_ARTIFACT_NAME",
+              "ECHIDNA_CI_ARTIFACT_SHA256",
+              "ECHIDNA_CI_COMMIT",
+              "MEDUSA_GIT_REPO",
+              "MEDUSA_GIT_REF",
+              "MEDUSA_GIT_COMMIT",
+              "MEDUSA_GO_VERSION",
+              "MEDUSA_GO_SHA256",
+          }
           for k, v in obj.items():
               if not isinstance(k, str) or not key_re.match(k):
                   raise SystemExit(f"Invalid env key: {k}")
+              if k in protected_tool_keys:
+                  raise SystemExit(f"Use the dedicated workflow input instead of fuzzer_env_json for {k}")
               if not isinstance(v, str):
                   raise SystemExit(f"Env value for {k} must be a string")
               if len(v) > 2000:
@@ -462,6 +709,28 @@ jobs:
                   raise SystemExit(f"Env value for {k} contains a forbidden character")
           PY
           fi
+
+      - name: Preflight bleeding-edge tool pins
+        env:
+          ECHIDNA_CI_REPO: ${{ steps.tool_sources.outputs.echidna_ci_repo }}
+          ECHIDNA_CI_RUN_ID: ${{ steps.tool_sources.outputs.echidna_ci_run_id }}
+          ECHIDNA_CI_ARTIFACT_NAME: ${{ steps.tool_sources.outputs.echidna_ci_artifact_name }}
+          ECHIDNA_CI_ARTIFACT_SHA256: ${{ steps.tool_sources.outputs.echidna_ci_artifact_sha256 }}
+          ECHIDNA_CI_COMMIT: ${{ steps.tool_sources.outputs.echidna_ci_commit }}
+          MEDUSA_GIT_REPO: ${{ steps.tool_sources.outputs.medusa_git_repo }}
+          MEDUSA_GIT_REF: ${{ steps.tool_sources.outputs.medusa_git_ref }}
+          MEDUSA_GIT_COMMIT: ${{ steps.tool_sources.outputs.medusa_git_commit }}
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_bleeding_edge_tools.py \
+            --echidna-ci-repo "${ECHIDNA_CI_REPO}" \
+            --echidna-ci-run-id "${ECHIDNA_CI_RUN_ID}" \
+            --echidna-ci-artifact-name "${ECHIDNA_CI_ARTIFACT_NAME}" \
+            --echidna-ci-artifact-sha256 "${ECHIDNA_CI_ARTIFACT_SHA256}" \
+            --echidna-ci-commit "${ECHIDNA_CI_COMMIT}" \
+            --medusa-git-repo "${MEDUSA_GIT_REPO}" \
+            --medusa-git-ref "${MEDUSA_GIT_REF}" \
+            --medusa-git-commit "${MEDUSA_GIT_COMMIT}"
 
       - name: Terraform apply
         id: apply
@@ -478,7 +747,18 @@ jobs:
           FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
           FOUNDRY_GIT_REF: ${{ inputs.foundry_git_ref }}
           ECHIDNA_VERSION: ${{ inputs.echidna_version }}
+          ECHIDNA_CI_REPO: ${{ steps.tool_sources.outputs.echidna_ci_repo }}
+          ECHIDNA_CI_RUN_ID: ${{ steps.tool_sources.outputs.echidna_ci_run_id }}
+          ECHIDNA_CI_ARTIFACT_NAME: ${{ steps.tool_sources.outputs.echidna_ci_artifact_name }}
+          ECHIDNA_CI_ARTIFACT_SHA256: ${{ steps.tool_sources.outputs.echidna_ci_artifact_sha256 }}
+          ECHIDNA_CI_COMMIT: ${{ steps.tool_sources.outputs.echidna_ci_commit }}
+          ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ steps.tool_sources.outputs.echidna_ci_token_ssm_parameter_name }}
           MEDUSA_VERSION: ${{ inputs.medusa_version }}
+          MEDUSA_GIT_REPO: ${{ steps.tool_sources.outputs.medusa_git_repo }}
+          MEDUSA_GIT_REF: ${{ steps.tool_sources.outputs.medusa_git_ref }}
+          MEDUSA_GIT_COMMIT: ${{ steps.tool_sources.outputs.medusa_git_commit }}
+          MEDUSA_GO_VERSION: ${{ steps.tool_sources.outputs.medusa_go_version }}
+          MEDUSA_GO_SHA256: ${{ steps.tool_sources.outputs.medusa_go_sha256 }}
           RECON_VERSION: ${{ inputs.recon_version }}
           GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
           FUZZER_ENV_JSON: ${{ inputs.fuzzer_env_json }}
@@ -516,8 +796,27 @@ jobs:
           if [[ -n "${ECHIDNA_VERSION}" ]]; then
             tf_args+=(-var "echidna_version=${ECHIDNA_VERSION}")
           fi
+          if [[ -n "${ECHIDNA_CI_REPO}" ]]; then
+            tf_args+=(
+              -var "echidna_ci_repo=${ECHIDNA_CI_REPO}"
+              -var "echidna_ci_run_id=${ECHIDNA_CI_RUN_ID}"
+              -var "echidna_ci_artifact_name=${ECHIDNA_CI_ARTIFACT_NAME}"
+              -var "echidna_ci_artifact_sha256=${ECHIDNA_CI_ARTIFACT_SHA256}"
+              -var "echidna_ci_commit=${ECHIDNA_CI_COMMIT}"
+              -var "echidna_ci_token_ssm_parameter_name=${ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME}"
+            )
+          fi
           if [[ -n "${MEDUSA_VERSION}" ]]; then
             tf_args+=(-var "medusa_version=${MEDUSA_VERSION}")
+          fi
+          if [[ -n "${MEDUSA_GIT_REPO}" ]]; then
+            tf_args+=(
+              -var "medusa_git_repo=${MEDUSA_GIT_REPO}"
+              -var "medusa_git_ref=${MEDUSA_GIT_REF}"
+              -var "medusa_git_commit=${MEDUSA_GIT_COMMIT}"
+              -var "medusa_go_version=${MEDUSA_GO_VERSION}"
+              -var "medusa_go_sha256=${MEDUSA_GO_SHA256}"
+            )
           fi
           if [[ -n "${RECON_VERSION}" ]]; then
             tf_args+=(-var "recon_version=${RECON_VERSION}")
