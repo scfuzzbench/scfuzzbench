@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "targets": [
+    {
+      "id": "aave-v4",
+      "label": "Aave v4",
+      "repo": "https://github.com/scfuzzbench/aave-v4-scfuzzbench",
+      "commit": "459b020058f4a65d18eb1481083b75c766340124",
+      "properties_path": "tests/recon/Properties.sol",
+      "rationale": "Represents a large modular lending protocol with price, share, and liquidation state transitions.",
+      "related_work_refs": [
+        {
+          "url": "https://github.com/Recon-Fuzz/aave-v4-scfuzzbench/tree/e54577dc1d6bd64d687290e5feff933ca44cec16",
+          "description": "Recon benchmark harness source adapted by this target."
+        }
+      ],
+      "overlap_group": "aave-v4",
+      "overlap_notes": "Protocol code is distinct from the other active targets. Shared Recon and Chimera harness utilities are test scaffolding, not application-code overlap."
+    },
+    {
+      "id": "superform-v2-periphery",
+      "label": "Superform v2-periphery",
+      "repo": "https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench",
+      "commit": "4d56ecd0efe4bd63c95ef92c14d48135838fbb10",
+      "properties_path": "test/recon/Properties.sol",
+      "rationale": "Represents cross-chain vault periphery behavior with asynchronous routing and share-accounting invariants.",
+      "related_work_refs": [
+        {
+          "url": "https://github.com/Recon-Fuzz/superform-v2-periphery-scfuzzbench/tree/29acf9fb679981ae984cab7d2f268e386fa88653",
+          "description": "Recon benchmark harness source adapted by this target."
+        }
+      ],
+      "overlap_group": "superform-v2-periphery",
+      "overlap_notes": "Protocol code is distinct from the other active targets. Shared Recon and Chimera harness utilities are test scaffolding, not application-code overlap."
+    },
+    {
+      "id": "liquity-v2-governance",
+      "label": "Liquity v2 Governance",
+      "repo": "https://github.com/scfuzzbench/liquity-V2-gov-scfuzzbench",
+      "commit": "5610870e7e91fe6e29f8cfb0c0ae316fe9784e10",
+      "properties_path": "test/recon/Properties.sol",
+      "rationale": "Represents epoch-based governance, voting power, bribe allocation, and time-sensitive accounting.",
+      "related_work_refs": [
+        {
+          "url": "https://github.com/Recon-Fuzz/liquity-V2-gov-scfuzzbench/tree/42212075645e4fc7bc46714e3f14582a06181560",
+          "description": "Recon benchmark harness source adapted by this target."
+        }
+      ],
+      "overlap_group": "liquity-v2-governance",
+      "overlap_notes": "Protocol code is distinct from the other active targets. Shared Recon and Chimera harness utilities are test scaffolding, not application-code overlap."
+    },
+    {
+      "id": "origin-dollar",
+      "label": "Origin Dollar (OUSD)",
+      "repo": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench",
+      "commit": "299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4",
+      "properties_path": "test/recon/Properties.sol",
+      "rationale": "Represents a rebasing yield-bearing stablecoin, including supply, credit, transfer, and rounding behavior.",
+      "related_work_refs": [
+        {
+          "url": "https://github.com/OriginProtocol/origin-dollar/tree/c52692d96110c9b9752f39775249ad56ebfa0264/contracts/contracts/echidna",
+          "description": "Upstream Echidna property suite adapted for the shared harness."
+        }
+      ],
+      "overlap_group": "origin-dollar",
+      "overlap_notes": "Protocol code is distinct from the other active targets. Its adapted upstream Echidna suite shares no application code with the Recon-derived targets."
+    },
+    {
+      "id": "drips",
+      "label": "Drips",
+      "repo": "https://github.com/scfuzzbench/drips-fuzzing-scfuzzbench",
+      "commit": "c50d160ead6bf82b1d1071e853dc74da0b23f595",
+      "properties_path": "test/recon/Properties.sol",
+      "rationale": "Represents streaming and split payments with time-dependent squeeze, receive, and withdrawal accounting.",
+      "related_work_refs": [
+        {
+          "url": "https://github.com/perimetersec/drips-fuzzing/tree/baa381d2d22992fc3038be10d99dc97be0848837",
+          "description": "Independent Drips fuzzing campaign adapted by this target."
+        }
+      ],
+      "overlap_group": "drips-v2",
+      "overlap_notes": "Protocol code is distinct from the other active targets. Its Perimeter-derived harness shares no application code with the remaining targets."
+    }
+  ]
+}

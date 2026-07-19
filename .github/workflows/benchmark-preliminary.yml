@@ -135,22 +135,34 @@ jobs:
             --checkpoint "${{ matrix.checkpoint }}" \
             --dest "${DEST}/snapshots"
 
+      - name: Derive analysis budget from the verified checkpoint horizon
+        id: analysis_budget
+        env:
+          DEST: ${{ runner.temp }}/preliminary-${{ matrix.run_id }}-${{ matrix.checkpoint_padded }}
+        run: |
+          set -euo pipefail
+          python3 scripts/preliminary_results.py analysis-budget \
+            --run-manifest "${DEST}/snapshots/run.json" \
+            --snapshot-set "${DEST}/snapshots/snapshot-set.json"
+
       - name: Run existing analysis and reports
         env:
           DEST: ${{ runner.temp }}/preliminary-${{ matrix.run_id }}-${{ matrix.checkpoint_padded }}
           RUN_ID: ${{ matrix.run_id }}
-          REPORT_BUDGET: ${{ matrix.timeout_hours }}
+          REPORT_BUDGET: ${{ steps.analysis_budget.outputs.report_budget_hours }}
         run: |
           set -euo pipefail
           make \
             results-prepare \
             results-analyze-filtered \
             report-events-to-cumulative \
+            report-known-bugs \
             report-benchmark \
             report-invariant-overlap \
             report-runner-metrics \
             UNZIPPED_DIR="${DEST}/snapshots/unzipped" \
             ANALYSIS_LOGS_DIR="${DEST}/analysis-logs" \
+            SELECTOR_CORPUS_DIR="${DEST}/snapshots/corpus/unzipped" \
             ANALYSIS_OUT_DIR="${DEST}/raw/data" \
             EVENTS_CSV="${DEST}/raw/data/events.csv" \
             CUMULATIVE_CSV="${DEST}/raw/data/cumulative.csv" \
@@ -158,6 +170,8 @@ jobs:
             REPORT_OUT_DIR="${DEST}/raw/data" \
             IMAGES_OUT_DIR="${DEST}/raw/images" \
             REPORT_BUDGET="${REPORT_BUDGET}" \
+            COVERAGE_OVER_TIME=1 \
+            KNOWN_BUG_RUN_MANIFEST="${DEST}/snapshots/run.json" \
             THROUGHPUT_SAMPLES_CSV="${DEST}/raw/data/throughput_samples.csv" \
             THROUGHPUT_SUMMARY_CSV="${DEST}/raw/data/throughput_summary.csv" \
             PROGRESS_METRICS_SAMPLES_CSV="${DEST}/raw/data/progress_metrics_samples.csv" \

@@ -51,6 +51,13 @@ MAX_SNAPSHOT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 MAX_CAPTURE_LATENESS_SECONDS = 300
 MAX_PUBLISHED_FILES = 2_048
 COPY_CHUNK_BYTES = 1024 * 1024
+MAX_LIST_PAGES = 64
+MAX_LIST_KEYS = 50_000
+MAX_RUN_MANIFESTS = 128
+MAX_SELECTED_RUNS = 16
+MAX_SNAPSHOTS_PER_CHECKPOINT = 80
+MAX_CHECKPOINT_ARCHIVE_BYTES = 8 * 1024 * 1024 * 1024
+MAX_CHECKPOINT_EXPANDED_BYTES = 8 * 1024 * 1024 * 1024
 
 
 def utc_iso(epoch: int) -> str:
@@ -95,12 +102,32 @@ def aws_json(args: list[str]) -> dict:
 def list_keys(bucket: str, prefix: str) -> list[str]:
     keys: list[str] = []
     token = ""
+    pages = 0
     while True:
+        pages += 1
+        if pages > MAX_LIST_PAGES:
+            raise ValueError(
+                f"S3 listing exceeded {MAX_LIST_PAGES} pages under {prefix}"
+            )
         args = ["s3api", "list-objects-v2", "--bucket", bucket, "--prefix", prefix]
         if token:
             args.extend(["--continuation-token", token])
         payload = aws_json(args)
-        keys.extend(str(item["Key"]) for item in payload.get("Contents", []))
+        contents = payload.get("Contents", [])
+        if not isinstance(contents, list):
+            raise ValueError("S3 listing Contents must be a list")
+        page_keys = [
+            str(item["Key"])
+            for item in contents
+            if isinstance(item, dict) and "Key" in item
+        ]
+        if len(page_keys) != len(contents):
+            raise ValueError("S3 listing contained an invalid object entry")
+        if len(keys) + len(page_keys) > MAX_LIST_KEYS:
+            raise ValueError(
+                f"S3 listing exceeded {MAX_LIST_KEYS} keys under {prefix}"
+            )
+        keys.extend(page_keys)
         if not payload.get("IsTruncated"):
             return keys
         token = str(payload.get("NextContinuationToken", ""))
@@ -215,6 +242,24 @@ def validate_run_manifest(manifest: dict, *, run_id: str, benchmark_uuid: str) -
     }
 
 
+def validate_finalized_marker(
+    marker: dict, *, run_id: str, benchmark_uuid: str
+) -> dict:
+    run_prefix(run_id, benchmark_uuid)
+    if not isinstance(marker, dict) or marker.get("schema") != FINALIZED_SCHEMA:
+        raise ValueError("invalid preliminary finalization schema")
+    if marker.get("run_id") != run_id:
+        raise ValueError("finalization run_id does not match its key")
+    if marker.get("benchmark_uuid") != benchmark_uuid:
+        raise ValueError("finalization benchmark_uuid does not match its key")
+    if marker.get("preliminary_stream_closed") is not True:
+        raise ValueError("finalization marker does not close the preliminary stream")
+    expected_tag = f"scfuzzbench-{benchmark_uuid}-{run_id}"
+    if marker.get("canonical_release_tag") != expected_tag:
+        raise ValueError("finalization marker has an unexpected canonical release tag")
+    return marker
+
+
 def expected_legs(manifest: dict) -> set[tuple[str, str]]:
     return {
         (fuzzer, str(index))
@@ -231,6 +276,7 @@ def select_active_checkpoints(
     settle_seconds: int = 300,
     requested_run_id: str = "",
     requested_benchmark_uuid: str = "",
+    finalized_runs: set[tuple[str, str]] | None = None,
 ) -> list[dict]:
     if bool(requested_run_id) != bool(requested_benchmark_uuid):
         raise ValueError("run_id and benchmark_uuid must be supplied together")
@@ -238,9 +284,12 @@ def select_active_checkpoints(
         run_prefix(requested_run_id, requested_benchmark_uuid)
     if settle_seconds < 0 or settle_seconds > 3600:
         raise ValueError("settle_seconds must be in [0, 3600]")
+    if len(manifests) > MAX_RUN_MANIFESTS:
+        raise ValueError(
+            f"preliminary discovery exceeded {MAX_RUN_MANIFESTS} run manifests"
+        )
     snapshots: dict[tuple[str, str], set[int]] = {}
     published: set[tuple[str, str, int]] = set()
-    finalized: set[tuple[str, str]] = set()
     for key in keys:
         if match := SNAPSHOT_KEY_RE.fullmatch(key):
             snapshots.setdefault((match["run"], match["uuid"]), set()).add(
@@ -248,10 +297,9 @@ def select_active_checkpoints(
             )
         elif match := ANALYSIS_META_RE.fullmatch(key):
             published.add((match["run"], match["uuid"], int(match["checkpoint"])))
-        elif match := FINALIZED_KEY_RE.fullmatch(key):
-            finalized.add((match["run"], match["uuid"]))
 
     selected: list[dict] = []
+    finalized = finalized_runs or set()
     for key, raw_manifest in sorted(manifests.items()):
         match = RUN_KEY_RE.fullmatch(key)
         if not match:
@@ -297,6 +345,10 @@ def select_active_checkpoints(
                 "expected_snapshots": len(expected_legs(manifest)),
             }
         )
+        if len(selected) > MAX_SELECTED_RUNS:
+            raise ValueError(
+                f"preliminary discovery exceeded {MAX_SELECTED_RUNS} selected runs"
+            )
     return selected
 
 
@@ -409,12 +461,18 @@ def publish_run_manifest(*, bucket: str, manifest_path: Path) -> str:
     return key
 
 
-def _safe_zip_entries(bundle: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
+def _safe_zip_entries(
+    bundle: zipfile.ZipFile,
+    *,
+    max_snapshot_bytes: int = MAX_SNAPSHOT_TOTAL_BYTES,
+) -> dict[str, zipfile.ZipInfo]:
+    if max_snapshot_bytes < 0:
+        raise ValueError("snapshot byte budget cannot be negative")
     infos = bundle.infolist()
     if len(infos) > MAX_SNAPSHOT_FILES + 1:
         raise ValueError("snapshot archive contains too many entries")
     entries: dict[str, zipfile.ZipInfo] = {}
-    total_size = 0
+    snapshot_size = 0
     for info in infos:
         name = info.filename
         if name in entries:
@@ -436,13 +494,44 @@ def _safe_zip_entries(bundle: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
         limit = MAX_JSON_BYTES if name == "checkpoint.json" else MAX_SNAPSHOT_FILE_BYTES
         if info.file_size < 0 or info.file_size > limit:
             raise ValueError(f"snapshot archive member exceeds its byte cap: {name}")
-        total_size += info.file_size
-        if total_size > MAX_SNAPSHOT_TOTAL_BYTES + MAX_JSON_BYTES:
-            raise ValueError("snapshot archive exceeds its total uncompressed byte cap")
+        if name != "checkpoint.json":
+            snapshot_size += info.file_size
+            if snapshot_size > max_snapshot_bytes:
+                raise ValueError(
+                    "snapshot archive exceeds its total uncompressed byte cap"
+                )
         entries[name] = info
     if "checkpoint.json" not in entries:
         raise ValueError("snapshot archive must contain one checkpoint.json")
     return entries
+
+
+def s3_object_identity_args(head: dict, key: str) -> list[str]:
+    """Return CLI arguments that pin a GET to the object observed by HEAD."""
+
+    def identity_value(name: str, *, max_bytes: int) -> str:
+        raw = head.get(name)
+        if raw is None:
+            return ""
+        if not isinstance(raw, str):
+            raise ValueError(f"{key} has an invalid S3 {name}")
+        if not raw or (name == "VersionId" and raw.lower() == "null"):
+            return ""
+        encoded = raw.encode("utf-8")
+        if len(encoded) > max_bytes or any(ord(char) < 0x20 for char in raw):
+            raise ValueError(f"{key} has an invalid S3 {name}")
+        return raw
+
+    version_id = identity_value("VersionId", max_bytes=2_048)
+    etag = identity_value("ETag", max_bytes=1_024)
+    if not version_id and not etag:
+        raise ValueError(f"{key} HEAD response lacks a stable S3 object identity")
+    args: list[str] = []
+    if version_id:
+        args.extend(["--version-id", version_id])
+    if etag:
+        args.extend(["--if-match", etag])
+    return args
 
 
 def _download_verified_object(
@@ -451,7 +540,13 @@ def _download_verified_object(
     destination: Path,
     *,
     max_bytes: int = MAX_ARCHIVE_BYTES,
-) -> None:
+) -> int:
+    if (
+        not isinstance(max_bytes, int)
+        or isinstance(max_bytes, bool)
+        or max_bytes < 1
+    ):
+        raise ValueError("download byte cap must be a positive integer")
     assert_preliminary_key(key)
     head = aws_json(["s3api", "head-object", "--bucket", bucket, "--key", key])
     expected_sha = str(head.get("Metadata", {}).get("sha256", ""))
@@ -460,6 +555,7 @@ def _download_verified_object(
     size = _positive_int(head.get("ContentLength"), "S3 ContentLength")
     if size > max_bytes:
         raise ValueError(f"{key} exceeds its download byte cap")
+    identity_args = s3_object_identity_args(head, key)
     destination.parent.mkdir(parents=True, exist_ok=True)
     subprocess.check_call(
         [
@@ -470,15 +566,22 @@ def _download_verified_object(
             bucket,
             "--key",
             key,
+            "--range",
+            f"bytes=0-{max_bytes}",
+            *identity_args,
             str(destination),
         ],
         stdout=subprocess.DEVNULL,
     )
+    downloaded_size = destination.stat().st_size
+    if downloaded_size > max_bytes:
+        raise ValueError(f"downloaded object exceeds its byte cap for {key}")
+    if downloaded_size != size:
+        raise ValueError(f"downloaded size mismatch for {key}")
     actual_sha = sha256_file(destination)
     if actual_sha != expected_sha:
         raise ValueError(f"downloaded checksum mismatch for {key}")
-    if destination.stat().st_size != size:
-        raise ValueError(f"downloaded size mismatch for {key}")
+    return size
 
 
 def verify_and_extract_snapshot(
@@ -488,6 +591,7 @@ def verify_and_extract_snapshot(
     run_manifest: dict,
     object_key: str,
     checkpoint: int,
+    max_expanded_bytes: int = MAX_SNAPSHOT_TOTAL_BYTES,
 ) -> dict:
     match = SNAPSHOT_KEY_RE.fullmatch(object_key)
     if not match:
@@ -501,7 +605,13 @@ def verify_and_extract_snapshot(
     if archive_path.stat().st_size > MAX_ARCHIVE_BYTES:
         raise ValueError("snapshot archive exceeds its byte cap")
     with zipfile.ZipFile(archive_path) as bundle:
-        entries = _safe_zip_entries(bundle)
+        entries = _safe_zip_entries(
+            bundle,
+            max_snapshot_bytes=min(
+                MAX_SNAPSHOT_TOTAL_BYTES,
+                max_expanded_bytes,
+            ),
+        )
         with bundle.open(entries["checkpoint.json"]) as checkpoint_file:
             checkpoint_bytes = checkpoint_file.read(MAX_JSON_BYTES + 1)
         if len(checkpoint_bytes) > MAX_JSON_BYTES:
@@ -589,7 +699,10 @@ def verify_and_extract_snapshot(
             if not re.fullmatch(r"[0-9a-f]{64}", str(entry.get("sha256", ""))):
                 raise ValueError(f"invalid checkpoint file SHA-256: {path}")
             declared_total += snapshot_size
-            if declared_total > MAX_SNAPSHOT_TOTAL_BYTES:
+            if declared_total > min(
+                MAX_SNAPSHOT_TOTAL_BYTES,
+                max_expanded_bytes,
+            ):
                 raise ValueError("declared checkpoint files exceed the total byte cap")
             declared[path] = entry
         skipped_files = metadata.get("skipped_files")
@@ -647,6 +760,11 @@ def materialize_checkpoint(
     )
     if not keys:
         raise ValueError(f"no snapshot bundles found under {prefix}")
+    if len(keys) > MAX_SNAPSHOTS_PER_CHECKPOINT:
+        raise ValueError(
+            "checkpoint contains more than "
+            f"{MAX_SNAPSHOTS_PER_CHECKPOINT} snapshot objects"
+        )
     expected = expected_legs(manifest)
     if len(keys) > len(expected):
         raise ValueError("checkpoint contains more snapshot objects than expected legs")
@@ -655,17 +773,42 @@ def materialize_checkpoint(
     unzipped_dir = destination / "unzipped"
     seen_legs: set[tuple[str, str]] = set()
     captures: list[dict] = []
+    archive_bytes = 0
+    expanded_bytes = 0
     for key in keys:
         identity = SNAPSHOT_KEY_RE.fullmatch(key)["identity"]  # type: ignore[index]
         archive = zips_dir / f"{identity}.zip"
-        _download_verified_object(bucket, key, archive)
+        remaining_archive_bytes = MAX_CHECKPOINT_ARCHIVE_BYTES - archive_bytes
+        if remaining_archive_bytes <= 0:
+            raise ValueError("checkpoint archives exceed their cumulative byte cap")
+        archive_bytes += _download_verified_object(
+            bucket,
+            key,
+            archive,
+            max_bytes=min(MAX_ARCHIVE_BYTES, remaining_archive_bytes),
+        )
+        if archive_bytes > MAX_CHECKPOINT_ARCHIVE_BYTES:
+            raise ValueError("checkpoint archives exceed their cumulative byte cap")
+        remaining_expanded_bytes = MAX_CHECKPOINT_EXPANDED_BYTES - expanded_bytes
+        if remaining_expanded_bytes < 0:
+            raise ValueError("checkpoint snapshots exceed their cumulative byte cap")
         metadata = verify_and_extract_snapshot(
             archive_path=archive,
             output_dir=unzipped_dir,
             run_manifest=manifest,
             object_key=key,
             checkpoint=checkpoint,
+            max_expanded_bytes=min(
+                MAX_SNAPSHOT_TOTAL_BYTES,
+                remaining_expanded_bytes,
+            ),
         )
+        expanded_bytes += sum(
+            _nonnegative_int(item.get("snapshot_size"), "snapshot size")
+            for item in metadata["files"]
+        )
+        if expanded_bytes > MAX_CHECKPOINT_EXPANDED_BYTES:
+            raise ValueError("checkpoint snapshots exceed their cumulative byte cap")
         leg = (str(metadata["fuzzer_key"]), str(metadata["run_index"]))
         if leg in seen_legs:
             raise ValueError(f"duplicate snapshot for logical replicate {leg}")
@@ -697,6 +840,8 @@ def materialize_checkpoint(
         "planned_timeout_seconds": int(manifest["timeout_hours"] * 3600),
         "expected_snapshots": len(expected),
         "present_snapshots": len(seen_legs),
+        "archive_bytes": archive_bytes,
+        "expanded_bytes": expanded_bytes,
         "missing_replicates": [
             {"fuzzer_key": fuzzer, "run_index": index} for fuzzer, index in missing
         ],
@@ -706,6 +851,10 @@ def materialize_checkpoint(
         "optional_stopping_allowed": False,
         "captures": captures,
     }
+    (destination / "run.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     (destination / "snapshot-set.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -795,6 +944,40 @@ def validate_snapshot_set(context: dict) -> dict:
     }
 
 
+def checkpoint_analysis_budget_hours(
+    run_manifest: dict,
+    snapshot_set: dict,
+) -> float:
+    run_id = str(run_manifest.get("run_id", ""))
+    benchmark_uuid = str(run_manifest.get("benchmark_uuid", ""))
+    manifest = validate_run_manifest(
+        run_manifest,
+        run_id=run_id,
+        benchmark_uuid=benchmark_uuid,
+    )
+    context = validate_snapshot_set(snapshot_set)
+    if (
+        context["run_id"] != run_id
+        or context["benchmark_uuid"] != benchmark_uuid
+    ):
+        raise ValueError("snapshot set does not belong to the run manifest")
+    expected_scheduled = (
+        manifest["run_started_at_epoch"]
+        + context["checkpoint"] * manifest["preliminary"]["interval_seconds"]
+    )
+    if context["scheduled_at_epoch"] != expected_scheduled:
+        raise ValueError("snapshot-set schedule disagrees with the run manifest")
+    planned_seconds = int(manifest["timeout_hours"] * 3600)
+    if context["planned_timeout_seconds"] != planned_seconds:
+        raise ValueError("snapshot-set planned timeout disagrees with the run manifest")
+    horizon_seconds = (
+        context["scheduled_at_epoch"] - manifest["run_started_at_epoch"]
+    )
+    if horizon_seconds <= 0 or horizon_seconds >= planned_seconds:
+        raise ValueError("checkpoint analysis horizon must be pre-terminal")
+    return horizon_seconds / 3600
+
+
 def preliminary_banner(context: dict) -> str:
     missing = context["expected_snapshots"] - context["present_snapshots"]
     return "\n".join(
@@ -807,6 +990,8 @@ def preliminary_banner(context: dict) -> str:
             f"> Snapshot coverage: **{context['present_snapshots']}/{context['expected_snapshots']}** "
             f"replicates ({missing} missing).",
             "> This non-terminal view cannot support rankings, pass/fail decisions, or optional stopping.",
+            "> Saved-corpus selector distributions are unavailable in preliminary "
+            "log-only checkpoints; wait for the canonical release.",
             "",
         ]
     )
@@ -1002,6 +1187,11 @@ def mark_finalized(
         "canonical_release_tag": canonical_tag,
         "preliminary_stream_closed": True,
     }
+    validate_finalized_marker(
+        payload,
+        run_id=run_id,
+        benchmark_uuid=benchmark_uuid,
+    )
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "finalized.json"
         path.write_text(
@@ -1051,6 +1241,14 @@ def main() -> int:
     materialize.add_argument("--checkpoint", required=True, type=int)
     materialize.add_argument("--dest", required=True, type=Path)
 
+    analysis_budget = sub.add_parser("analysis-budget")
+    analysis_budget.add_argument("--run-manifest", required=True, type=Path)
+    analysis_budget.add_argument("--snapshot-set", required=True, type=Path)
+    analysis_budget.add_argument(
+        "--github-output",
+        default=os.environ.get("GITHUB_OUTPUT", ""),
+    )
+
     watermark = sub.add_parser("watermark")
     watermark.add_argument("--source", required=True, type=Path)
     watermark.add_argument("--dest", required=True, type=Path)
@@ -1077,12 +1275,43 @@ def main() -> int:
     elif args.command == "publish-run":
         print(publish_run_manifest(bucket=args.bucket, manifest_path=args.manifest))
     elif args.command == "discover":
-        keys = list_keys(args.bucket, "preliminary/")
+        if bool(args.run_id) != bool(args.benchmark_uuid):
+            raise ValueError("run_id and benchmark_uuid must be supplied together")
+        discovery_prefix = (
+            f"{run_prefix(args.run_id, args.benchmark_uuid)}/"
+            if args.run_id
+            else "preliminary/"
+        )
+        keys = list_keys(args.bucket, discovery_prefix)
+        run_keys = sorted(key for key in keys if RUN_KEY_RE.fullmatch(key))
+        if len(run_keys) > MAX_RUN_MANIFESTS:
+            raise ValueError(
+                f"preliminary discovery exceeded {MAX_RUN_MANIFESTS} run manifests"
+            )
         manifests = {
             key: read_s3_json(args.bucket, key)
-            for key in keys
-            if RUN_KEY_RE.fullmatch(key)
+            for key in run_keys
         }
+        finalized_runs: set[tuple[str, str]] = set()
+        for key in sorted(item for item in keys if FINALIZED_KEY_RE.fullmatch(item)):
+            match = FINALIZED_KEY_RE.fullmatch(key)
+            if match is None:
+                raise AssertionError("finalized key filter disagrees with parser")
+            try:
+                marker = read_s3_json(args.bucket, key)
+                validate_finalized_marker(
+                    marker,
+                    run_id=match["run"],
+                    benchmark_uuid=match["uuid"],
+                )
+            except Exception as exc:
+                print(
+                    "WARNING: ignoring invalid preliminary finalization marker "
+                    f"{key}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            finalized_runs.add((match["run"], match["uuid"]))
         selected = select_active_checkpoints(
             keys=keys,
             manifests=manifests,
@@ -1090,6 +1319,7 @@ def main() -> int:
             settle_seconds=args.settle_seconds,
             requested_run_id=args.run_id,
             requested_benchmark_uuid=args.benchmark_uuid,
+            finalized_runs=finalized_runs,
         )
         matrix = {"include": selected}
         _write_github_output(
@@ -1104,6 +1334,16 @@ def main() -> int:
             destination=args.dest,
         )
         print(json.dumps(summary, sort_keys=True))
+    elif args.command == "analysis-budget":
+        manifest = json.loads(args.run_manifest.read_text(encoding="utf-8"))
+        snapshot_set = json.loads(args.snapshot_set.read_text(encoding="utf-8"))
+        budget = checkpoint_analysis_budget_hours(manifest, snapshot_set)
+        rendered = format(budget, ".12g")
+        if args.github_output:
+            with Path(args.github_output).open("a", encoding="utf-8") as handle:
+                handle.write(f"report_budget_hours={rendered}\n")
+        else:
+            print(rendered)
     elif args.command == "watermark":
         snapshot_set = json.loads(args.snapshot_set.read_text(encoding="utf-8"))
         metadata = watermark_tree(

@@ -29,10 +29,10 @@ build_target
 repo_dir="${SCFUZZBENCH_WORKDIR}/target"
 log_file="${SCFUZZBENCH_LOG_DIR}/foundry.log"
 
-# Start cold even if the target repo accidentally committed fuzzing artifacts:
-# a persisted corpus warm-starts coverage and persisted failures replay at t~0,
-# which would skew time-to-bug comparisons against the other fuzzers.
-rm -rf "${repo_dir}/corpus/foundry" "${repo_dir}/cache/invariant" "${repo_dir}/cache/test-failures"
+# Start cold even if the target repo accidentally committed persisted failures.
+# The corpus itself is reset centrally below, after any configured local seed
+# source has first been staged.
+rm -rf "${repo_dir}/cache/invariant" "${repo_dir}/cache/test-failures"
 
 # Expose the corpus dir so upload_results ships the foundry corpus like the other
 # legs (and so post-run showmap replays have something to replay downstream).
@@ -42,7 +42,7 @@ if [[ "${corpus_dir}" != /* ]]; then
   corpus_dir="${repo_dir}/${corpus_dir}"
 fi
 export SCFUZZBENCH_CORPUS_DIR="${corpus_dir}"
-mkdir -p "${SCFUZZBENCH_CORPUS_DIR}"
+prepare_shared_seed_corpus
 
 extra_args=()
 if [[ -n "${FOUNDRY_TEST_ARGS:-}" ]]; then
@@ -65,6 +65,10 @@ fi
 showmap_enabled="${SCFUZZBENCH_FOUNDRY_SHOWMAP:-0}"
 showmap_enabled_lc=$(printf '%s' "${showmap_enabled}" | tr '[:upper:]' '[:lower:]')
 keep_corpus="${SCFUZZBENCH_FOUNDRY_KEEP_CORPUS:-0}"
+if [[ -n "${SCFUZZBENCH_SEED_CORPUS_SOURCE:-}" ]]; then
+  keep_corpus=1
+  export FOUNDRY_INVARIANT_CORPUS_DIR="${SCFUZZBENCH_CORPUS_DIR}"
+fi
 if [[ "${showmap_enabled}" != "1" && "${showmap_enabled_lc}" != "true" && "${showmap_enabled_lc}" != "yes" && "${keep_corpus}" != "1" ]]; then
   sed -i -E '/^[[:space:]]*corpus_dir[[:space:]]*=/d' "${repo_dir}/foundry.toml"
 fi
