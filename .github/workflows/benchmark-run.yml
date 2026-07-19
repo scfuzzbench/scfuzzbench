@@ -221,6 +221,28 @@ jobs:
             --github-run-attempt "${GITHUB_RUN_ATTEMPT_VALUE}" \
             --github-output "${GITHUB_OUTPUT}"
 
+      - name: Validate all cloud inputs before admission
+        env:
+          TARGET_REPO_URL: ${{ inputs.target_repo_url }}
+          TARGET_COMMIT: ${{ inputs.target_commit }}
+          BENCHMARK_TYPE: ${{ inputs.benchmark_type }}
+          INSTANCE_TYPE: ${{ inputs.instance_type }}
+          INSTANCES_PER_FUZZER: ${{ inputs.instances_per_fuzzer }}
+          TIMEOUT_HOURS: ${{ inputs.timeout_hours }}
+          FUZZERS_JSON: ${{ inputs.fuzzers_json }}
+          FOUNDRY_VERSION: ${{ inputs.foundry_version }}
+          FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
+          FOUNDRY_GIT_REF: ${{ inputs.foundry_git_ref }}
+          ECHIDNA_VERSION: ${{ inputs.echidna_version }}
+          MEDUSA_VERSION: ${{ inputs.medusa_version }}
+          RECON_VERSION: ${{ inputs.recon_version }}
+          GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
+          PROPERTIES_PATH: ${{ inputs.properties_path }}
+          FUZZER_ENV_JSON: ${{ inputs.fuzzer_env_json }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py validate-inputs
+
       - name: Require external shared infrastructure
         if: ${{ !inputs.dry_run }}
         env:
@@ -275,9 +297,16 @@ jobs:
         env:
           BENCHMARK_TYPE: ${{ inputs.benchmark_type }}
           CLEANUP_TFVARS_KEY: ${{ needs.prepare-run.outputs.cleanup_tfvars_key }}
+          ECHIDNA_VERSION: ${{ inputs.echidna_version }}
+          FOUNDRY_GIT_REF: ${{ inputs.foundry_git_ref }}
+          FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
+          FOUNDRY_VERSION: ${{ inputs.foundry_version }}
           FUZZERS_JSON: ${{ inputs.fuzzers_json }}
+          GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
           INSTANCE_TYPE: ${{ inputs.instance_type }}
           INSTANCES_PER_FUZZER: ${{ inputs.instances_per_fuzzer }}
+          MEDUSA_VERSION: ${{ inputs.medusa_version }}
+          RECON_VERSION: ${{ inputs.recon_version }}
           RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
           RUN_STARTED_AT_EPOCH: ${{ needs.prepare-run.outputs.run_started_at_epoch }}
           TARGET_COMMIT: ${{ inputs.target_commit }}
@@ -336,6 +365,21 @@ jobs:
               "terraform_backend_key": os.environ["TERRAFORM_BACKEND_KEY"],
               "scfuzzbench_commit": os.environ["GITHUB_SHA"],
           }
+          # Preserve every non-secret optional apply variable. Fuzzer env values
+          # are deliberately not persisted: destroy mode does not need user-data
+          # inputs and callers may treat those values as sensitive.
+          for env_name, tf_name in {
+              "FOUNDRY_VERSION": "foundry_version",
+              "FOUNDRY_GIT_REPO": "foundry_git_repo",
+              "FOUNDRY_GIT_REF": "foundry_git_ref",
+              "ECHIDNA_VERSION": "echidna_version",
+              "MEDUSA_VERSION": "medusa_version",
+              "RECON_VERSION": "recon_version",
+              "GIT_TOKEN_SSM_PARAMETER_NAME": "git_token_ssm_parameter_name",
+          }.items():
+              value = os.environ.get(env_name, "").strip()
+              if value:
+                  cleanup_tfvars[tf_name] = value
           Path("reservation.json").write_text(
               json.dumps(reservation, indent=2, sort_keys=True) + "\n"
           )

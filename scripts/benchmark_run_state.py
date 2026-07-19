@@ -11,7 +11,9 @@ capacity reservation without a long-running workflow or another AWS service.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -26,6 +28,37 @@ BACKEND_KEY_RE = re.compile(r"^runs/([A-Za-z0-9][A-Za-z0-9._-]{0,79})/terraform\
 ACTIVE_PREFIX = "run-state/admissions/active/"
 RUN_STATE_PREFIX = "run-state/runs/"
 MAX_CONCURRENT_RUNS_LIMIT = 20
+HEARTBEAT_STALE_SECONDS = 30 * 60
+SUPPORTED_FUZZERS = {"echidna", "foundry", "medusa", "recon-fuzzer"}
+IMMUTABLE_FUZZER_ENV_KEYS = {
+    "AWS_ACCESS_KEY_ID",
+    "AWS_DEFAULT_REGION",
+    "AWS_REGION",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "SCFUZZBENCH_AWS_CREDS_ENV_FILE",
+    "SCFUZZBENCH_BENCHMARK_MANIFEST_B64",
+    "SCFUZZBENCH_BENCHMARK_UUID",
+    "SCFUZZBENCH_BIN_DIR",
+    "SCFUZZBENCH_COMMIT",
+    "SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE",
+    "SCFUZZBENCH_GIT_TOKEN_SSM_PARAMETER",
+    "SCFUZZBENCH_LOCAL_MODE",
+    "SCFUZZBENCH_FUZZER_KEY",
+    "SCFUZZBENCH_FUZZER_LABEL",
+    "SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS",
+    "SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT",
+    "SCFUZZBENCH_REPO_URL",
+    "SCFUZZBENCH_ROOT",
+    "SCFUZZBENCH_RUN_HEARTBEAT_SECONDS",
+    "SCFUZZBENCH_RUN_ID",
+    "SCFUZZBENCH_RUN_INDEX",
+    "SCFUZZBENCH_RUN_STARTED_AT_EPOCH",
+    "SCFUZZBENCH_S3_BUCKET",
+    "SCFUZZBENCH_SHUTDOWN_GRACE_SECONDS",
+    "SCFUZZBENCH_TIMEOUT_SECONDS",
+    "SCFUZZBENCH_WORKDIR",
+}
 
 TAGGABLE_RUN_RESOURCE_TYPES = {
     "aws_iam_instance_profile",
@@ -69,6 +102,49 @@ def validate_backend_key(run_id: str, backend_key: str) -> str:
     return backend_key
 
 
+def validate_recovery_inputs(
+    payload: dict[str, Any],
+    *,
+    run_id: str,
+    backend_key: str,
+    bucket: str,
+) -> None:
+    validate_backend_key(run_id, backend_key)
+    if str(payload.get("run_id", "")) != run_id:
+        raise ValueError("recovery inputs do not match run_id")
+    if str(payload.get("terraform_backend_key", "")) != backend_key:
+        raise ValueError("recovery inputs do not match terraform backend key")
+    if str(payload.get("existing_bucket_name", "")) != bucket:
+        raise ValueError("recovery inputs do not match the shared artifact bucket")
+    if "fuzzer_env" in payload:
+        raise ValueError("recovery inputs must not persist fuzzer_env")
+
+
+def validate_state_outputs(
+    outputs: dict[str, Any],
+    *,
+    run_id: str,
+    backend_key: str,
+    benchmark_uuid: str = "",
+) -> None:
+    def output(name: str) -> Any:
+        item = outputs.get(name)
+        if not isinstance(item, dict) or "value" not in item:
+            raise ValueError(f"state is missing required {name} output")
+        return item["value"]
+
+    validate_backend_key(run_id, backend_key)
+    if str(output("run_id")) != run_id:
+        raise ValueError("state run_id output does not match cleanup identity")
+    if str(output("terraform_backend_key")) != backend_key:
+        raise ValueError("state backend-key output does not match cleanup identity")
+    actual_uuid = str(output("benchmark_uuid"))
+    if not re.fullmatch(r"[0-9a-f]{32}", actual_uuid):
+        raise ValueError("state benchmark_uuid output is invalid")
+    if benchmark_uuid and actual_uuid != benchmark_uuid:
+        raise ValueError("state benchmark_uuid output does not match run metadata")
+
+
 def make_identity(github_run_id: str, github_run_attempt: str, started_at_epoch: int) -> dict[str, Any]:
     if not github_run_id.isdigit() or not github_run_attempt.isdigit():
         raise ValueError("GitHub run id and attempt must be decimal integers")
@@ -97,6 +173,124 @@ def parse_max_concurrent_runs(raw: str | int | None) -> int:
             f"max concurrent runs must be in [1, {MAX_CONCURRENT_RUNS_LIMIT}]"
         )
     return parsed
+
+
+def validate_benchmark_inputs(values: dict[str, str]) -> dict[str, Any]:
+    """Validate every cloud input before admission creates persistent objects."""
+
+    def value(name: str) -> str:
+        raw = str(values.get(name, ""))
+        if "\n" in raw or "\r" in raw:
+            raise ValueError(f"{name.lower()} must be a single line")
+        return raw.strip()
+
+    target_repo_url = value("TARGET_REPO_URL")
+    if not re.fullmatch(
+        r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?/?",
+        target_repo_url,
+    ):
+        raise ValueError(
+            "target_repo_url must be https://github.com/<org>/<repo>"
+        )
+    target_commit = value("TARGET_COMMIT")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", target_commit):
+        raise ValueError("target_commit must be a commit SHA, tag, or branch")
+    benchmark_type = value("BENCHMARK_TYPE")
+    if benchmark_type not in {"property", "optimization"}:
+        raise ValueError("benchmark_type must be property or optimization")
+    if not re.fullmatch(r"[a-z0-9]+\.[a-z0-9]+", value("INSTANCE_TYPE")):
+        raise ValueError("instance_type must look like c6a.4xlarge")
+
+    instances_raw = value("INSTANCES_PER_FUZZER")
+    if not instances_raw.isdigit() or not 1 <= int(instances_raw) <= 20:
+        raise ValueError("instances_per_fuzzer must be an integer in [1, 20]")
+    try:
+        timeout_hours = float(value("TIMEOUT_HOURS"))
+    except ValueError as exc:
+        raise ValueError("timeout_hours must be a number") from exc
+    if not math.isfinite(timeout_hours) or not 0.25 <= timeout_hours <= 72:
+        raise ValueError("timeout_hours must be in [0.25, 72]")
+
+    try:
+        fuzzers = json.loads(
+            value("FUZZERS_JSON")
+            or '["echidna","medusa","foundry","recon-fuzzer"]'
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"fuzzers_json must be valid JSON: {exc}") from exc
+    if (
+        not isinstance(fuzzers, list)
+        or not fuzzers
+        or len(fuzzers) > len(SUPPORTED_FUZZERS)
+        or any(not isinstance(item, str) for item in fuzzers)
+        or len(set(fuzzers)) != len(fuzzers)
+        or not set(fuzzers).issubset(SUPPORTED_FUZZERS)
+    ):
+        raise ValueError(
+            "fuzzers_json must be a unique, non-empty list of supported fuzzers"
+        )
+
+    safe_token = re.compile(r"^[A-Za-z0-9._+-]*$")
+    for name in (
+        "FOUNDRY_VERSION",
+        "ECHIDNA_VERSION",
+        "MEDUSA_VERSION",
+        "RECON_VERSION",
+    ):
+        if not safe_token.fullmatch(value(name)):
+            raise ValueError(f"{name.lower()} contains unsupported characters")
+    foundry_repo = value("FOUNDRY_GIT_REPO")
+    if foundry_repo and not re.fullmatch(
+        r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?/?",
+        foundry_repo,
+    ):
+        raise ValueError("foundry_git_repo must be a GitHub HTTPS repository")
+    foundry_ref = value("FOUNDRY_GIT_REF")
+    if foundry_ref and not re.fullmatch(r"[A-Za-z0-9._/-]+", foundry_ref):
+        raise ValueError("foundry_git_ref contains unsupported characters")
+    ssm_name = value("GIT_TOKEN_SSM_PARAMETER_NAME")
+    if ssm_name and not re.fullmatch(r"/scfuzzbench/[A-Za-z0-9_./-]+", ssm_name):
+        raise ValueError(
+            "git_token_ssm_parameter_name must start with /scfuzzbench/"
+        )
+    properties_path = value("PROPERTIES_PATH")
+    if properties_path and (
+        properties_path.startswith("/")
+        or ".." in properties_path
+        or not re.fullmatch(r"[A-Za-z0-9_./-]+", properties_path)
+    ):
+        raise ValueError("properties_path must be a safe repo-relative path")
+
+    fuzzer_env_raw = value("FUZZER_ENV_JSON")
+    fuzzer_env: dict[str, str] = {}
+    if fuzzer_env_raw:
+        try:
+            parsed_env = json.loads(fuzzer_env_raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"fuzzer_env_json must be valid JSON: {exc}") from exc
+        if not isinstance(parsed_env, dict) or len(parsed_env) > 64:
+            raise ValueError("fuzzer_env_json must be an object with at most 64 keys")
+        forbidden = re.compile(r'[\r\n"`$\\]')
+        for key, env_value in parsed_env.items():
+            if not isinstance(key, str) or not re.fullmatch(
+                r"[A-Z][A-Z0-9_]{0,63}", key
+            ):
+                raise ValueError(f"invalid fuzzer environment key: {key!r}")
+            if key in IMMUTABLE_FUZZER_ENV_KEYS:
+                raise ValueError(f"fuzzer environment may not override {key}")
+            if (
+                not isinstance(env_value, str)
+                or len(env_value) > 2000
+                or forbidden.search(env_value)
+            ):
+                raise ValueError(f"invalid fuzzer environment value for {key}")
+        fuzzer_env = parsed_env
+
+    return {
+        "fuzzers": fuzzers,
+        "fuzzer_env": fuzzer_env,
+        "timeout_hours": timeout_hours,
+    }
 
 
 def reservation_run_id(key: str) -> str | None:
@@ -185,6 +379,7 @@ def cleanup_eligibility(
     active_instance_count: int,
     final_archive_count: int,
     now_epoch: int,
+    latest_heartbeat_epoch: int | None = None,
 ) -> str | None:
     timeout_hours = float(metadata.get("timeout_hours", 0))
     started_at = int(metadata["run_started_at_epoch"])
@@ -202,7 +397,16 @@ def cleanup_eligibility(
         and final_archive_count >= expected
     ):
         return "terminal-artifacts"
-    if now_epoch >= orphan_after:
+    lifecycle_epoch = max(
+        started_at,
+        int(metadata.get("updated_at_epoch", started_at)),
+        int(latest_heartbeat_epoch or 0),
+    )
+    if (
+        active_instance_count == 0
+        and now_epoch >= orphan_after
+        and now_epoch - lifecycle_epoch >= HEARTBEAT_STALE_SECONDS
+    ):
         return "orphan-deadline"
     return None
 
@@ -218,8 +422,8 @@ def _aws_text(*args: str) -> str:
     return subprocess.check_output(["aws", *args], text=True)
 
 
-def list_s3_keys(bucket: str, prefix: str) -> list[str]:
-    keys: list[str] = []
+def list_s3_objects(bucket: str, prefix: str) -> list[dict[str, Any]]:
+    objects: list[dict[str, Any]] = []
     token: str | None = None
     while True:
         args = [
@@ -229,20 +433,47 @@ def list_s3_keys(bucket: str, prefix: str) -> list[str]:
             bucket,
             "--prefix",
             prefix,
+            "--no-paginate",
         ]
         if token:
             args += ["--continuation-token", token]
         page = _aws_json(*args)
-        keys.extend(
-            str(entry["Key"])
+        objects.extend(
+            entry
             for entry in page.get("Contents", [])
             if entry.get("Key")
         )
         if not page.get("IsTruncated"):
-            return keys
+            return objects
         token = str(page.get("NextContinuationToken", ""))
         if not token:
             raise RuntimeError("truncated S3 listing omitted continuation token")
+
+
+def list_s3_keys(bucket: str, prefix: str) -> list[str]:
+    return [str(entry["Key"]) for entry in list_s3_objects(bucket, prefix)]
+
+
+def _s3_timestamp_epoch(raw: Any) -> int:
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    text = str(raw).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = dt.datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return int(parsed.timestamp())
+
+
+def latest_run_heartbeat_epoch(bucket: str, run_id: str) -> int | None:
+    prefix = f"run-state/heartbeats/{validate_run_id(run_id)}/"
+    epochs = [
+        _s3_timestamp_epoch(entry["LastModified"])
+        for entry in list_s3_objects(bucket, prefix)
+        if entry.get("LastModified")
+    ]
+    return max(epochs) if epochs else None
 
 
 def active_benchmark_instances() -> list[dict[str, Any]]:
@@ -314,6 +545,10 @@ def cmd_admit(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    admitted_at = int(time.time())
+    reservation["admitted_at_epoch"] = admitted_at
+    reservation["updated_at_epoch"] = admitted_at
+    _write_json(reservation_path, reservation)
     reservation_key = f"{ACTIVE_PREFIX}{run_id}.json"
     metadata_key = f"{RUN_STATE_PREFIX}{run_id}/metadata.json"
     _s3_write_file(args.bucket, reservation_key, reservation_path)
@@ -414,12 +649,16 @@ def cmd_discover_cleanup(args: argparse.Namespace) -> int:
                 active_instance_count=len(instances_by_run.get(run_id, [])),
                 final_archive_count=final_count,
                 now_epoch=now_epoch,
+                latest_heartbeat_epoch=latest_run_heartbeat_epoch(
+                    args.bucket, run_id
+                ),
             )
             if reason:
                 include.append(
                     {
                         "run_id": run_id,
                         "terraform_backend_key": metadata["terraform_backend_key"],
+                        "benchmark_uuid": benchmark_uuid,
                         "reason": reason,
                     }
                 )
@@ -475,11 +714,20 @@ def validate_terraform_plan(plan: dict[str, Any], mode: str, run_id: str) -> lis
         if resource_type.startswith("aws_s3_bucket"):
             errors.append(f"{address}: run plans may not own shared S3 resources")
 
-        action_set = set(actions)
-        if mode == "apply" and action_set.intersection({"delete", "update"}):
-            errors.append(f"{address}: fresh run plan is not create-only ({actions})")
-        if mode == "cleanup" and action_set.intersection({"create", "update"}):
-            errors.append(f"{address}: cleanup plan is not delete-only ({actions})")
+        if resource_mode == "managed":
+            expected_actions = {
+                "apply": ["create"],
+                "cleanup": ["delete"],
+                "inspect": ["no-op"],
+            }[mode]
+            if actions != expected_actions:
+                if mode == "apply":
+                    description = "fresh run plan is not create-only"
+                elif mode == "cleanup":
+                    description = "cleanup plan is not delete-only"
+                else:
+                    description = "inspection plan contains managed changes"
+                errors.append(f"{address}: {description} ({actions})")
 
         if resource_type not in TAGGABLE_RUN_RESOURCE_TYPES:
             continue
@@ -504,6 +752,36 @@ def cmd_validate_plan(args: argparse.Namespace) -> int:
             print(error, file=sys.stderr)
         return 1
     print(f"Terraform {args.mode} plan is run-scoped for {args.run_id}.")
+    return 0
+
+
+def cmd_validate_inputs(args: argparse.Namespace) -> int:
+    normalized = validate_benchmark_inputs(dict(os.environ))
+    print(json.dumps(normalized, sort_keys=True))
+    return 0
+
+
+def cmd_validate_recovery_inputs(args: argparse.Namespace) -> int:
+    payload = json.loads(Path(args.tfvars_json).read_text())
+    validate_recovery_inputs(
+        payload,
+        run_id=args.run_id,
+        backend_key=args.backend_key,
+        bucket=args.bucket,
+    )
+    print("Recovery inputs match the immutable run identity.")
+    return 0
+
+
+def cmd_validate_state_outputs(args: argparse.Namespace) -> int:
+    outputs = json.loads(Path(args.outputs_json).read_text())
+    validate_state_outputs(
+        outputs,
+        run_id=args.run_id,
+        backend_key=args.backend_key,
+        benchmark_uuid=args.benchmark_uuid,
+    )
+    print("Terraform state outputs match the immutable run identity.")
     return 0
 
 
@@ -550,9 +828,28 @@ def build_parser() -> argparse.ArgumentParser:
     cleaned.add_argument("--output", default="run-state-metadata.json")
     cleaned.set_defaults(func=cmd_mark_cleaned)
 
+    validate_inputs = subparsers.add_parser("validate-inputs")
+    validate_inputs.set_defaults(func=cmd_validate_inputs)
+
+    recovery_inputs = subparsers.add_parser("validate-recovery-inputs")
+    recovery_inputs.add_argument("--tfvars-json", required=True)
+    recovery_inputs.add_argument("--run-id", required=True)
+    recovery_inputs.add_argument("--backend-key", required=True)
+    recovery_inputs.add_argument("--bucket", required=True)
+    recovery_inputs.set_defaults(func=cmd_validate_recovery_inputs)
+
+    state_outputs = subparsers.add_parser("validate-state-outputs")
+    state_outputs.add_argument("--outputs-json", required=True)
+    state_outputs.add_argument("--run-id", required=True)
+    state_outputs.add_argument("--backend-key", required=True)
+    state_outputs.add_argument("--benchmark-uuid", default="")
+    state_outputs.set_defaults(func=cmd_validate_state_outputs)
+
     validate_plan = subparsers.add_parser("validate-plan")
     validate_plan.add_argument("--plan-json", required=True)
-    validate_plan.add_argument("--mode", choices=("apply", "cleanup"), required=True)
+    validate_plan.add_argument(
+        "--mode", choices=("apply", "cleanup", "inspect"), required=True
+    )
     validate_plan.add_argument("--run-id", required=True)
     validate_plan.set_defaults(func=cmd_validate_plan)
     return parser

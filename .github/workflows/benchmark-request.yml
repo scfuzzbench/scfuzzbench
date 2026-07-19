@@ -52,6 +52,36 @@ jobs:
             const LABEL_APPROVED = "benchmark/03-approved";
             const STATUS_LABELS = [LABEL_PENDING, LABEL_VALIDATED, LABEL_APPROVED];
             const DEFAULT_FUZZERS = ["echidna", "medusa", "foundry", "recon-fuzzer"];
+            const SUPPORTED_FUZZERS = new Set(DEFAULT_FUZZERS);
+            const IMMUTABLE_FUZZER_ENV_KEYS = new Set([
+              "AWS_ACCESS_KEY_ID",
+              "AWS_DEFAULT_REGION",
+              "AWS_REGION",
+              "AWS_SECRET_ACCESS_KEY",
+              "AWS_SESSION_TOKEN",
+              "SCFUZZBENCH_AWS_CREDS_ENV_FILE",
+              "SCFUZZBENCH_BENCHMARK_MANIFEST_B64",
+              "SCFUZZBENCH_BENCHMARK_UUID",
+              "SCFUZZBENCH_BIN_DIR",
+              "SCFUZZBENCH_COMMIT",
+              "SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE",
+              "SCFUZZBENCH_GIT_TOKEN_SSM_PARAMETER",
+              "SCFUZZBENCH_LOCAL_MODE",
+              "SCFUZZBENCH_FUZZER_KEY",
+              "SCFUZZBENCH_FUZZER_LABEL",
+              "SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS",
+              "SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT",
+              "SCFUZZBENCH_REPO_URL",
+              "SCFUZZBENCH_ROOT",
+              "SCFUZZBENCH_RUN_HEARTBEAT_SECONDS",
+              "SCFUZZBENCH_RUN_ID",
+              "SCFUZZBENCH_RUN_INDEX",
+              "SCFUZZBENCH_RUN_STARTED_AT_EPOCH",
+              "SCFUZZBENCH_S3_BUCKET",
+              "SCFUZZBENCH_SHUTDOWN_GRACE_SECONDS",
+              "SCFUZZBENCH_TIMEOUT_SECONDS",
+              "SCFUZZBENCH_WORKDIR",
+            ]);
 
             function uniq(arr) {
               return Array.from(new Set(arr));
@@ -174,6 +204,7 @@ jobs:
 
               for (const k of keys) {
                 if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(k)) return fail(`Invalid fuzzer env key: ${k}`);
+                if (IMMUTABLE_FUZZER_ENV_KEYS.has(k)) return fail(`fuzzer_env_json may not override ${k}`);
                 const v = obj[k];
                 if (typeof v !== "string") return fail(`Env value for ${k} must be a string`);
                 if (v.length > 2000) return fail(`Env value for ${k} too long (max 2000 chars)`);
@@ -269,6 +300,10 @@ jobs:
               for (const v of fuzzers) {
                 if (typeof v !== "string" || !keyRe.test(v)) {
                   errors.push(`Invalid fuzzer key: ${JSON.stringify(v)}`);
+                  continue;
+                }
+                if (!SUPPORTED_FUZZERS.has(v)) {
+                  errors.push(`Unsupported cloud fuzzer key: ${JSON.stringify(v)}`);
                   continue;
                 }
                 sanitized.push(v);

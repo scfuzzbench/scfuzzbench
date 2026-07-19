@@ -537,6 +537,10 @@ install_base_packages() {
     rm -rf "${tmp_dir}"
     aws --version
   fi
+  # Begin lifecycle evidence as soon as the AWS client exists, before expensive
+  # compiler/fuzzer builds. The PID-file guard prevents later sourced runners
+  # from starting a duplicate loop.
+  start_run_heartbeat || true
   log_duration "install_base_packages" "${install_start}"
 }
 
@@ -799,6 +803,54 @@ aws_cli() {
   else
     aws "$@"
   fi
+}
+
+start_run_heartbeat() {
+  if is_local_mode; then
+    return 0
+  fi
+  if [[ -z "${SCFUZZBENCH_S3_BUCKET:-}" ||
+        -z "${SCFUZZBENCH_RUN_ID:-}" ||
+        -z "${SCFUZZBENCH_BENCHMARK_UUID:-}" ]]; then
+    log "Run heartbeat skipped; run identity or bucket is missing."
+    return 0
+  fi
+
+  local pid_file="${SCFUZZBENCH_ROOT}/run-heartbeat.pid"
+  if [[ -s "${pid_file}" ]]; then
+    local existing_pid
+    existing_pid=$(cat "${pid_file}" 2>/dev/null || true)
+    if [[ "${existing_pid}" =~ ^[0-9]+$ ]] && kill -0 "${existing_pid}" 2>/dev/null; then
+      return 0
+    fi
+  fi
+
+  cache_instance_id || true
+  local instance_token
+  instance_token=$(printf '%s' "${SCFUZZBENCH_INSTANCE_ID:-unknown}" |
+    tr -cd 'A-Za-z0-9._-')
+  instance_token="${instance_token:-unknown}"
+  local interval="${SCFUZZBENCH_RUN_HEARTBEAT_SECONDS:-300}"
+  if [[ ! "${interval}" =~ ^[0-9]+$ ]] || (( interval < 60 )); then
+    interval=300
+  fi
+  local heartbeat_file="${SCFUZZBENCH_ROOT}/run-heartbeat.json"
+  local heartbeat_dest="s3://${SCFUZZBENCH_S3_BUCKET}/run-state/heartbeats/${SCFUZZBENCH_RUN_ID}/${SCFUZZBENCH_BENCHMARK_UUID}/${instance_token}.json"
+
+  (
+    set +e
+    while true; do
+      printf '{"run_id":"%s","benchmark_uuid":"%s","instance_id":"%s","observed_at_epoch":%s}\n' \
+        "${SCFUZZBENCH_RUN_ID}" \
+        "${SCFUZZBENCH_BENCHMARK_UUID}" \
+        "${instance_token}" \
+        "$(date +%s)" >"${heartbeat_file}"
+      aws_cli s3 cp "${heartbeat_file}" "${heartbeat_dest}" \
+        --only-show-errors --content-type application/json || true
+      sleep "${interval}" || break
+    done
+  ) &
+  printf '%s\n' "$!" >"${pid_file}"
 }
 
 start_aws_creds_refresher() {

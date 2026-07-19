@@ -80,12 +80,17 @@ Run-owned AWS resources use run-scoped names and carry `Project`, `RunId`,
 
 `Benchmark Run Cleanup` runs hourly and can be dispatched manually. It cleans a
 run when all expected final log archives exist and its instances are terminal.
-After timeout plus a three-hour recovery margin, the same workflow treats an
-unfinished reservation as an orphan and attempts cleanup.
+Runners also overwrite a small, run-scoped heartbeat object every five minutes,
+starting before expensive tool builds. After timeout plus a three-hour recovery
+margin, the workflow treats an unfinished reservation as an orphan only when
+its heartbeat is stale for at least 30 minutes **and** no active EC2 instance
+with that `RunId` remains. A failed heartbeat upload never authorizes destroying
+an active instance.
 
 Cleanup initializes only the backend key recorded for that run. Before destroy
-it verifies the state output (when present), rejects create/update or shared-S3
-changes, and checks every taggable resource in the plan has the same `RunId`.
+it requires exact `run_id`, backend-key, and benchmark outputs, rejects
+create/update or shared-S3 changes, and checks every taggable resource in the
+plan has the same `RunId`.
 Only the saved, verified destroy plan is applied. Capacity is released only
 after no same-run EC2 instance remains.
 
@@ -100,6 +105,10 @@ The empty post-destroy state remains at its versioned backend key. Failed
 provisioning keeps its active reservation and recovery inputs, so a maintainer
 can use `Benchmark Run Cleanup` (force orphan cleanup when justified) or
 `Terraform Run Recovery`. Neither workflow targets another run's key.
+Recovery accepts no arbitrary Terraform arguments or bucket override. Its
+read-only plan must be a no-op; destroy must be delete-only. Potentially
+sensitive `fuzzer_env` values are never written to recovery objects, because a
+destroy plan does not need user-data inputs.
 
 ## Foundry Log Visibility
 

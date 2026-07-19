@@ -34,6 +34,8 @@ CI creates run identity before Terraform initialization:
 - `run_started_at_epoch`:
   - Explicit timestamp stored in the manifest because isolated run IDs are
     opaque rather than timestamps.
+  - Cleanup also considers run-scoped runner heartbeats and will not classify
+    an active `RunId`-tagged EC2 instance as an orphan.
 - `benchmark_uuid`:
   - `md5(jsonencode(benchmark_definition))` in `infrastructure/main.tf`.
 

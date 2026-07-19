@@ -38,8 +38,12 @@ locals {
   benchmark_manifest_json = jsonencode(local.benchmark_manifest)
   benchmark_manifest_b64  = base64encode(local.benchmark_manifest_json)
 
-  run_name_token = substr(replace(lower(tostring(local.run_id)), "/[^a-z0-9-]/", "-"), 0, 36)
-  name_prefix    = "scfuzzbench-${local.run_name_token}"
+  # Keep names below IAM's 64-character role limit while retaining a digest of
+  # the complete run ID so long IDs with the same leading characters cannot
+  # collide after truncation.
+  run_name_token = substr(replace(lower(tostring(local.run_id)), "/[^a-z0-9-]/", "-"), 0, 26)
+  run_name_hash  = substr(sha256(tostring(local.run_id)), 0, 8)
+  name_prefix    = "scfuzzbench-${local.run_name_token}-${local.run_name_hash}"
   tags = merge(var.tags, {
     Project       = "scfuzzbench"
     RunId         = tostring(local.run_id)
@@ -308,7 +312,9 @@ data "aws_iam_policy_document" "s3_access" {
     resources = [
       "arn:aws:s3:::${local.bucket_name}/logs/${local.run_id}/${local.benchmark_uuid}/*",
       "arn:aws:s3:::${local.bucket_name}/corpus/${local.run_id}/${local.benchmark_uuid}/*",
+      "arn:aws:s3:::${local.bucket_name}/preliminary/${local.run_id}/${local.benchmark_uuid}/*",
       "arn:aws:s3:::${local.bucket_name}/runs/${local.run_id}/${local.benchmark_uuid}/*",
+      "arn:aws:s3:::${local.bucket_name}/run-state/heartbeats/${local.run_id}/${local.benchmark_uuid}/*",
     ]
   }
 
@@ -322,9 +328,20 @@ data "aws_iam_policy_document" "s3_access" {
       values = [
         "logs/${local.run_id}/${local.benchmark_uuid}/*",
         "corpus/${local.run_id}/${local.benchmark_uuid}/*",
+        "preliminary/${local.run_id}/${local.benchmark_uuid}/*",
         "runs/${local.run_id}/${local.benchmark_uuid}/*",
+        "run-state/heartbeats/${local.run_id}/${local.benchmark_uuid}/*",
       ]
     }
+  }
+
+  # Preliminary checkpoints use HeadObject to verify an immutable retry after
+  # conditional PutObject reports that the key already exists.
+  statement {
+    actions = ["s3:GetObject"]
+    resources = [
+      "arn:aws:s3:::${local.bucket_name}/preliminary/${local.run_id}/${local.benchmark_uuid}/*",
+    ]
   }
 
   statement {

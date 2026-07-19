@@ -158,6 +158,11 @@ jobs:
             "s3://${SCFUZZBENCH_BUCKET}/run-state/runs/${RUN_ID}/cleanup.auto.tfvars.json" \
             infrastructure/cleanup.auto.tfvars.json \
             --only-show-errors
+          python3 scripts/benchmark_run_state.py validate-recovery-inputs \
+            --tfvars-json infrastructure/cleanup.auto.tfvars.json \
+            --run-id "${RUN_ID}" \
+            --backend-key "${EXPECTED_BACKEND_KEY}" \
+            --bucket "${SCFUZZBENCH_BUCKET}"
 
       - name: Initialize only this run state
         env:
@@ -172,6 +177,7 @@ jobs:
       - name: Inspect run state
         id: state
         env:
+          BENCHMARK_UUID: ${{ matrix.benchmark_uuid }}
           EXPECTED_BACKEND_KEY: ${{ matrix.terraform_backend_key }}
           RUN_ID: ${{ matrix.run_id }}
         run: |
@@ -186,16 +192,12 @@ jobs:
             exit 0
           fi
           echo "has_state=true" >> "${GITHUB_OUTPUT}"
-          state_run_id=$(terraform -chdir=infrastructure output -raw run_id 2>/dev/null || true)
-          if [[ -n "${state_run_id}" && "${state_run_id}" != "${RUN_ID}" ]]; then
-            echo "State output belongs to ${state_run_id}, refusing cleanup for ${RUN_ID}." >&2
-            exit 1
-          fi
-          state_backend_key=$(terraform -chdir=infrastructure output -raw terraform_backend_key 2>/dev/null || true)
-          if [[ -n "${state_backend_key}" && "${state_backend_key}" != "${EXPECTED_BACKEND_KEY}" ]]; then
-            echo "State output names backend ${state_backend_key}, refusing ${EXPECTED_BACKEND_KEY}." >&2
-            exit 1
-          fi
+          terraform -chdir=infrastructure output -json > state-outputs.json
+          python3 scripts/benchmark_run_state.py validate-state-outputs \
+            --outputs-json state-outputs.json \
+            --run-id "${RUN_ID}" \
+            --backend-key "${EXPECTED_BACKEND_KEY}" \
+            --benchmark-uuid "${BENCHMARK_UUID}"
 
       - name: Build and verify run-scoped destroy plan
         if: ${{ steps.state.outputs.has_state == 'true' }}
