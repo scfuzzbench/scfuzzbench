@@ -35,19 +35,22 @@ Optional – general:
   -t, --timeout SECONDS         Campaign timeout (default: ${DEFAULT_TIMEOUT})
   -w, --workers N               Number of fuzzer workers/threads
   -T, --type    TYPE            Benchmark type: property | optimization (default: ${DEFAULT_BENCHMARK_TYPE})
+      --seed-corpus SOURCE      Shared seed directory or s3://bucket/prefix (default: empty)
       --install                 Run the fuzzer's install.sh first (idempotent)
 
 Optional – echidna / recon-fuzzer:
       --echidna-config  PATH    Echidna YAML config (relative to target repo)
       --echidna-target  PATH    Solidity target file    (e.g. test/recon/CryticTester.sol)
       --echidna-contract NAME   Target contract name    (e.g. CryticTester)
-      --echidna-extra-args ARGS Extra args for echidna-test
+      --echidna-extra-args ARGS Extra args for echidna
 
 Optional – medusa:
-      --medusa-config   PATH    Medusa TOML/JSON config (relative to target repo)
+      --medusa-config   PATH    Medusa JSON config (relative to target repo)
       --medusa-target   PATH    Compilation target path
       --medusa-contracts LIST   Comma-separated target contracts
       --medusa-extra-args ARGS  Extra args for medusa
+      --medusa-prune-frequency MINUTES
+                                Corpus-pruner interval (default: 0, disabled)
 
 Optional – foundry:
       --foundry-test-args ARGS  Extra args for forge test
@@ -90,6 +93,7 @@ BRANCH=""
 TIMEOUT="${DEFAULT_TIMEOUT}"
 WORKERS="${DEFAULT_WORKERS}"
 BENCHMARK_TYPE="${DEFAULT_BENCHMARK_TYPE}"
+SEED_CORPUS_ARG=""
 DO_INSTALL=0
 
 ECHIDNA_VERSION_ARG=""
@@ -106,6 +110,7 @@ MEDUSA_CONFIG_ARG=""
 MEDUSA_COMPILATION_TARGET_ARG=""
 MEDUSA_TARGET_CONTRACTS_ARG=""
 MEDUSA_EXTRA_ARGS_ARG=""
+MEDUSA_PRUNE_FREQUENCY_ARG=""
 
 FOUNDRY_TEST_ARGS_ARG=""
 FOUNDRY_FAILURE_PERSIST_DIR_ARG=""
@@ -118,6 +123,7 @@ while [[ $# -gt 0 ]]; do
     -t|--timeout)           TIMEOUT="$2"; shift 2 ;;
     -w|--workers)           WORKERS="$2"; shift 2 ;;
     -T|--type)              BENCHMARK_TYPE="$2"; shift 2 ;;
+    --seed-corpus)          SEED_CORPUS_ARG="$2"; shift 2 ;;
     --install)              DO_INSTALL=1; shift ;;
     # echidna
     --echidna-config)       ECHIDNA_CONFIG_ARG="$2"; shift 2 ;;
@@ -129,6 +135,7 @@ while [[ $# -gt 0 ]]; do
     --medusa-target)        MEDUSA_COMPILATION_TARGET_ARG="$2"; shift 2 ;;
     --medusa-contracts)     MEDUSA_TARGET_CONTRACTS_ARG="$2"; shift 2 ;;
     --medusa-extra-args)    MEDUSA_EXTRA_ARGS_ARG="$2"; shift 2 ;;
+    --medusa-prune-frequency) MEDUSA_PRUNE_FREQUENCY_ARG="$2"; shift 2 ;;
     # foundry
     --foundry-test-args)    FOUNDRY_TEST_ARGS_ARG="$2"; shift 2 ;;
     --foundry-failure-dir)  FOUNDRY_FAILURE_PERSIST_DIR_ARG="$2"; shift 2 ;;
@@ -173,10 +180,25 @@ fi
 
 export SCFUZZBENCH_LOCAL_MODE=1
 export SCFUZZBENCH_COMMON_SH="${REPO_ROOT}/fuzzers/_shared/common.sh"
+export SCFUZZBENCH_FOUNDRY_SOURCE_PATCH="${SCFUZZBENCH_FOUNDRY_SOURCE_PATCH:-${REPO_ROOT}/fuzzers/foundry/throughput-progress.patch}"
 export SCFUZZBENCH_REPO_URL="${REPO_URL}"
 export SCFUZZBENCH_COMMIT="${BRANCH}"
 export SCFUZZBENCH_BENCHMARK_TYPE="${BENCHMARK_TYPE}"
 export SCFUZZBENCH_TIMEOUT_SECONDS="${TIMEOUT}"
+if [[ -n "${SEED_CORPUS_ARG}" ]]; then
+  if [[ "${SEED_CORPUS_ARG}" == s3://* ]]; then
+    export SCFUZZBENCH_SEED_CORPUS_SOURCE="${SEED_CORPUS_ARG}"
+  else
+    if [[ ! -d "${SEED_CORPUS_ARG}" ]]; then
+      echo "Error: shared seed corpus directory not found: ${SEED_CORPUS_ARG}" >&2
+      exit 1
+    fi
+    seed_corpus_path="$(cd "${SEED_CORPUS_ARG}" && pwd -P)"
+    seed_corpus_path_sha256="$(printf '%s' "${seed_corpus_path}" | sha256sum | cut -d' ' -f1)"
+    export SCFUZZBENCH_SEED_CORPUS_SOURCE="${seed_corpus_path}"
+    export SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE="local-sha256://${seed_corpus_path_sha256}"
+  fi
+fi
 
 # Versions – CLI flag → existing env → default
 export ECHIDNA_VERSION="${ECHIDNA_VERSION_ARG:-${ECHIDNA_VERSION:-${DEFAULT_ECHIDNA_VERSION}}}"
@@ -213,6 +235,7 @@ set_if_nonempty MEDUSA_CONFIG             "${MEDUSA_CONFIG_ARG}"
 set_if_nonempty MEDUSA_COMPILATION_TARGET "${MEDUSA_COMPILATION_TARGET_ARG}"
 set_if_nonempty MEDUSA_TARGET_CONTRACTS   "${MEDUSA_TARGET_CONTRACTS_ARG}"
 set_if_nonempty MEDUSA_EXTRA_ARGS         "${MEDUSA_EXTRA_ARGS_ARG}"
+set_if_nonempty MEDUSA_PRUNE_FREQUENCY    "${MEDUSA_PRUNE_FREQUENCY_ARG}"
 
 # Foundry
 set_if_nonempty FOUNDRY_TEST_ARGS         "${FOUNDRY_TEST_ARGS_ARG}"
@@ -240,6 +263,7 @@ echo "  Branch:    ${BRANCH}"
 echo "  Type:      ${BENCHMARK_TYPE}"
 echo "  Timeout:   ${TIMEOUT}s"
 [[ -n "${WORKERS}" ]] && echo "  Workers:   ${WORKERS}"
+[[ -n "${SCFUZZBENCH_SEED_CORPUS_SOURCE:-}" ]] && echo "  Seeds:     ${SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE:-${SCFUZZBENCH_SEED_CORPUS_SOURCE}}"
 echo "  Workspace: ${SCFUZZBENCH_ROOT:-${HOME}/.scfuzzbench}"
 echo "  Output:    ${SCFUZZBENCH_LOCAL_OUTPUT_DIR:-${SCFUZZBENCH_ROOT:-${HOME}/.scfuzzbench}/output}"
 echo "============================================"

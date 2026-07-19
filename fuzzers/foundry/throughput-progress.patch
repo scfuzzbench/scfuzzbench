@@ -1,0 +1,21 @@
+diff --git a/crates/evm/evm/src/executors/invariant/mod.rs b/crates/evm/evm/src/executors/invariant/mod.rs
+index 0b0e5334e..ceb90f8a6 100644
+--- a/crates/evm/evm/src/executors/invariant/mod.rs
++++ b/crates/evm/evm/src/executors/invariant/mod.rs
+@@ -1589,9 +1589,13 @@ fn run_invariant_worker(
+                     };
+                     progress.set_message(msg);
+                 }
+-            } else if edge_coverage_enabled
+-                && campaign_state.should_emit_metrics_report(DURATION_BETWEEN_METRICS_REPORT)
+-            {
++            }
++
++            // Keep machine-readable campaign telemetry independent of the terminal progress UI
++            // and corpus/edge-coverage mode. Callers can therefore retain the progress UI's
++            // Ctrl-C handler without suppressing throughput pulses, and disabling corpus
++            // persistence does not make throughput disappear.
++            if campaign_state.should_emit_metrics_report(DURATION_BETWEEN_METRICS_REPORT) {
+                 campaign_state.sync_handler_failures(&invariant_test.test_data.failures);
+                 let failure_metrics = campaign_state.failure_metrics();
+                 let (total_txs, total_gas) = campaign_state.throughput_totals();

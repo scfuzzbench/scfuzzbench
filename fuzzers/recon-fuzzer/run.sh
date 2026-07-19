@@ -39,7 +39,7 @@ if [[ "${corpus_dir}" != /* ]]; then
   corpus_dir="${repo_dir}/${corpus_dir}"
 fi
 export SCFUZZBENCH_CORPUS_DIR="${corpus_dir}"
-mkdir -p "${SCFUZZBENCH_CORPUS_DIR}"
+prepare_shared_seed_corpus
 
 if [[ -z "${RECON_WORKERS:-}" && -n "${ECHIDNA_WORKERS:-}" ]]; then
   RECON_WORKERS="${ECHIDNA_WORKERS}"

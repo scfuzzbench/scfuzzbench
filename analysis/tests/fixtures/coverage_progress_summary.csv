@@ -1,0 +1,5 @@
+fuzzer,runs,seqps_runs,coverage_runs,corpus_runs,favored_runs,failure_rate_runs,seqps_p50,seqps_p25,seqps_p75,coverage_p50,coverage_p25,coverage_p75,corpus_p50,corpus_p25,corpus_p75,favored_p50,favored_p25,favored_p75,failure_rate_p50,failure_rate_p25,failure_rate_p75
+echidna,2,0,2,0,0,0,,,,130,125,135,,,,,,,,,
+foundry,2,0,2,0,0,0,,,,345,337.5,352.5,,,,,,,,,
+medusa,2,0,2,0,0,0,,,,230,225,235,,,,,,,,,
+recon-fuzzer,2,0,2,0,0,0,,,,460,450,470,,,,,,,,,

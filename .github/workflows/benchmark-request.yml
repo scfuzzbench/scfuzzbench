@@ -25,7 +25,6 @@ jobs:
       instances_per_fuzzer: ${{ steps.prepare.outputs.instances_per_fuzzer }}
       timeout_hours: ${{ steps.prepare.outputs.timeout_hours }}
       fuzzers_json: ${{ steps.prepare.outputs.fuzzers_json }}
-      foundry_version: ${{ steps.prepare.outputs.foundry_version }}
       foundry_git_repo: ${{ steps.prepare.outputs.foundry_git_repo }}
       foundry_git_ref: ${{ steps.prepare.outputs.foundry_git_ref }}
       echidna_version: ${{ steps.prepare.outputs.echidna_version }}
@@ -34,6 +33,7 @@ jobs:
       git_token_ssm_parameter_name: ${{ steps.prepare.outputs.git_token_ssm_parameter_name }}
       properties_path: ${{ steps.prepare.outputs.properties_path }}
       fuzzer_env_json: ${{ steps.prepare.outputs.fuzzer_env_json }}
+      shared_seed_corpus_source: ${{ steps.prepare.outputs.shared_seed_corpus_source }}
     steps:
       - name: Parse and validate benchmark request
         id: prepare
@@ -171,9 +171,16 @@ jobs:
 
               const keys = Object.keys(obj);
               if (keys.length > 64) return fail("fuzzer_env_json has too many keys (max 64).");
+              const reservedSeedKeys = new Set([
+                "SCFUZZBENCH_SEED_CORPUS_SOURCE",
+                "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
+                "SCFUZZBENCH_SEED_CORPUS_HELPER",
+                "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
+              ]);
 
               for (const k of keys) {
                 if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(k)) return fail(`Invalid fuzzer env key: ${k}`);
+                if (reservedSeedKeys.has(k)) return fail(`fuzzer_env_json cannot override framework-owned seed variable: ${k}`);
                 const v = obj[k];
                 if (typeof v !== "string") return fail(`Env value for ${k} must be a string`);
                 if (v.length > 2000) return fail(`Env value for ${k} too long (max 2000 chars)`);
@@ -304,11 +311,15 @@ jobs:
             }
 
             // Optional fields.
-            const foundry_version = mustString(payload, "foundry_version", { required: false, maxLen: 64 });
-            if (!foundry_version.ok) errors.push(foundry_version.message);
-            if (foundry_version.ok && foundry_version.value) {
-              const mv = mustMatch(foundry_version.value, "foundry_version", /^[A-Za-z0-9._+-]+$/, "avoid spaces/shell metacharacters");
-              if (!mv.ok) errors.push(mv.message);
+            const foundryVersionRaw = payload["foundry_version"];
+            if (
+              foundryVersionRaw !== undefined &&
+              foundryVersionRaw !== null &&
+              (typeof foundryVersionRaw !== "string" || foundryVersionRaw.trim())
+            ) {
+              errors.push(
+                "foundry_version is local-only and is not supported by cloud benchmark requests; remove it to use the pinned Foundry git build"
+              );
             }
 
             const foundry_git_repo = mustString(payload, "foundry_git_repo", { required: false, maxLen: 300 });
@@ -360,6 +371,21 @@ jobs:
               }
             }
 
+            const shared_seed_corpus_source = mustString(payload, "shared_seed_corpus_source", { required: false, maxLen: 1100 });
+            if (!shared_seed_corpus_source.ok) errors.push(shared_seed_corpus_source.message);
+            if (shared_seed_corpus_source.ok && shared_seed_corpus_source.value) {
+              const seedSourceMatch = mustMatch(
+                shared_seed_corpus_source.value,
+                "shared_seed_corpus_source",
+                /^(?:s3:\/\/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\/)?[A-Za-z0-9/._+~-]+\/?$/,
+                "expected a safe target-relative path or s3://bucket/prefix"
+              );
+              if (!seedSourceMatch.ok) errors.push(seedSourceMatch.message);
+              if (/(^|\/)\.\.?(\/|$)/.test(shared_seed_corpus_source.value)) {
+                errors.push("shared_seed_corpus_source must not contain '.' or '..' path segments");
+              }
+            }
+
             const fuzzer_env_json_raw = mustString(payload, "fuzzer_env_json", { required: false, maxLen: 8000 });
             if (!fuzzer_env_json_raw.ok) errors.push(fuzzer_env_json_raw.message);
             const fuzzer_env_json = fuzzer_env_json_raw.ok ? parseInnerEnvJson(fuzzer_env_json_raw.value) : ok("");
@@ -403,6 +429,7 @@ jobs:
                   `- Instances per fuzzer: \`${inst.value}\``,
                   `- Timeout hours: \`${hours.value}\``,
                   `- Fuzzers: \`${fuzzersJson}\``,
+                  shared_seed_corpus_source.value ? `- Shared seeds: \`${shared_seed_corpus_source.value}\`` : "",
                   "",
                   `To start: a maintainer must apply \`${LABEL_APPROVED}\`.`,
                   action === "edited" ? "" : "",
@@ -427,6 +454,7 @@ jobs:
                   `- Instances per fuzzer: \`${inst.value}\``,
                   `- Timeout hours: \`${hours.value}\``,
                   `- Fuzzers: \`${fuzzersJson}\``,
+                  shared_seed_corpus_source.value ? `- Shared seeds: \`${shared_seed_corpus_source.value}\`` : "",
                 ].join("\n")
               );
 
@@ -440,7 +468,6 @@ jobs:
               core.setOutput("timeout_hours", String(hours.value));
               core.setOutput("fuzzers_json", fuzzersJson);
 
-              core.setOutput("foundry_version", foundry_version.ok ? foundry_version.value : "");
               core.setOutput("foundry_git_repo", foundry_git_repo.ok ? foundry_git_repo.value : "");
               core.setOutput("foundry_git_ref", foundry_git_ref.ok ? foundry_git_ref.value : "");
               core.setOutput("echidna_version", echidna_version.ok ? echidna_version.value : "");
@@ -449,6 +476,7 @@ jobs:
               core.setOutput("git_token_ssm_parameter_name", git_token_ssm_parameter_name.ok ? git_token_ssm_parameter_name.value : "");
               core.setOutput("properties_path", properties_path.ok ? properties_path.value : "");
               core.setOutput("fuzzer_env_json", fuzzer_env_json.ok ? fuzzer_env_json.value : "");
+              core.setOutput("shared_seed_corpus_source", shared_seed_corpus_source.ok ? shared_seed_corpus_source.value : "");
             }
 
   benchmark-run:
@@ -464,7 +492,6 @@ jobs:
       instances_per_fuzzer: ${{ fromJSON(needs.prepare.outputs.instances_per_fuzzer) }}
       timeout_hours: ${{ fromJSON(needs.prepare.outputs.timeout_hours) }}
       fuzzers_json: ${{ needs.prepare.outputs.fuzzers_json }}
-      foundry_version: ${{ needs.prepare.outputs.foundry_version }}
       foundry_git_repo: ${{ needs.prepare.outputs.foundry_git_repo }}
       foundry_git_ref: ${{ needs.prepare.outputs.foundry_git_ref }}
       echidna_version: ${{ needs.prepare.outputs.echidna_version }}
@@ -473,6 +500,7 @@ jobs:
       git_token_ssm_parameter_name: ${{ needs.prepare.outputs.git_token_ssm_parameter_name }}
       properties_path: ${{ needs.prepare.outputs.properties_path }}
       fuzzer_env_json: ${{ needs.prepare.outputs.fuzzer_env_json }}
+      shared_seed_corpus_source: ${{ needs.prepare.outputs.shared_seed_corpus_source }}
 
   finalize:
     needs: [prepare, benchmark-run]

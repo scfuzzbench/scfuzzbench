@@ -78,6 +78,44 @@ class ThroughputParserTests(unittest.TestCase):
         self.assertAlmostEqual(samples[1].tx_per_second, 16.0)
         self.assertAlmostEqual(samples[1].gas_per_second, 1800.0)
 
+    def test_foundry_ignores_invalid_metrics_but_keeps_zero_rates(self):
+        huge_count = "9" * 400
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","tps":"nan","gps":"inf"}',
+                '{"timestamp":105,"event":"pulse","tps":-1,"gps":-2}',
+                f'{{"timestamp":110,"event":"pulse","total_txs":{huge_count}}}',
+                '{"timestamp":115,"event":"pulse","tps":0,"gps":0}',
+                '{"timestamp":broken',
+            ]
+        )
+
+        samples = analyze.parse_throughput_log(
+            log_path, "run-1", "i-1", "foundry-git-test"
+        )
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0].elapsed_seconds, 15.0)
+        self.assertEqual(samples[0].tx_per_second, 0.0)
+        self.assertEqual(samples[0].gas_per_second, 0.0)
+
+    def test_foundry_reported_rates_remain_authoritative_after_counter_reset(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","total_txs":100,"total_gas":10000,"tps":10,"gps":1000}',
+                '{"timestamp":105,"event":"pulse","total_txs":5,"total_gas":500,"tps":1,"gps":100}',
+            ]
+        )
+
+        samples = analyze.parse_throughput_log(
+            log_path, "run-1", "i-1", "foundry-git-test"
+        )
+        self.assertEqual(len(samples), 2)
+        self.assertEqual(
+            [sample.source for sample in samples], ["json-rate", "json-rate"]
+        )
+        self.assertEqual(samples[-1].tx_per_second, 1.0)
+        self.assertEqual(samples[-1].gas_per_second, 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()
