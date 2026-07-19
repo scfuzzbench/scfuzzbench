@@ -44,10 +44,12 @@ Optional – echidna / recon-fuzzer:
       --echidna-extra-args ARGS Extra args for echidna
 
 Optional – medusa:
-      --medusa-config   PATH    Medusa TOML/JSON config (relative to target repo)
+      --medusa-config   PATH    Medusa JSON config (relative to target repo)
       --medusa-target   PATH    Compilation target path
       --medusa-contracts LIST   Comma-separated target contracts
       --medusa-extra-args ARGS  Extra args for medusa
+      --medusa-prune-frequency MINUTES
+                                Corpus-pruner interval (default: 0, disabled)
 
 Optional – foundry:
       --foundry-test-args ARGS  Extra args for forge test
@@ -106,6 +108,7 @@ MEDUSA_CONFIG_ARG=""
 MEDUSA_COMPILATION_TARGET_ARG=""
 MEDUSA_TARGET_CONTRACTS_ARG=""
 MEDUSA_EXTRA_ARGS_ARG=""
+MEDUSA_PRUNE_FREQUENCY_ARG=""
 
 FOUNDRY_TEST_ARGS_ARG=""
 FOUNDRY_FAILURE_PERSIST_DIR_ARG=""
@@ -129,6 +132,7 @@ while [[ $# -gt 0 ]]; do
     --medusa-target)        MEDUSA_COMPILATION_TARGET_ARG="$2"; shift 2 ;;
     --medusa-contracts)     MEDUSA_TARGET_CONTRACTS_ARG="$2"; shift 2 ;;
     --medusa-extra-args)    MEDUSA_EXTRA_ARGS_ARG="$2"; shift 2 ;;
+    --medusa-prune-frequency) MEDUSA_PRUNE_FREQUENCY_ARG="$2"; shift 2 ;;
     # foundry
     --foundry-test-args)    FOUNDRY_TEST_ARGS_ARG="$2"; shift 2 ;;
     --foundry-failure-dir)  FOUNDRY_FAILURE_PERSIST_DIR_ARG="$2"; shift 2 ;;
@@ -213,6 +217,7 @@ set_if_nonempty MEDUSA_CONFIG             "${MEDUSA_CONFIG_ARG}"
 set_if_nonempty MEDUSA_COMPILATION_TARGET "${MEDUSA_COMPILATION_TARGET_ARG}"
 set_if_nonempty MEDUSA_TARGET_CONTRACTS   "${MEDUSA_TARGET_CONTRACTS_ARG}"
 set_if_nonempty MEDUSA_EXTRA_ARGS         "${MEDUSA_EXTRA_ARGS_ARG}"
+set_if_nonempty MEDUSA_PRUNE_FREQUENCY    "${MEDUSA_PRUNE_FREQUENCY_ARG}"
 
 # Foundry
 set_if_nonempty FOUNDRY_TEST_ARGS         "${FOUNDRY_TEST_ARGS_ARG}"

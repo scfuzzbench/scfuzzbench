@@ -27,6 +27,7 @@ Notes:
 - In `property` mode, the runner rewrites `prefix: "invariant_"` to `prefix: "echidna_"` inside the config file so global properties are treated like assertions.
 - The runner passes `--shrink-limit 1` by default, overriding `shrinkLimit` in target configs so shrinking does not consume the campaign budget. Set one non-negative `--shrink-limit` in `ECHIDNA_EXTRA_ARGS` for an explicit operator override. Extra arguments support shell-style quoting, but are parsed without shell evaluation.
 - By default, the runner appends `+RTS -A1g -RTS` to reduce GC overhead on multicore instances.
+- In pinned Echidna 2.3.1, the fuzzing worker that finds a failure also performs its shrinking inline before returning to fuzzing; there is no separate background minimizer. `shrinkLimit` bounds this worker-local work and is configured independently of Medusa corpus pruning.
 
 ## Recon Fuzzer
 
@@ -44,8 +45,17 @@ Notes:
 
 Environment variables:
 - `MEDUSA_VERSION` (required)
-- `MEDUSA_CONFIG` (required)
-- `MEDUSA_WORKERS`, `MEDUSA_CORPUS_DIR`
+- `MEDUSA_CONFIG` (optional; defaults to `medusa.json` when present)
+- `MEDUSA_WORKERS`, `MEDUSA_CORPUS_DIR`, `MEDUSA_EXTRA_ARGS`
+- `MEDUSA_PRUNE_FREQUENCY` (non-negative minutes; defaults to `0`, which disables the background corpus-pruner goroutine)
+
+Notes:
+- The pinned Medusa 1.4.1 release controls pruning through
+  [`fuzzing.pruneFrequency`](https://github.com/crytic/medusa/blob/v1.4.1/docs/src/project_configuration/fuzzing_config.md#prunefrequency);
+  it does not expose a pruning CLI flag. The runner creates a temporary working
+  config beside the selected config, applies `MEDUSA_PRUNE_FREQUENCY`, and
+  leaves the target's config unchanged. Set a positive value explicitly to
+  re-enable periodic pruning for a non-comparative experiment.
 
 ## Foundry
 

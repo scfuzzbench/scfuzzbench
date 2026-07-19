@@ -64,6 +64,20 @@ Runner lifecycle is defined in `infrastructure/user_data.sh.tftpl` and `fuzzers/
 - Collect host metrics periodically into `runner_metrics.csv` (enabled by default).
 - Upload artifacts to S3, then self-shutdown.
 
+Medusa's pinned 1.4.1 release normally starts a separate corpus-pruner
+goroutine every five minutes when coverage is enabled. Comparative runs set
+`fuzzing.pruneFrequency` to `0` in a temporary working config so this auxiliary
+CPU work does not sit outside the normalized worker count. The target's config
+is not modified. Operators can explicitly set `MEDUSA_PRUNE_FREQUENCY` to a
+positive minute interval for non-comparative experiments.
+
+Pinned Echidna 2.3.1 does not spawn a separate minimization worker. Its
+[`runFuzzWorker`](https://github.com/crytic/echidna/blob/v2.3.1/lib/Echidna/Campaign.hs#L353-L418)
+performs shrinking inline on the same fuzzing worker that found the failure
+before that worker resumes fuzzing. Its `shrinkLimit` therefore bounds
+worker-local work and is configured separately; it is not a background-thread
+control and is unchanged by the Medusa pruning policy.
+
 Instances are intentionally one-shot:
 
 - A bootstrap sentinel (`/opt/scfuzzbench/.bootstrapped`) avoids accidental reruns after reboot.

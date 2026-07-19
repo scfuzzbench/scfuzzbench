@@ -168,6 +168,7 @@ Optional flags:
 - `-T, --type`: `property` or `optimization` (default: `property`)
 - `--install`: run the fuzzer's `install.sh` first
 - `--echidna-extra-args`: extra arguments passed to echidna (e.g. `"--server 3000 --shrink-limit 25"`)
+- `--medusa-prune-frequency`: positive pruning interval in minutes for an explicit Medusa experiment (default: `0`, disabled)
 
 All fuzzer-specific flags (`--echidna-*`, `--medusa-*`, `--foundry-*`) mirror the environment variables documented in `fuzzers/README.md`.
 
