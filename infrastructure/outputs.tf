@@ -20,7 +20,7 @@ output "benchmark_uuid" {
 
 output "benchmark_manifest" {
   description = "Non-secret benchmark manifest used by preliminary analysis discovery."
-  value       = nonsensitive(local.benchmark_manifest)
+  value       = local.benchmark_manifest
 }
 
 output "ssh_private_key_path" {
