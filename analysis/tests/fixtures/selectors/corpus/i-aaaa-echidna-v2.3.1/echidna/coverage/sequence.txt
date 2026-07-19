@@ -1,0 +1,56 @@
+[
+  {
+    "call": {
+      "contents": [
+        "transfer",
+        [
+          {
+            "contents": "0x00000000000000000000000000000000000000aa",
+            "tag": "AbiAddress"
+          },
+          {
+            "contents": [
+              256,
+              "7"
+            ],
+            "tag": "AbiUInt"
+          }
+        ]
+      ],
+      "tag": "SolCall"
+    },
+    "dst": "0x00000000000000000000000000000000000000bb"
+  },
+  {
+    "call": {
+      "contents": [
+        "transfer",
+        [
+          {
+            "contents": "0x00000000000000000000000000000000000000cc",
+            "tag": "AbiAddress"
+          },
+          {
+            "contents": [
+              256,
+              "9"
+            ],
+            "tag": "AbiUInt"
+          }
+        ]
+      ],
+      "tag": "SolCall"
+    },
+    "dst": "0x00000000000000000000000000000000000000bb"
+  },
+  {
+    "call": {
+      "contents": [
+        "echidna_property",
+        []
+      ],
+      "tag": "SolCall"
+    },
+    "dst": "0x00000000000000000000000000000000000000bb"
+  }
+]

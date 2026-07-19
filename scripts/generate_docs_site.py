@@ -929,6 +929,10 @@ def main() -> int:
         progress_metrics_summary_csv_key = (
             f"{r.analysis_prefix}/progress_metrics_summary.csv"
         )
+        selector_distribution_csv_key = (
+            f"{r.analysis_prefix}/selector_distribution.csv"
+        )
+        selector_summary_json_key = f"{r.analysis_prefix}/selector_summary.json"
         txps_over_time_chart_key = f"{r.analysis_prefix}/tx_per_second_over_time.png"
         gasps_over_time_chart_key = f"{r.analysis_prefix}/gas_per_second_over_time.png"
         seqps_over_time_chart_key = f"{r.analysis_prefix}/seq_per_second_over_time.png"
@@ -978,6 +982,14 @@ def main() -> int:
         has_progress_metrics_summary_csv = (
             r.analysis_kind == "analysis"
             and head_exists(bucket, progress_metrics_summary_csv_key, profile=profile)
+        )
+        has_selector_distribution_csv = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, selector_distribution_csv_key, profile=profile)
+        )
+        has_selector_summary_json = (
+            r.analysis_kind == "analysis"
+            and head_exists(bucket, selector_summary_json_key, profile=profile)
         )
         has_txps_over_time_chart = (
             r.analysis_kind == "analysis"
@@ -1167,6 +1179,16 @@ def main() -> int:
                 lines.append(
                     "- Progress metrics summary (CSV): "
                     + f"{analysis_base}/progress_metrics_summary.csv"
+                )
+            if has_selector_distribution_csv:
+                lines.append(
+                    "- Function selector distribution (CSV): "
+                    + f"{analysis_base}/selector_distribution.csv"
+                )
+            if has_selector_summary_json:
+                lines.append(
+                    "- Function selector summary and health (JSON): "
+                    + f"{analysis_base}/selector_summary.json"
                 )
             if has_runner_md:
                 lines.append("- Runner resource usage (Markdown): " + f"{analysis_base}/runner_resource_usage.md")

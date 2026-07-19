@@ -138,14 +138,14 @@ Only complete runs are listed as benchmark results pages.
 The default full pipeline is:
 
 ```bash
-make results-analyze-all BUCKET=... RUN_ID=... BENCHMARK_UUID=... DEST=...
+make results-analyze-all BUCKET=... RUN_ID=... BENCHMARK_UUID=... DEST=... ARTIFACT_CATEGORY=both
 ```
 
 This expands to:
 
 1. Download logs/corpus bundles (`scripts/download_run_artifacts.py`)
 2. Collect `*.log` files, runner metrics, and Foundry showmap artifacts into analysis layout (`scripts/prepare_analysis_logs.py`)
-3. Parse events, summaries, and differential coverage artifacts (`scripts/run_analysis_filtered.py` -> `analysis/analyze.py`)
+3. Parse events, summaries, saved-corpus selector distributions, and differential coverage artifacts (`scripts/run_analysis_filtered.py`)
 4. Convert event stream to cumulative series (`analysis/events_to_cumulative.py`)
 5. Map events to revision-locked known-bug IDs (`analysis/known_bug_report.py`)
 6. Build report + charts (`analysis/benchmark_report.py`)
@@ -174,12 +174,23 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - `throughput_summary.csv` (per-fuzzer tx/s and gas/s distribution summary)
   - `progress_metrics_samples.csv` (raw fuzzer-native progress metrics such as seq/s, corpus size, favored items, and failure rate; native coverage proxies are included only with `COVERAGE_OVER_TIME=1`)
   - `progress_metrics_summary.csv` (per-fuzzer distribution summary of those progress metrics)
+  - `selector_distribution.csv` (per-fuzzer selector counts from unique saved corpus sequences)
+  - `selector_summary.json` (instance availability, provenance, expected-selector heuristic, and health warnings)
   - `differential_coverage_summary.csv` (human-readable baseline/feature verdicts computed from per-sample relscore statistics and relcov non-inferiority against baseline reliability)
   - `differential_coverage_statistics.json` (machine-readable verdict inputs, per-campaign test results, intervals, sample counts, and aggregate verdict)
   - `differential_coverage_relscores.csv` (relscore values computed from normalized AFL showmap campaigns)
   - `differential_coverage_relcov.csv` (pairwise non-self relcov values computed from normalized AFL showmap campaigns)
   - `showmap_campaign_manifest.json` (raw showmap inputs, skipped inputs, and normalized campaign summaries)
   - `showmap_campaigns/` (canonical `approach/trial.txt` campaign directories used for relscore scoring)
+
+### Function selector sanity checks (`analysis/selector_analytics.py`)
+
+- Selector counts are occurrences in unique saved corpus sequences, not runtime invocation frequencies. Identical serialized sequences are counted once per instance.
+- Echidna and Recon calls are reconstructed from typed corpus entries. Medusa uses its saved ABI signature and calldata. Foundry is parsed only when a persisted Foundry corpus is present; current runs that disable Foundry corpus persistence are reported as `unavailable`, and failure-log selectors are never substituted for corpus data.
+- `observed_zero` means a supported, readable corpus was present but contained no calls. It is distinct from `unavailable`, which means selector coverage could not be measured, `malformed`, which means no selector artifact could be safely parsed, and `partial`, which means only part of the corpus was usable.
+- By default, the expected-selector list is a peer-consensus heuristic, not benchmark ground truth. A selector qualifies only when it appears in every available instance of each supporting engine and support spans at least two independent evidence families. Echidna and Recon count as one related typed-corpus family; an unavailable or empty tool never supplies support. Supply a reviewed catalog with `EXPECTED_SELECTORS_JSON=/path/to/selectors.json` when ground-truth expectations are available.
+- Missing selectors from the peer heuristic are informational diagnostics, while gaps against a reviewed explicit catalog are warnings. The report also warns about readable corpora with zero calls, malformed or resource-limited artifacts, and signature/selector mismatches. Tool-specific limitations and expectation provenance remain visible in `REPORT.md` and `selector_summary.json`.
+- Corpus discovery skips symlinks and enforces traversal-depth, file-count, per-file decompression, aggregate decompression, and parsed-call limits. Hitting a limit produces an explicit partial/malformed status instead of silently using incomplete data.
 
 ### Foundry throughput semantics
 
@@ -318,6 +329,7 @@ Foundry showmap is intentionally separate. It is an opt-in, post-campaign edge r
 - If `progress_metrics_summary.csv` is present, the report also includes per-fuzzer progress proxy tables (seq/s and corpus).
 - If `progress_metrics_samples.csv` is present, the report also emits progress trend charts (`seq_per_second_over_time.png` and `corpus_size_over_time.png`).
 - With `COVERAGE_OVER_TIME=1`, the report includes per-fuzzer native coverage availability, provenance, observation windows, and final-value rows. It emits `coverage_over_time.png` with independent scales when at least one live signal has two observations. Without the opt-in, coverage columns remain empty, the coverage report section is omitted, and no coverage chart is generated.
+- If `selector_summary.json` is present, the report includes corpus availability, selector distributions, expected-selector provenance, health warnings, and limitations.
 - Emits:
   - `REPORT.md`
   - `bugs_over_time.png`

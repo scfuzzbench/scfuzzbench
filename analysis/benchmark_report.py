@@ -630,6 +630,131 @@ def append_run_health_section(lines: List[str], warnings: List[str]) -> None:
     lines.append("")
 
 
+def load_selector_summary(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("fuzzers"), list):
+        return {}
+    return payload
+
+
+def append_selector_analytics_section(lines: List[str], summary: dict) -> None:
+    if not summary:
+        return
+    lines.append("## Function selector sanity checks")
+    lines.append("")
+    lines.append(
+        str(
+            summary.get(
+                "measurement",
+                "Counts are occurrences in unique saved corpus sequences.",
+            )
+        )
+        + " The complete per-instance distribution is in `selector_distribution.csv`; "
+        "`selector_summary.json` preserves statuses and provenance."
+    )
+    lines.append("")
+
+    expected = summary.get("expected_set")
+    if isinstance(expected, dict):
+        selectors = expected.get("selectors")
+        selector_count = len(selectors) if isinstance(selectors, list) else 0
+        lines.append(
+            f"- Expected-set status: **{expected.get('status', 'unavailable')}** "
+            f"({selector_count} selector(s))"
+        )
+        lines.append(f"- Expected-set provenance: {expected.get('source', 'unavailable')}")
+        lines.append("")
+
+    fuzzer_rows = summary.get("fuzzers")
+    if isinstance(fuzzer_rows, list) and fuzzer_rows:
+        lines.append(
+            "| Fuzzer | Status | Instances with telemetry | Saved-corpus calls | "
+            "Unique selectors |"
+        )
+        lines.append("|---|---|---:|---:|---:|")
+        for row in fuzzer_rows:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"| {row.get('fuzzer', 'unknown')} | {row.get('status', 'unavailable')} | "
+                f"{row.get('available_instances', 0)}/{row.get('instances', 0)} | "
+                f"{row.get('saved_corpus_calls', 0)} | {row.get('unique_selectors', 0)} |"
+            )
+        lines.append("")
+
+        lines.append("### Most common saved-corpus selectors")
+        lines.append("")
+        lines.append("| Fuzzer | Selector | Function | Calls | Share |")
+        lines.append("|---|---|---|---:|---:|")
+        rendered = 0
+        for row in fuzzer_rows:
+            if not isinstance(row, dict):
+                continue
+            distribution = row.get("distribution")
+            if not isinstance(distribution, list):
+                continue
+            for item in distribution[:10]:
+                if not isinstance(item, dict):
+                    continue
+                selector = item.get("selector") or item.get("comparison_key") or "unknown"
+                names = item.get("function_names")
+                signatures = item.get("function_signatures")
+                if isinstance(signatures, list) and signatures:
+                    function = ", ".join(str(value) for value in signatures)
+                elif isinstance(names, list) and names:
+                    function = ", ".join(str(value) for value in names)
+                else:
+                    function = "unknown"
+                try:
+                    share = f"{100.0 * float(item.get('share', 0.0)):.2f}%"
+                except (TypeError, ValueError):
+                    share = "n/a"
+                lines.append(
+                    f"| {row.get('fuzzer', 'unknown')} | `{selector}` | `{function}` | "
+                    f"{item.get('saved_corpus_calls', 0)} | {share} |"
+                )
+                rendered += 1
+        if rendered == 0:
+            lines.append("| n/a | n/a | n/a | 0 | n/a |")
+        lines.append("")
+
+    findings = summary.get("health_findings")
+    if isinstance(findings, list) and findings:
+        lines.append("### Selector diagnostic findings")
+        lines.append("")
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            severity = str(finding.get("severity", "info")).upper()
+            message = str(finding.get("message", "selector diagnostic"))
+            marker = "⚠️ " if severity == "WARNING" else ""
+            lines.append(f"- {marker}**{severity}**: {message}")
+        lines.append("")
+    else:
+        # Backward compatibility for summaries emitted before structured
+        # severity was added.
+        warnings = summary.get("health_warnings")
+        if isinstance(warnings, list) and warnings:
+            lines.append("### ⚠️ Selector health warnings")
+            lines.append("")
+            for warning in warnings:
+                lines.append(f"- ⚠️ {warning}")
+            lines.append("")
+
+    limitations = summary.get("limitations")
+    if isinstance(limitations, list) and limitations:
+        lines.append("### Selector telemetry limitations")
+        lines.append("")
+        for limitation in limitations:
+            lines.append(f"- {limitation}")
+        lines.append("")
+
+
 def fmt_triplet(p50: Optional[float], p25: Optional[float], p75: Optional[float]) -> str:
     if p50 is None or p25 is None or p75 is None:
         return "n/a"
@@ -1864,6 +1989,7 @@ def write_report(
     throughput_by_fuzzer: Dict[str, ThroughputSummary] | None = None,
     progress_metrics_by_fuzzer: Dict[str, ProgressMetricsSummary] | None = None,
     relative_scores_by_fuzzer: Dict[str, RelativeScoreSummary] | None = None,
+    selector_summary: dict | None = None,
     stat_results: Optional[List[PairwiseResult]] = None,
     stat_warnings: Optional[List[str]] = None,
     alpha: float = 0.05,
@@ -1973,6 +2099,7 @@ def write_report(
         budget=budget,
         availability_by_fuzzer=coverage_availability_by_fuzzer,
     )
+    append_selector_analytics_section(lines, selector_summary or {})
 
     if stat_results is not None:
         lines.extend(
@@ -2020,6 +2147,7 @@ def write_no_data_report(
     csv_path: Path,
     throughput_by_fuzzer: Dict[str, ThroughputSummary] | None = None,
     progress_metrics_by_fuzzer: Dict[str, ProgressMetricsSummary] | None = None,
+    selector_summary: dict | None = None,
     coverage_over_time: bool = False,
     coverage_availability_by_fuzzer: Optional[
         Dict[str, CoverageAvailability]
@@ -2067,6 +2195,7 @@ def write_no_data_report(
         budget=budget,
         availability_by_fuzzer=coverage_availability_by_fuzzer,
     )
+    append_selector_analytics_section(lines, selector_summary or {})
 
     outpath.write_text("\n".join(lines), encoding="utf-8")
 
@@ -2262,6 +2391,12 @@ def main() -> int:
         help="Optional progress metrics samples CSV for time-series charts.",
     )
     parser.add_argument(
+        "--selector-summary-json",
+        type=Path,
+        default=None,
+        help="Optional selector analytics summary JSON generated from saved corpora.",
+    )
+    parser.add_argument(
         "--coverage-over-time",
         action="store_true",
         help=(
@@ -2319,6 +2454,11 @@ def main() -> int:
     relative_scores_by_fuzzer = (
         load_relative_scores(args.relative_scores_csv)
         if args.relative_scores_csv is not None
+        else {}
+    )
+    selector_summary = (
+        load_selector_summary(args.selector_summary_json)
+        if args.selector_summary_json is not None
         else {}
     )
     throughput_samples_df = (
@@ -2401,6 +2541,7 @@ def main() -> int:
             csv_path=args.csv,
             throughput_by_fuzzer=throughput_by_fuzzer,
             progress_metrics_by_fuzzer=progress_metrics_by_fuzzer,
+            selector_summary=selector_summary,
             coverage_over_time=args.coverage_over_time,
             coverage_availability_by_fuzzer=coverage_availability_by_fuzzer,
         )
@@ -2488,6 +2629,7 @@ def main() -> int:
         throughput_by_fuzzer=throughput_by_fuzzer,
         progress_metrics_by_fuzzer=progress_metrics_by_fuzzer,
         relative_scores_by_fuzzer=relative_scores_by_fuzzer,
+        selector_summary=selector_summary,
         stat_results=stat_results,
         stat_warnings=stat_warnings,
         run_health_warnings=run_health_warnings,
