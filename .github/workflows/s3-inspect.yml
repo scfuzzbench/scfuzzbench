@@ -74,11 +74,12 @@ jobs:
             --prefix "${PREFIX}" \
             --query 'Contents[].[LastModified, Size, Key]' \
             --output text \
-            --no-cli-pager > "${listing_file}"
+            --no-cli-pager |
+            tail -n 300 > "${listing_file}"
           if [[ ! -s "${listing_file}" ]] || grep -Fxq 'None' "${listing_file}"; then
             echo "No objects found under s3://${SCFUZZBENCH_BUCKET}/${PREFIX}"
           else
-            tail -n 300 "${listing_file}"
+            cat "${listing_file}"
           fi
 
       - name: Print object

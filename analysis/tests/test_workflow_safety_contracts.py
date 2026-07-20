@@ -151,11 +151,25 @@ esac
 """
             )
             aws.chmod(0o755)
+            tail = temp / "tail"
+            tail.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+[[ "$#" == 2 ]]
+[[ "$1" == "-n" ]]
+[[ "$2" == 300 ]]
+exec /usr/bin/tail "$@"
+"""
+            )
+            tail.chmod(0o755)
+            staging = temp / "staging"
+            staging.mkdir()
             env = {
                 **os.environ,
                 "PATH": f"{temp}:{os.environ['PATH']}",
                 "SCFUZZBENCH_BUCKET": "benchmark-bucket",
                 "PREFIX": "logs/empty/",
+                "TMPDIR": str(staging),
             }
 
             empty = subprocess.run(
@@ -167,6 +181,7 @@ esac
                 env={**env, "FAKE_AWS_RESULT": "empty"},
             )
             self.assertEqual(0, empty.returncode, empty.stderr)
+            self.assertEqual([], list(staging.iterdir()))
             self.assertIn(
                 "No objects found under s3://benchmark-bucket/logs/empty/",
                 empty.stdout,
@@ -182,6 +197,7 @@ esac
                 env={**env, "FAKE_AWS_RESULT": "objects"},
             )
             self.assertEqual(0, objects.returncode, objects.stderr)
+            self.assertEqual([], list(staging.iterdir()))
             listing = [
                 line for line in objects.stdout.splitlines() if "\t" in line
             ]
@@ -198,6 +214,7 @@ esac
                 env={**env, "FAKE_AWS_RESULT": "error"},
             )
             self.assertEqual(42, error.returncode)
+            self.assertEqual([], list(staging.iterdir()))
             self.assertIn("Access denied", error.stderr)
             self.assertNotIn("No objects found", error.stdout)
 
