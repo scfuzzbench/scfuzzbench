@@ -1779,8 +1779,10 @@ start_preliminary_snapshots() {
         continue
       fi
       local common_path="${SCFUZZBENCH_COMMON_SH:-${SCFUZZBENCH_ROOT}/common.sh}"
+      # Re-sourcing intentionally clears inherited trust anchors. Rebuild them
+      # from the configured paths before the isolated capture uses safe_path_ops.
       setsid bash -c \
-        'set -euo pipefail; source "$1"; preliminary_capture_supervisor "$2" "$3"' \
+        'set -euo pipefail; source "$1"; prepare_workspace; preliminary_capture_supervisor "$2" "$3"' \
         preliminary-capture "${common_path}" "${checkpoint}" "${scheduled_at}" &
       capture_pid=$!
       capture_start=$(preliminary_wait_for_process_start_ticks "${capture_pid}") || {
