@@ -68,31 +68,40 @@ class PreliminaryRunnerShellTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "snapshot.zip"
             source.write_bytes(b"stable snapshot bytes")
-            digest = subprocess.check_output(
-                ["sha256sum", str(source)], text=True
-            ).split()[0]
+            remote = Path(tmp) / "remote.zip"
             common = shlex.quote(str(COMMON_SH))
             source_q = shlex.quote(str(source))
+            remote_q = shlex.quote(str(remote))
+            remote.write_bytes(source.read_bytes())
             matching = run_bash(
                 f"""
+                export SCFUZZBENCH_LOCAL_MODE=1
+                export SCFUZZBENCH_ROOT={shlex.quote(tmp)}
                 export SCFUZZBENCH_S3_BUCKET=bucket
                 source {common}
-                aws_cli() {{
-                  if [[ "$2" == "put-object" ]]; then return 1; fi
-                  printf '%s\n' {shlex.quote(digest)}
+                prepare_workspace
+                upload_pinned_s3_file() {{
+                  if cmp -s -- "$1" {remote_q}; then return 0; fi
+                  echo "Refusing to overwrite preliminary object" >&2
+                  return 1
                 }}
                 put_preliminary_immutable {source_q} preliminary/gh-1/{'a' * 32}/snapshot.zip
                 """
             )
             self.assertEqual(0, matching.returncode)
 
+            remote.write_bytes(b"different")
             divergent = run_bash(
                 f"""
+                export SCFUZZBENCH_LOCAL_MODE=1
+                export SCFUZZBENCH_ROOT={shlex.quote(tmp)}
                 export SCFUZZBENCH_S3_BUCKET=bucket
                 source {common}
-                aws_cli() {{
-                  if [[ "$2" == "put-object" ]]; then return 1; fi
-                  printf '%064d\n' 0
+                prepare_workspace
+                upload_pinned_s3_file() {{
+                  if cmp -s -- "$1" {remote_q}; then return 0; fi
+                  echo "Refusing to overwrite preliminary object" >&2
+                  return 1
                 }}
                 put_preliminary_immutable {source_q} preliminary/gh-1/{'a' * 32}/snapshot.zip
                 """,
@@ -108,6 +117,7 @@ class PreliminaryRunnerShellTests(unittest.TestCase):
                 f"""
                 export SCFUZZBENCH_ROOT={shlex.quote(tmp)}
                 source {shlex.quote(str(COMMON_SH))}
+                prepare_workspace
                 mkdir -p {shlex.quote(str(root / "preliminary-checkpoints"))}
                 setsid bash -c 'sleep 30' >/dev/null 2>&1 &
                 capture_pid=$!
@@ -158,7 +168,9 @@ class PreliminaryRunnerShellTests(unittest.TestCase):
             owner = Path(tmp) / "preliminary-checkpoints" / "active.pid"
             result = run_bash(
                 f"""
+                export SCFUZZBENCH_ROOT={shlex.quote(tmp)}
                 source {shlex.quote(str(COMMON_SH))}
+                prepare_workspace
                 umask 0022
                 before=$(umask)
                 preliminary_write_active_owner \
@@ -180,6 +192,7 @@ class PreliminaryRunnerShellTests(unittest.TestCase):
                 f"""
                 export SCFUZZBENCH_ROOT={shlex.quote(tmp)}
                 source {shlex.quote(str(COMMON_SH))}
+                prepare_workspace
                 mkdir -p {shlex.quote(str(root / "preliminary-checkpoints"))}
                 sleep 30 &
                 capture_pid=$!
@@ -219,6 +232,7 @@ class PreliminaryRunnerShellTests(unittest.TestCase):
                 f"""
                 export SCFUZZBENCH_ROOT={shlex.quote(tmp)}
                 source {shlex.quote(str(COMMON_SH))}
+                prepare_workspace
                 live_loop=""
                 live_loop_start=""
                 live_capture=""
@@ -278,6 +292,7 @@ class PreliminaryRunnerShellTests(unittest.TestCase):
                 export SCFUZZBENCH_ROOT={shlex.quote(tmp)}
                 export SCFUZZBENCH_PRELIMINARY_TERM_GRACE_SECONDS=1
                 source {common}
+                prepare_workspace
                 mkdir -p {shlex.quote(str(root / "preliminary-checkpoints"))}
                 capture_pid=""
                 capture_start=""

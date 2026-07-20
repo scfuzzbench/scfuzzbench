@@ -13,8 +13,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Iterator
+
+import safe_path_ops
 
 
 CHUNK_SIZE = 1024 * 1024
@@ -76,13 +79,24 @@ def snapshot_local_tree(
     *,
     max_files: int,
     max_bytes: int,
+    precreated: bool = False,
 ) -> dict[str, Any]:
     """Copy source without following links and return exact byte/path provenance."""
 
-    if destination.exists() or destination.is_symlink():
-        raise SeedCorpusError(f"snapshot destination already exists: {destination}")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.mkdir(mode=0o700)
+    owns_destination = not precreated
+    if precreated:
+        if not destination.is_dir() or any(destination.iterdir()):
+            raise SeedCorpusError(
+                f"precreated snapshot destination is not an empty directory: "
+                f"{destination}"
+            )
+    else:
+        if destination.exists() or destination.is_symlink():
+            raise SeedCorpusError(
+                f"snapshot destination already exists: {destination}"
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.mkdir(mode=0o700)
 
     files: list[dict[str, Any]] = []
     total_bytes = 0
@@ -146,7 +160,7 @@ def snapshot_local_tree(
                     f"seed corpus exceeds the fixed {max_bytes}-byte limit"
                 )
 
-            flags = os.O_RDONLY | os.O_CLOEXEC
+            flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             try:
@@ -158,6 +172,9 @@ def snapshot_local_tree(
 
             file_digest = hashlib.sha256()
             bytes_copied = 0
+            tree_digest.update(len(relative_bytes).to_bytes(8, "big"))
+            tree_digest.update(relative_bytes)
+            tree_digest.update(listed_stat.st_size.to_bytes(8, "big"))
             try:
                 if _entry_identity(os.fstat(source_file_fd)) != _entry_identity(listed_stat):
                     raise SeedCorpusError(
@@ -180,6 +197,7 @@ def snapshot_local_tree(
                                 f"seed corpus exceeds the fixed {max_bytes}-byte limit"
                             )
                         file_digest.update(chunk)
+                        tree_digest.update(chunk)
                         view = memoryview(chunk)
                         while view:
                             written = os.write(destination_fd, view)
@@ -200,12 +218,6 @@ def snapshot_local_tree(
 
             total_bytes += bytes_copied
             digest_hex = file_digest.hexdigest()
-            tree_digest.update(len(relative_bytes).to_bytes(8, "big"))
-            tree_digest.update(relative_bytes)
-            tree_digest.update(bytes_copied.to_bytes(8, "big"))
-            with destination_path.open("rb") as copied:
-                for chunk in iter(lambda: copied.read(CHUNK_SIZE), b""):
-                    tree_digest.update(chunk)
             files.append(
                 {
                     "path": relative_text,
@@ -231,14 +243,16 @@ def snapshot_local_tree(
         root_fd = _open_directory(source)
         copy_directory(root_fd, ())
     except Exception:
-        shutil.rmtree(destination, ignore_errors=True)
+        if owns_destination:
+            shutil.rmtree(destination, ignore_errors=True)
         raise
     finally:
         if root_fd is not None:
             os.close(root_fd)
 
     if not files:
-        shutil.rmtree(destination, ignore_errors=True)
+        if owns_destination:
+            shutil.rmtree(destination, ignore_errors=True)
         raise SeedCorpusError("configured seed corpus is empty")
 
     return {
@@ -247,6 +261,76 @@ def snapshot_local_tree(
         "sha256": tree_digest.hexdigest(),
         "files": files,
     }
+
+
+@contextmanager
+def pinned_empty_destination(
+    *,
+    destination: Path,
+    root_path: str,
+    root_anchor: str,
+    root_identity: str,
+) -> Iterator[Path]:
+    """Hold and revalidate an already-created destination directory by fd."""
+
+    try:
+        parts = safe_path_ops._relative_parts(
+            str(destination), root_path, root_anchor
+        )
+        with safe_path_ops._open_anchor(
+            root_path, root_anchor, root_identity
+        ) as root_fd:
+            with safe_path_ops._open_parent(root_fd, parts) as (parent_fd, name):
+                destination_fd = os.open(
+                    name, safe_path_ops.DIRECTORY_FLAGS, dir_fd=parent_fd
+                )
+                try:
+                    opened = os.fstat(destination_fd)
+                    safe_path_ops._require_directory(
+                        opened, f"seed destination {destination}"
+                    )
+                    if os.listdir(destination_fd):
+                        raise SeedCorpusError(
+                            f"seed destination is not empty: {destination}"
+                        )
+                    safe_path_ops._run_test_hook()
+                    safe_path_ops._verify_anchor_path(root_anchor, root_fd)
+                    safe_path_ops._verify_directory_path(
+                        root_fd,
+                        parts[:-1],
+                        parent_fd,
+                        "seed destination parent",
+                    )
+                    listed = os.stat(
+                        name, dir_fd=parent_fd, follow_symlinks=False
+                    )
+                    if not safe_path_ops._same_inode_type(opened, listed):
+                        raise SeedCorpusError(
+                            "seed destination changed before copy"
+                        )
+                    yield Path(f"/proc/self/fd/{destination_fd}")
+                    after = os.fstat(destination_fd)
+                    safe_path_ops._require_directory(
+                        after, f"seed destination {destination}"
+                    )
+                    listed = os.stat(
+                        name, dir_fd=parent_fd, follow_symlinks=False
+                    )
+                    if not safe_path_ops._same_inode_type(after, listed):
+                        raise SeedCorpusError(
+                            "seed destination changed during copy"
+                        )
+                    safe_path_ops._verify_anchor_path(root_anchor, root_fd)
+                    safe_path_ops._verify_directory_path(
+                        root_fd,
+                        parts[:-1],
+                        parent_fd,
+                        "seed destination parent",
+                    )
+                finally:
+                    os.close(destination_fd)
+    except (OSError, safe_path_ops.SafePathError) as exc:
+        raise SeedCorpusError(f"unsafe seed destination: {exc}") from exc
 
 
 def _aws_json(args: list[str], *, attempts: int = 5) -> dict[str, Any]:
@@ -408,11 +492,7 @@ def _download_s3_snapshot(
     if not objects:
         raise SeedCorpusError("configured S3 seed corpus is empty")
 
-    raw_parent = destination.parent
-    raw_parent.mkdir(parents=True, exist_ok=True)
-    raw_dir = Path(
-        tempfile.mkdtemp(prefix=".seed-corpus-s3-", dir=str(raw_parent))
-    )
+    raw_dir = Path(tempfile.mkdtemp(prefix=".seed-corpus-s3-"))
     object_provenance: list[dict[str, Any]] = []
     try:
         for item in objects:
@@ -535,6 +615,7 @@ def _download_s3_snapshot(
             destination,
             max_files=max_files,
             max_bytes=max_bytes,
+            precreated=True,
         )
     finally:
         shutil.rmtree(raw_dir, ignore_errors=True)
@@ -575,7 +656,9 @@ def main() -> int:
     parser.add_argument("--source", required=True)
     parser.add_argument("--source-label", required=True)
     parser.add_argument("--destination", type=Path, required=True)
-    parser.add_argument("--metadata", type=Path, required=True)
+    parser.add_argument("--destination-root-path", required=True)
+    parser.add_argument("--destination-root-anchor", required=True)
+    parser.add_argument("--destination-root-identity", required=True)
     parser.add_argument("--max-files", type=int, required=True)
     parser.add_argument("--max-bytes", type=int, required=True)
     args = parser.parse_args()
@@ -583,56 +666,57 @@ def main() -> int:
     if args.max_files < 1 or args.max_bytes < 1:
         raise SeedCorpusError("seed corpus limits must be positive")
 
-    if args.mode == "local":
-        snapshot = snapshot_local_tree(
-            Path(args.source),
-            args.destination,
-            max_files=args.max_files,
-            max_bytes=args.max_bytes,
-        )
-        metadata = _base_metadata(
-            snapshot,
-            source=args.source_label,
-            source_type="local",
-            max_files=args.max_files,
-            max_bytes=args.max_bytes,
-        )
-        metadata["source_immutability"] = "local-tree-stable-during-copy"
-    else:
-        if "/" not in args.source:
-            raise SeedCorpusError("S3 source must contain bucket and prefix")
-        bucket, prefix = args.source.split("/", 1)
-        if not bucket or not prefix:
-            raise SeedCorpusError("S3 source must contain bucket and prefix")
-        snapshot, objects, listing_sha256 = _download_s3_snapshot(
-            bucket,
-            prefix,
-            args.destination,
-            max_files=args.max_files,
-            max_bytes=args.max_bytes,
-        )
-        metadata = _base_metadata(
-            snapshot,
-            source=args.source_label,
-            source_type="s3",
-            max_files=args.max_files,
-            max_bytes=args.max_bytes,
-        )
-        metadata["source_immutability"] = (
-            "etag-or-version-bound-objects-and-stable-prefix-listing"
-        )
-        metadata["s3_listing_sha256"] = listing_sha256
-        metadata["s3_objects"] = objects
+    with pinned_empty_destination(
+        destination=args.destination,
+        root_path=args.destination_root_path,
+        root_anchor=args.destination_root_anchor,
+        root_identity=args.destination_root_identity,
+    ) as pinned_destination:
+        if args.mode == "local":
+            snapshot = snapshot_local_tree(
+                Path(args.source),
+                pinned_destination,
+                max_files=args.max_files,
+                max_bytes=args.max_bytes,
+                precreated=True,
+            )
+            metadata = _base_metadata(
+                snapshot,
+                source=args.source_label,
+                source_type="local",
+                max_files=args.max_files,
+                max_bytes=args.max_bytes,
+            )
+            metadata["source_immutability"] = "local-tree-stable-during-copy"
+        else:
+            if "/" not in args.source:
+                raise SeedCorpusError("S3 source must contain bucket and prefix")
+            bucket, prefix = args.source.split("/", 1)
+            if not bucket or not prefix:
+                raise SeedCorpusError("S3 source must contain bucket and prefix")
+            snapshot, objects, listing_sha256 = _download_s3_snapshot(
+                bucket,
+                prefix,
+                pinned_destination,
+                max_files=args.max_files,
+                max_bytes=args.max_bytes,
+            )
+            metadata = _base_metadata(
+                snapshot,
+                source=args.source_label,
+                source_type="s3",
+                max_files=args.max_files,
+                max_bytes=args.max_bytes,
+            )
+            metadata["source_immutability"] = (
+                "etag-or-version-bound-objects-and-stable-prefix-listing"
+            )
+            metadata["s3_listing_sha256"] = listing_sha256
+            metadata["s3_objects"] = objects
 
-    args.metadata.parent.mkdir(parents=True, exist_ok=True)
-    temporary_metadata = args.metadata.with_name(
-        f".{args.metadata.name}.tmp-{os.getpid()}"
-    )
-    temporary_metadata.write_text(
+    sys.stdout.write(
         json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
-    os.replace(temporary_metadata, args.metadata)
     return 0
 
 

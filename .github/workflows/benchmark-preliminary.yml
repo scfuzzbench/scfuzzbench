@@ -20,11 +20,25 @@ permissions:
   contents: read
 
 concurrency:
-  group: benchmark-preliminary-results
+  group: benchmark-preliminary-results-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  authorize-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require trusted main ref
+        env:
+          GITHUB_REF_VALUE: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_VALUE}" != "refs/heads/main" ]]; then
+            echo "Privileged benchmark workflows may run only from refs/heads/main." >&2
+            exit 1
+          fi
+
   discover:
+    needs: authorize-main
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -82,7 +96,7 @@ jobs:
             --settle-seconds 300
 
   analyze:
-    needs: discover
+    needs: [authorize-main, discover]
     if: ${{ needs.discover.outputs.has_runs == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -213,7 +227,7 @@ jobs:
           retention-days: 7
 
   refresh-docs:
-    needs: [discover, analyze]
+    needs: [authorize-main, discover, analyze]
     if: ${{ always() && needs.discover.result == 'success' && (needs.analyze.result == 'success' || needs.analyze.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

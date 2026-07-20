@@ -18,6 +18,8 @@ Set inputs via `-var`/`tfvars` (`TF_VAR_*` also works):
 - `fuzzer_env` (optional extra fuzzer settings; framework-owned, AWS, credential, path, and identity keys are rejected)
 
 Per-fuzzer environment variables are documented in `fuzzers/README.md`.
+The combined UTF-8 byte length of caller-supplied `fuzzer_env` keys and values
+is limited to 4096 bytes so EC2 bootstrap data stays within the API limit.
 
 ## Quick Start
 
@@ -25,6 +27,24 @@ Per-fuzzer environment variables are documented in `fuzzers/README.md`.
 make terraform-init
 make terraform-deploy TF_ARGS="-var 'ssh_cidr=YOUR_IP/32' -var 'target_repo_url=REPO_URL' -var 'target_commit=COMMIT'"
 ```
+
+## Cloud Bootstrap Provenance
+
+Cloud instances download runtime scripts only from the canonical public
+`scfuzzbench/scfuzzbench` repository at the full `scfuzzbench_commit`. Terraform
+records and passes a SHA-256 manifest for every required regular file; the
+instance rejects unsafe archive entries and verifies every file before
+installing or executing any repository content. Direct Terraform deployments
+therefore require every bundled bootstrap file (including the rendered
+user-data template and verifier) to match content already published at that
+commit. This check also works in the tarball-based CI checkout, where no
+`.git` directory exists.
+
+`custom_fuzzer_definitions` are intentionally rejected by the cloud Terraform
+module. Local-only scripts cannot be proven to exist in the immutable public
+archive. Use `scripts/local-run.sh` for local customizations; add a new
+committed built-in definition when a fuzzer should be deployable in cloud
+benchmarks.
 
 ## Local `.env` (Recommended)
 
@@ -235,11 +255,22 @@ its heartbeat is stale for at least 30 minutes **and** no active EC2 instance
 with that `RunId` remains. A failed heartbeat upload never authorizes destroying
 an active instance.
 
-Cleanup initializes only the backend key recorded for that run. Before destroy
-it requires exact `run_id`, backend-key, and benchmark outputs, rejects
-create/update or shared-S3 changes, and checks every taggable resource in the
-plan has the same `RunId`.
-Only the saved, verified destroy plan is applied. Capacity is released only
+Cleanup initializes only the backend key recorded for that run. The saved
+cleanup variables, active reservation, and cleanup matrix must agree on the
+exact `run_id`, backend key, shared bucket, and full lowercase
+`scfuzzbench_commit`. That provisioning commit must be current `main` or an
+ancestor of current `main`. Terraform init, inspection, planning, and apply use
+the repository tree downloaded at that exact provisioning commit, so cleanup
+continues to match the configuration that created the state. The workflow
+orchestration and every state/plan validator always run from the separately
+checked-out current `main` tree.
+
+Normal cleanup requires exact `run_id`, backend-key, and benchmark outputs.
+An explicitly forced or recorded provisioning-failure cleanup may recover a
+partially applied state whose outputs were never created, but every output that
+does exist must still match. All paths reject create/update or shared-S3
+changes and require every taggable plan resource to carry the same `RunId`.
+Only the saved, verified delete-only plan is applied. Capacity is released only
 after no same-run EC2 instance remains.
 
 Recovery metadata is retained at:
@@ -253,10 +284,18 @@ The empty post-destroy state remains at its versioned backend key. Failed
 provisioning keeps its active reservation and recovery inputs, so a maintainer
 can use `Benchmark Run Cleanup` (force orphan cleanup when justified) or
 `Terraform Run Recovery`. Neither workflow targets another run's key.
+Forced cleanup requires one explicit, valid `run_id`; it never advances the
+deadline or selects every reservation. It may terminate active resources for
+that one run, so use it only after confirming the run should stop.
 Recovery accepts no arbitrary Terraform arguments or bucket override. Its
 read-only plan must be a no-op; destroy must be delete-only. Potentially
 sensitive `fuzzer_env` values are never written to recovery objects, because a
 destroy plan does not need user-data inputs.
+
+All workflows that consume AWS credentials or publish GitHub/Pages state first
+authorize `refs/heads/main`. Their concurrency groups are ref-scoped or
+run-scoped so an untrusted branch dispatch cannot cancel, replace, or overlap a
+privileged main run.
 
 ## Foundry Log Visibility
 

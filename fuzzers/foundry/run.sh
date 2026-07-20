@@ -4,8 +4,6 @@ set -euo pipefail
 source "${SCFUZZBENCH_COMMON_SH:-/opt/scfuzzbench/common.sh}"
 
 register_shutdown_trap
-
-prepare_workspace
 if [[ -z "${HOME:-}" ]]; then
   export HOME=/root
 fi
@@ -23,16 +21,29 @@ fi
 export SCFUZZBENCH_FUZZER_LABEL
 
 clone_target
+capture_target_workspace_anchor
 apply_benchmark_type
 build_target
 
 repo_dir="${SCFUZZBENCH_WORKDIR}/target"
 log_file="${SCFUZZBENCH_LOG_DIR}/foundry.log"
+if [[ -z "${SCFUZZBENCH_TARGET_ROOT_ANCHOR:-}" ||
+      -z "${SCFUZZBENCH_TARGET_ROOT_IDENTITY:-}" ]]; then
+  log "Refusing Foundry cache reset without the trusted target anchor."
+  exit 1
+fi
+repo_root="${SCFUZZBENCH_TARGET_ROOT_ANCHOR}"
+repo_root_identity="${SCFUZZBENCH_TARGET_ROOT_IDENTITY}"
 
 # Start cold even if the target repo accidentally committed persisted failures.
 # The corpus itself is reset centrally below, after any configured local seed
 # source has first been staged.
-rm -rf "${repo_dir}/cache/invariant" "${repo_dir}/cache/test-failures"
+remove_strict_descendant_tree \
+  "${repo_dir}/cache/invariant" "${repo_dir}" "Foundry invariant cache" \
+  "${repo_root}" "${repo_root_identity}"
+remove_strict_descendant_tree \
+  "${repo_dir}/cache/test-failures" "${repo_dir}" "Foundry failure cache" \
+  "${repo_root}" "${repo_root_identity}"
 
 # Expose the corpus dir so upload_results ships the foundry corpus like the other
 # legs (and so post-run showmap replays have something to replay downstream).
@@ -189,7 +200,10 @@ if [[ "${showmap_enabled}" == "1" || "${showmap_enabled_lc}" == "true" || "${sho
   if [[ -n "${FOUNDRY_SHOWMAP_DOMAIN:-}" ]]; then
     showmap_args=(--showmap-domain "${FOUNDRY_SHOWMAP_DOMAIN}" "${showmap_args[@]}")
   fi
-  mkdir -p "${showmap_dir}"
+  mkdir_strict_descendant \
+    "${showmap_dir}" "${SCFUZZBENCH_LOG_DIR}" \
+    "${SCFUZZBENCH_LOG_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_LOG_ROOT_IDENTITY}" 0700
   original_timeout="${SCFUZZBENCH_TIMEOUT_SECONDS:-}"
   showmap_timeout="${SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS:-}"
   if [[ -z "${showmap_timeout}" ]]; then

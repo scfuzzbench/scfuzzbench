@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ from unittest import mock
 
 PROTECTED_RUNTIME_ENV_KEYS = (
     "SCFUZZBENCH_AWS_CREDS_REFRESH_PID",
+    "SCFUZZBENCH_AWS_CREDS_REFRESH_PID_START_TICKS",
     "SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS",
     "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION",
     "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH",
@@ -19,6 +21,7 @@ PROTECTED_RUNTIME_ENV_KEYS = (
     "SCFUZZBENCH_PRELIMINARY_PID",
     "SCFUZZBENCH_PRELIMINARY_PID_START_TICKS",
     "SCFUZZBENCH_RUNNER_METRICS_PID",
+    "SCFUZZBENCH_RUNNER_METRICS_PID_START_TICKS",
     "SCFUZZBENCH_SEED_CORPUS_MAX_BYTES",
     "SCFUZZBENCH_SEED_CORPUS_MAX_FILES",
     "SCFUZZBENCH_TIMEOUT_GRACE_SECONDS",
@@ -202,6 +205,103 @@ class BenchmarkRunStateTests(unittest.TestCase):
             ),
         )
 
+    def test_forced_cleanup_is_explicit_single_run_and_includes_active_run(self):
+        commit = "a" * 40
+        metadata = {
+            "run_id": "gh-100-1",
+            "terraform_backend_key": "runs/gh-100-1/terraform.tfstate",
+            "existing_bucket_name": "shared-bucket",
+            "scfuzzbench_commit": commit,
+            "status": "running",
+            "benchmark_uuid": "b" * 32,
+            "run_started_at_epoch": 1_000,
+            "timeout_hours": 4,
+            "instances_per_fuzzer": 1,
+            "fuzzers": ["foundry"],
+        }
+        args = mock.Mock(
+            bucket="shared-bucket",
+            now_epoch=2_000,
+            requested_run_id="gh-100-1",
+            force_run_id="gh-100-1",
+        )
+        active = [
+            {
+                "InstanceId": "i-active",
+                "Tags": [
+                    {"Key": "Project", "Value": "scfuzzbench"},
+                    {"Key": "RunId", "Value": "gh-100-1"},
+                ],
+            }
+        ]
+        with (
+            mock.patch.object(self.module, "list_s3_keys") as list_keys,
+            mock.patch.object(
+                self.module, "active_benchmark_instances", return_value=active
+            ),
+            mock.patch.object(
+                self.module, "_s3_read_json", return_value=metadata
+            ),
+            mock.patch("builtins.print") as output,
+        ):
+            self.assertEqual(0, self.module.cmd_discover_cleanup(args))
+
+        list_keys.assert_not_called()
+        matrix = json.loads(output.call_args.args[0])
+        self.assertEqual(
+            [
+                {
+                    "benchmark_uuid": "b" * 32,
+                    "reason": "forced-orphan-cleanup",
+                    "run_id": "gh-100-1",
+                    "scfuzzbench_commit": commit,
+                    "status": "running",
+                    "terraform_backend_key": "runs/gh-100-1/terraform.tfstate",
+                }
+            ],
+            matrix["include"],
+        )
+
+    def test_forced_cleanup_run_ids_must_match_and_never_fall_back_global(self):
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            self.module.cmd_discover_cleanup(
+                mock.Mock(
+                    bucket="shared-bucket",
+                    now_epoch=2_000,
+                    requested_run_id="gh-100-1",
+                    force_run_id="gh-101-1",
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "run_id"):
+            self.module.cmd_discover_cleanup(
+                mock.Mock(
+                    bucket="shared-bucket",
+                    now_epoch=2_000,
+                    requested_run_id="",
+                    force_run_id="../all",
+                )
+            )
+
+    def test_malformed_forced_reservation_fails_loudly(self):
+        args = mock.Mock(
+            bucket="shared-bucket",
+            now_epoch=2_000,
+            requested_run_id="gh-100-1",
+            force_run_id="gh-100-1",
+        )
+        with (
+            mock.patch.object(
+                self.module, "active_benchmark_instances", return_value=[]
+            ),
+            mock.patch.object(
+                self.module,
+                "_s3_read_json",
+                side_effect=ValueError("malformed reservation"),
+            ),
+            self.assertRaisesRegex(ValueError, "malformed reservation"),
+        ):
+            self.module.cmd_discover_cleanup(args)
+
     def test_over_duration_healthy_run_is_never_an_orphan(self):
         metadata = {
             "run_started_at_epoch": 1_000,
@@ -335,6 +435,41 @@ class BenchmarkRunStateTests(unittest.TestCase):
         errors = self.module.validate_terraform_plan(plan, "apply", "gh-run-b-1")
         self.assertTrue(any("not run-owned" in error for error in errors))
 
+    def test_bootstrap_source_guard_is_allowed_in_every_plan_mode(self):
+        self.assertIn("terraform_data", self.module.ALLOWED_RUN_RESOURCE_TYPES)
+        self.assertNotIn("terraform_data", self.module.TAGGABLE_RUN_RESOURCE_TYPES)
+        for mode, actions, before, after in (
+            ("apply", ["create"], None, {"id": None}),
+            ("cleanup", ["delete"], {"id": "guard-id"}, None),
+            (
+                "inspect",
+                ["no-op"],
+                {"id": "guard-id"},
+                {"id": "guard-id"},
+            ),
+        ):
+            with self.subTest(mode=mode):
+                plan = {
+                    "resource_changes": [
+                        {
+                            "address": "terraform_data.bootstrap_source_guard",
+                            "mode": "managed",
+                            "type": "terraform_data",
+                            "change": {
+                                "actions": actions,
+                                "before": before,
+                                "after": after,
+                            },
+                        }
+                    ]
+                }
+                self.assertEqual(
+                    [],
+                    self.module.validate_terraform_plan(
+                        plan, mode, "gh-run-b-1"
+                    ),
+                )
+
     def test_plan_modes_require_exact_managed_actions(self):
         base = {
             "address": "random_id.suffix",
@@ -395,7 +530,7 @@ class BenchmarkRunStateTests(unittest.TestCase):
                 self.assertIn(f'"{key}"', terraform)
         self.assertIn(
             "from scripts.benchmark_run_state import "
-            "validate_fuzzer_env_entry",
+            "validate_fuzzer_env_map",
             benchmark,
         )
         self.assertIn("SAFE_SCFUZZBENCH_FUZZER_ENV_KEYS", request)
@@ -445,6 +580,93 @@ class BenchmarkRunStateTests(unittest.TestCase):
                         }
                     )
 
+    def test_generic_env_grammar_and_user_data_encoding_are_one_contract(self):
+        root = Path(__file__).resolve().parents[2]
+        request = (root / ".github/workflows/benchmark-request.yml").read_text()
+        benchmark = (root / ".github/workflows/benchmark-run.yml").read_text()
+        terraform = (root / "infrastructure/variables.tf").read_text()
+        infrastructure = (root / "infrastructure/main.tf").read_text()
+        user_data = (root / "infrastructure/user_data.sh.tftpl").read_text()
+
+        for invalid_key in ("bad-key", "SAFE\nexport SCFUZZBENCH_RUN_ID"):
+            with self.subTest(invalid_key=invalid_key):
+                with self.assertRaisesRegex(ValueError, "environment key"):
+                    self.module.validate_fuzzer_env_entry(invalid_key, "value")
+        for invalid_value in (
+            'safe"; export SCFUZZBENCH_RUN_ID="foreign',
+            "$(touch should-not-run)",
+            "line one\nline two",
+            "line one\rline two",
+            "`touch should-not-run`",
+            r"escaped\value",
+            "x" * 2001,
+        ):
+            with self.subTest(invalid_value=invalid_value):
+                with self.assertRaisesRegex(ValueError, "environment value"):
+                    self.module.validate_fuzzer_env_entry(
+                        "CUSTOM_SETTING", invalid_value
+                    )
+
+        base = {
+            "TARGET_REPO_URL": "https://github.com/example/target",
+            "TARGET_COMMIT": "a" * 40,
+            "BENCHMARK_TYPE": "property",
+            "INSTANCE_TYPE": "c6a.4xlarge",
+            "INSTANCES_PER_FUZZER": "1",
+            "TIMEOUT_HOURS": "4",
+            "FUZZERS_JSON": '["foundry"]',
+        }
+        too_many = {f"CUSTOM_{index}": "x" for index in range(65)}
+        with self.assertRaisesRegex(ValueError, "at most 64 entries"):
+            self.module.validate_benchmark_inputs(
+                {**base, "FUZZER_ENV_JSON": json.dumps(too_many)}
+            )
+
+        for boundary in (request, terraform):
+            self.assertIn("at most 64 entries", boundary)
+        self.assertIn(
+            "from scripts.benchmark_run_state import "
+            "validate_fuzzer_env_map",
+            benchmark,
+        )
+        self.assertIn("validate_fuzzer_env_map(obj)", benchmark)
+        self.assertIn('regex("^[A-Z][A-Z0-9_]{0,63}$"', terraform)
+        self.assertIn("length(value) <= 2000", terraform)
+        self.assertIn("cannot contain CR, LF, double quotes", terraform)
+        self.assertIn("fuzzer_env_b64", infrastructure)
+        self.assertIn(
+            "for key, value in local.merged_fuzzer_env : key => base64encode(value)",
+            infrastructure,
+        )
+        self.assertIn("base64encode(var.target_repo_url)", infrastructure)
+        self.assertIn(
+            '"fuzzers/foundry/throughput-progress.patch"',
+            infrastructure,
+        )
+        self.assertIn(
+            'filesha256("${path.module}/../${source}")',
+            infrastructure,
+        )
+        self.assertIn("decode_b64_env SCFUZZBENCH_REPO_URL", user_data)
+        self.assertNotIn('export ${key}="${value}"', user_data)
+
+        interpolations = re.findall(r"(?<!\$)\$\{([^}]+)\}", user_data)
+        self.assertTrue(interpolations)
+        for interpolation in interpolations:
+            with self.subTest(interpolation=interpolation):
+                self.assertTrue(
+                    interpolation.endswith("_b64") or interpolation == "key",
+                    f"raw user-data template scalar: {interpolation}",
+                )
+
+        self.assertIn(
+            'can(regex("^[a-z0-9][a-z0-9-]{0,63}$", fuzzer.key))',
+            terraform,
+        )
+        for fuzzer in ("echidna", "foundry", "medusa", "recon-fuzzer"):
+            self.assertIn(f'"fuzzers/{fuzzer}/install.sh"', infrastructure)
+            self.assertIn(f'"fuzzers/{fuzzer}/run.sh"', infrastructure)
+
     def test_corpus_overrides_must_be_safe_repo_relative_paths(self):
         root = Path(__file__).resolve().parents[2]
         request = (root / ".github/workflows/benchmark-request.yml").read_text()
@@ -478,7 +700,7 @@ class BenchmarkRunStateTests(unittest.TestCase):
                                 "FUZZER_ENV_JSON": json.dumps({key: unsafe}),
                             }
                         )
-        self.assertIn("validate_fuzzer_env_entry(k, v)", benchmark)
+        self.assertIn("validate_fuzzer_env_map(obj)", benchmark)
 
     def test_docs_match_opaque_run_and_protected_env_contracts(self):
         root = Path(__file__).resolve().parents[2]
@@ -562,24 +784,292 @@ class BenchmarkRunStateTests(unittest.TestCase):
             )
 
     def test_recovery_inputs_require_exact_identity_and_shared_bucket(self):
-        payload = {
+        commit = "a" * 40
+        tfvars = {
             "run_id": "gh-123-1",
             "terraform_backend_key": "runs/gh-123-1/terraform.tfstate",
             "existing_bucket_name": "shared-bucket",
+            "scfuzzbench_commit": commit,
         }
-        self.module.validate_recovery_inputs(
-            payload,
-            run_id="gh-123-1",
-            backend_key="runs/gh-123-1/terraform.tfstate",
-            bucket="shared-bucket",
+        metadata = {
+            "run_id": "gh-123-1",
+            "terraform_backend_key": "runs/gh-123-1/terraform.tfstate",
+            "existing_bucket_name": "shared-bucket",
+            "scfuzzbench_commit": commit,
+            "status": "reserved",
+        }
+        self.assertEqual(
+            commit,
+            self.module.validate_recovery_inputs(
+                tfvars,
+                metadata,
+                run_id="gh-123-1",
+                backend_key="runs/gh-123-1/terraform.tfstate",
+                bucket="shared-bucket",
+                expected_commit=commit,
+            ),
         )
-        foreign = dict(payload, run_id="gh-foreign-1")
+        foreign = dict(metadata, run_id="gh-foreign-1")
         with self.assertRaisesRegex(ValueError, "run_id"):
             self.module.validate_recovery_inputs(
+                tfvars,
                 foreign,
                 run_id="gh-123-1",
                 backend_key="runs/gh-123-1/terraform.tfstate",
                 bucket="shared-bucket",
+            )
+        with self.assertRaisesRegex(ValueError, "scfuzzbench_commit"):
+            self.module.validate_recovery_inputs(
+                tfvars,
+                dict(metadata, scfuzzbench_commit="b" * 40),
+                run_id="gh-123-1",
+                backend_key="runs/gh-123-1/terraform.tfstate",
+                bucket="shared-bucket",
+            )
+        with self.assertRaisesRegex(ValueError, "lowercase 40-character"):
+            self.module.validate_recovery_inputs(
+                dict(tfvars, scfuzzbench_commit="A" * 40),
+                metadata,
+                run_id="gh-123-1",
+                backend_key="runs/gh-123-1/terraform.tfstate",
+                bucket="shared-bucket",
+            )
+        with self.assertRaisesRegex(ValueError, "status"):
+            self.module.validate_recovery_inputs(
+                tfvars,
+                metadata,
+                run_id="gh-123-1",
+                backend_key="runs/gh-123-1/terraform.tfstate",
+                bucket="shared-bucket",
+                expected_status="running",
+            )
+
+    def test_provisioning_commit_must_be_current_main_or_ancestor(self):
+        old = "a" * 40
+        current = "b" * 40
+        ahead = {
+            "status": "ahead",
+            "base_commit": {"sha": old},
+            "merge_base_commit": {"sha": old},
+            "head_commit": {"sha": current},
+        }
+        self.module.validate_provisioning_commit(old, current, ahead)
+        self.module.validate_provisioning_commit(
+            current,
+            current,
+            {
+                "status": "identical",
+                "base_commit": {"sha": current},
+                "merge_base_commit": {"sha": current},
+                "head_commit": {"sha": current},
+            },
+        )
+        for comparison in (
+            {**ahead, "status": "diverged"},
+            {**ahead, "status": "behind"},
+            {**ahead, "merge_base_commit": {"sha": "c" * 40}},
+            {**ahead, "base_commit": {"sha": "c" * 40}},
+            {**ahead, "head_commit": {"sha": "c" * 40}},
+        ):
+            with self.subTest(comparison=comparison):
+                with self.assertRaisesRegex(ValueError, "commit|ancestor|base"):
+                    self.module.validate_provisioning_commit(
+                        old, current, comparison
+                    )
+        with self.assertRaisesRegex(ValueError, "lowercase 40-character"):
+            self.module.validate_provisioning_commit(
+                "main", current, ahead
+            )
+
+    def test_failure_finalization_is_idempotent_only_when_reservation_absent(self):
+        args = mock.Mock(
+            bucket="shared-bucket",
+            run_id="gh-123-1",
+            workflow_url="https://github.com/example/repo/actions/runs/1",
+            output="metadata.json",
+        )
+        with (
+            mock.patch.object(self.module, "list_s3_keys", return_value=[]),
+            mock.patch.object(self.module, "cmd_mark_failed") as mark_failed,
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(
+                0, self.module.cmd_mark_failed_if_reserved(args)
+            )
+            mark_failed.assert_not_called()
+
+        active_key = "run-state/admissions/active/gh-123-1.json"
+        with (
+            mock.patch.object(
+                self.module, "list_s3_keys", return_value=[active_key]
+            ),
+            mock.patch.object(
+                self.module, "cmd_mark_failed", return_value=0
+            ) as mark_failed,
+        ):
+            self.assertEqual(
+                0, self.module.cmd_mark_failed_if_reserved(args)
+            )
+            mark_failed.assert_called_once_with(args)
+
+        with (
+            mock.patch.object(
+                self.module,
+                "list_s3_keys",
+                side_effect=RuntimeError("AWS unavailable"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "AWS unavailable"),
+        ):
+            self.module.cmd_mark_failed_if_reserved(args)
+
+    def test_active_reservation_recheck_requires_exact_key_and_surfaces_errors(self):
+        active_key = "run-state/admissions/active/gh-123-1.json"
+        with mock.patch.object(
+            self.module,
+            "list_s3_keys",
+            return_value=[f"{active_key}.stale"],
+        ):
+            self.assertFalse(
+                self.module.active_reservation_exists(
+                    "shared-bucket", "gh-123-1"
+                )
+            )
+        with mock.patch.object(
+            self.module, "list_s3_keys", return_value=[active_key]
+        ):
+            self.assertTrue(
+                self.module.active_reservation_exists(
+                    "shared-bucket", "gh-123-1"
+                )
+            )
+        with (
+            mock.patch.object(
+                self.module,
+                "list_s3_keys",
+                side_effect=RuntimeError("AWS unavailable"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "AWS unavailable"),
+        ):
+            self.module.active_reservation_exists(
+                "shared-bucket", "gh-123-1"
+            )
+
+    def test_failure_finalization_updates_exact_valid_reservation(self):
+        metadata = {
+            "run_id": "gh-123-1",
+            "terraform_backend_key": "runs/gh-123-1/terraform.tfstate",
+            "existing_bucket_name": "shared-bucket",
+            "scfuzzbench_commit": "a" * 40,
+            "status": "reserved",
+        }
+        args = mock.Mock(
+            bucket="shared-bucket",
+            run_id="gh-123-1",
+            workflow_url="https://github.com/example/repo/actions/runs/1",
+            output="metadata.json",
+        )
+        active_key = "run-state/admissions/active/gh-123-1.json"
+        with (
+            mock.patch.object(
+                self.module, "list_s3_keys", return_value=[active_key]
+            ),
+            mock.patch.object(
+                self.module, "_s3_read_json", return_value=metadata
+            ),
+            mock.patch.object(self.module, "_write_json") as write_json,
+            mock.patch.object(self.module, "_s3_write_file"),
+            mock.patch.object(self.module.time, "time", return_value=10_000),
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(
+                0, self.module.cmd_mark_failed_if_reserved(args)
+            )
+        updated = write_json.call_args.args[1]
+        self.assertEqual("provisioning-failed", updated["status"])
+        self.assertEqual(10_900, updated["orphan_after_epoch"])
+        self.assertEqual(args.workflow_url, updated["failure_workflow_url"])
+
+    def test_release_identity_and_budget_grammars_reject_injection(self):
+        self.assertEqual(
+            "gh-123-1", self.module.validate_run_id("gh-123-1")
+        )
+        self.assertEqual(
+            "a" * 32, self.module.validate_benchmark_uuid("a" * 32)
+        )
+        self.assertEqual(
+            4.0, self.module.validate_benchmark_hours("4", "report budget")
+        )
+        self.assertEqual("", self.module.normalize_excluded_fuzzers(""))
+        self.assertEqual(
+            "echidna,foundry",
+            self.module.normalize_excluded_fuzzers("foundry,echidna"),
+        )
+        self.assertEqual(
+            "recon-fuzzer",
+            self.module.normalize_excluded_fuzzers("recon-fuzzer"),
+        )
+        for run_id in ("$(touch pwned)", "bad\nrun", "bad/run", "a" * 81):
+            with self.subTest(run_id=run_id):
+                with self.assertRaises(ValueError):
+                    self.module.validate_run_id(run_id)
+        for benchmark_uuid in (
+            "A" * 32,
+            "a" * 31,
+            "g" * 32,
+            "a\n" + "b" * 30,
+        ):
+            with self.subTest(benchmark_uuid=benchmark_uuid):
+                with self.assertRaises(ValueError):
+                    self.module.validate_benchmark_uuid(benchmark_uuid)
+        for budget in ("nan", "inf", "0.1", "73", "4\nx=y"):
+            with self.subTest(budget=budget):
+                with self.assertRaises(ValueError):
+                    self.module.validate_benchmark_hours(
+                        budget, "report budget"
+                    )
+        for exclusions in (
+            "foundry;touch-pwned",
+            "$(touch pwned)",
+            "${MAKE_INJECTION}",
+            "foundry, medusa",
+            "foundry\tmedusa",
+            "foundry\nmedusa",
+            " foundry",
+            "--foundry",
+            "unknown",
+            "foundry,foundry",
+            ",foundry",
+            "foundry,",
+        ):
+            with self.subTest(exclusions=exclusions):
+                with self.assertRaises(ValueError):
+                    self.module.normalize_excluded_fuzzers(exclusions)
+
+    def test_recovery_metadata_bucket_and_expected_commit_are_mandatory(self):
+        commit = "a" * 40
+        base = {
+            "run_id": "gh-123-1",
+            "terraform_backend_key": "runs/gh-123-1/terraform.tfstate",
+            "existing_bucket_name": "shared-bucket",
+            "scfuzzbench_commit": commit,
+            "status": "reserved",
+        }
+        with self.assertRaisesRegex(ValueError, "artifact bucket"):
+            self.module.validate_recovery_inputs(
+                base,
+                {key: value for key, value in base.items() if key != "existing_bucket_name"},
+                run_id="gh-123-1",
+                backend_key="runs/gh-123-1/terraform.tfstate",
+                bucket="shared-bucket",
+            )
+        with self.assertRaisesRegex(ValueError, "expected"):
+            self.module.validate_recovery_inputs(
+                base,
+                base,
+                run_id="gh-123-1",
+                backend_key="runs/gh-123-1/terraform.tfstate",
+                bucket="shared-bucket",
+                expected_commit="b" * 40,
             )
 
     def test_state_outputs_are_mandatory_and_cross_run_state_is_rejected(self):
@@ -602,6 +1092,49 @@ class BenchmarkRunStateTests(unittest.TestCase):
                 outputs,
                 run_id="gh-123-1",
                 backend_key="runs/gh-123-1/terraform.tfstate",
+            )
+
+    def test_partial_apply_recovery_allows_missing_but_never_foreign_outputs(self):
+        self.module.validate_state_outputs(
+            {},
+            run_id="gh-123-1",
+            backend_key="runs/gh-123-1/terraform.tfstate",
+            allow_missing=True,
+        )
+        self.module.validate_state_outputs(
+            {
+                "terraform_backend_key": {
+                    "value": "runs/gh-123-1/terraform.tfstate"
+                }
+            },
+            run_id="gh-123-1",
+            backend_key="runs/gh-123-1/terraform.tfstate",
+            allow_missing=True,
+        )
+        with self.assertRaisesRegex(ValueError, "backend-key"):
+            self.module.validate_state_outputs(
+                {
+                    "terraform_backend_key": {
+                        "value": "runs/gh-foreign-1/terraform.tfstate"
+                    }
+                },
+                run_id="gh-123-1",
+                backend_key="runs/gh-123-1/terraform.tfstate",
+                allow_missing=True,
+            )
+        with self.assertRaisesRegex(ValueError, "run_id"):
+            self.module.validate_state_outputs(
+                {"run_id": {"value": "gh-foreign-1"}},
+                run_id="gh-123-1",
+                backend_key="runs/gh-123-1/terraform.tfstate",
+                allow_missing=True,
+            )
+        with self.assertRaisesRegex(ValueError, "benchmark_uuid"):
+            self.module.validate_state_outputs(
+                {"benchmark_uuid": {"value": "not-a-uuid"}},
+                run_id="gh-123-1",
+                backend_key="runs/gh-123-1/terraform.tfstate",
+                allow_missing=True,
             )
 
     def test_workflow_validates_before_reservation_and_guards_recovery(self):

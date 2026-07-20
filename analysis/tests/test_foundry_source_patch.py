@@ -94,9 +94,20 @@ class FoundrySourcePatchTests(unittest.TestCase):
         local_run = (ROOT / "scripts" / "local-run.sh").read_text(encoding="utf-8")
 
         self.assertIn("filesha256(local.foundry_throughput_patch_path)", terraform)
-        self.assertIn("foundry_source_patch", terraform)
-        self.assertIn("${foundry_source_patch}", user_data)
-        self.assertIn("SCFUZZBENCH_FOUNDRY_SOURCE_PATCH", user_data)
+        self.assertIn(
+            '"fuzzers/foundry/throughput-progress.patch" = '
+            '"foundry-throughput-progress.patch"',
+            terraform,
+        )
+        self.assertIn(
+            'filesha256("${path.module}/../${source}")',
+            terraform,
+        )
+        self.assertIn(
+            "export SCFUZZBENCH_FOUNDRY_SOURCE_PATCH="
+            "/opt/scfuzzbench/foundry-throughput-progress.patch",
+            user_data,
+        )
         self.assertIn("fuzzers/foundry/throughput-progress.patch", local_run)
 
 

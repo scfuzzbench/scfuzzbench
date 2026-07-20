@@ -4,8 +4,6 @@ set -euo pipefail
 source "${SCFUZZBENCH_COMMON_SH:-/opt/scfuzzbench/common.sh}"
 
 register_shutdown_trap
-
-prepare_workspace
 if [[ -z "${HOME:-}" ]]; then
   export HOME=/root
 fi
@@ -30,6 +28,7 @@ fi
 export SCFUZZBENCH_FUZZER_LABEL
 
 clone_target
+capture_target_workspace_anchor
 apply_benchmark_type
 build_target
 
@@ -83,50 +82,57 @@ run_medusa_with_effective_config() (
   fi
 
   local medusa_effective_config=""
-  local medusa_effective_write_config=""
-  trap 'rm -f -- "${medusa_effective_config:-}" "${medusa_effective_write_config:-}"' EXIT
+  cleanup_medusa_effective_config() {
+    if [[ -n "${medusa_effective_config:-}" ]]; then
+      remove_strict_descendant_file \
+        "${medusa_effective_config}" "${repo_dir}" \
+        "effective Medusa config" \
+        "${SCFUZZBENCH_TARGET_ROOT_ANCHOR}" \
+        "${SCFUZZBENCH_TARGET_ROOT_IDENTITY}" || true
+    fi
+  }
+  trap cleanup_medusa_effective_config EXIT
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  medusa_effective_config=$(mktemp "${medusa_config_dir}/.scfuzzbench-medusa.XXXXXX.json")
-  medusa_effective_write_config=$(mktemp "${medusa_config_dir}/.scfuzzbench-medusa-write.XXXXXX.json")
-
-  python3 - \
-    "${medusa_source_config}" \
-    "${medusa_effective_config}" \
-    "${medusa_effective_write_config}" \
-    "${medusa_prune_frequency}" <<'PY'
+  medusa_effective_config="${medusa_config_dir}/.scfuzzbench-medusa-${BASHPID}.json"
+  {
+    if [[ -n "${medusa_source_config}" ]]; then
+      read_strict_descendant_file \
+        "${medusa_source_config}" "${repo_dir}" \
+        "${SCFUZZBENCH_TARGET_ROOT_ANCHOR}" \
+        "${SCFUZZBENCH_TARGET_ROOT_IDENTITY}"
+    else
+      printf '{}\n'
+    fi
+  } |
+    python3 -c "
 import json
-import os
 import sys
 
-source_path, output_path, temporary_path, raw_frequency = sys.argv[1:]
-if source_path:
-    with open(source_path, encoding="utf-8") as source:
-        config = json.load(source)
-else:
-    config = {}
+raw_frequency = sys.argv[1]
+config = json.load(sys.stdin)
 
 if not isinstance(config, dict):
-    raise SystemExit("Medusa config root must be a JSON object")
+    raise SystemExit('Medusa config root must be a JSON object')
 
-fuzzing = config.setdefault("fuzzing", {})
+fuzzing = config.setdefault('fuzzing', {})
 if not isinstance(fuzzing, dict):
-    raise SystemExit("Medusa config 'fuzzing' value must be a JSON object")
+    raise SystemExit('Medusa config fuzzing value must be a JSON object')
 
 frequency = int(raw_frequency)
 if frequency > 2**64 - 1:
-    raise SystemExit("MEDUSA_PRUNE_FREQUENCY exceeds Medusa's uint64 range")
-fuzzing["pruneFrequency"] = frequency
+    raise SystemExit('MEDUSA_PRUNE_FREQUENCY exceeds Medusa uint64 range')
+fuzzing['pruneFrequency'] = frequency
 
-with open(temporary_path, "w", encoding="utf-8") as output:
-    json.dump(config, output, indent=2)
-    output.write("\n")
-    output.flush()
-    os.fsync(output.fileno())
-os.replace(temporary_path, output_path)
-PY
+json.dump(config, sys.stdout, indent=2)
+sys.stdout.write('\\n')
+" "${medusa_prune_frequency}" |
+    write_strict_descendant_file \
+      "${medusa_effective_config}" "${repo_dir}" \
+      "${SCFUZZBENCH_TARGET_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_TARGET_ROOT_IDENTITY}"
   log "Medusa corpus pruning frequency: ${medusa_prune_frequency} minute(s) (0 disables the background pruner)."
 
   local -a cmd=(medusa fuzz --no-color)

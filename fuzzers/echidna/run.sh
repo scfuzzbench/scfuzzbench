@@ -4,8 +4,6 @@ set -euo pipefail
 source "${SCFUZZBENCH_COMMON_SH:-/opt/scfuzzbench/common.sh}"
 
 register_shutdown_trap
-
-prepare_workspace
 if [[ -z "${HOME:-}" ]]; then
   export HOME=/root
 fi
@@ -30,6 +28,7 @@ fi
 export SCFUZZBENCH_FUZZER_LABEL
 
 clone_target
+capture_target_workspace_anchor
 apply_benchmark_type
 
 if [[ "${SCFUZZBENCH_BENCHMARK_TYPE}" == "property" && -n "${ECHIDNA_CONFIG:-}" ]]; then

@@ -74,6 +74,7 @@ jobs:
               "AWS_SESSION_TOKEN",
               "SCFUZZBENCH_AWS_CREDS_ENV_FILE",
               "SCFUZZBENCH_AWS_CREDS_REFRESH_PID",
+              "SCFUZZBENCH_AWS_CREDS_REFRESH_PID_START_TICKS",
               "SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS",
               "SCFUZZBENCH_BENCHMARK_MANIFEST_B64",
               "SCFUZZBENCH_BENCHMARK_TYPE",
@@ -100,6 +101,7 @@ jobs:
               "SCFUZZBENCH_REPO_URL",
               "SCFUZZBENCH_ROOT",
               "SCFUZZBENCH_RUNNER_METRICS_PID",
+              "SCFUZZBENCH_RUNNER_METRICS_PID_START_TICKS",
               "SCFUZZBENCH_RUN_HEARTBEAT_SECONDS",
               "SCFUZZBENCH_RUN_ID",
               "SCFUZZBENCH_RUN_INDEX",
@@ -246,7 +248,7 @@ jobs:
               if (!obj || typeof obj !== "object" || Array.isArray(obj)) return fail("fuzzer_env_json must be a JSON object.");
 
               const keys = Object.keys(obj);
-              if (keys.length > 64) return fail("fuzzer_env_json has too many keys (max 64).");
+              if (keys.length > 64) return fail("fuzzer_env_json must contain at most 64 entries.");
               const protectedToolKeys = new Set([
                 "ECHIDNA_VERSION",
                 "ECHIDNA_CI_TOKEN",
@@ -276,6 +278,8 @@ jobs:
                 "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
               ]);
 
+              let aggregateUtf8Bytes = 0;
+              const utf8Encoder = new TextEncoder();
               for (const k of keys) {
                 if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(k)) return fail(`Invalid fuzzer env key: ${k}`);
                 if (
@@ -292,6 +296,7 @@ jobs:
                 const v = obj[k];
                 if (typeof v !== "string") return fail(`Env value for ${k} must be a string`);
                 if (v.length > 2000) return fail(`Env value for ${k} too long (max 2000 chars)`);
+                aggregateUtf8Bytes += utf8Encoder.encode(k).length + utf8Encoder.encode(v).length;
                 // Values are rendered into user-data as: export KEY="VALUE"
                 // Keep this conservative to avoid shell injection and quoting pitfalls.
                 if (/[\r\n"`$\\]/.test(v)) return fail(`Env value for ${k} contains a forbidden character`);
@@ -323,6 +328,9 @@ jobs:
                     /(^|\/)\.\.?(\/|$)/.test(v)
                   )
                 ) return fail(`${k} must be a safe repo-relative path without dot segments`);
+              }
+              if (aggregateUtf8Bytes > 4096) {
+                return fail("fuzzer_env_json keys and values must contain at most 4096 aggregate UTF-8 bytes");
               }
               return ok(JSON.stringify(obj));
             }

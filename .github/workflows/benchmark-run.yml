@@ -262,7 +262,21 @@ permissions:
   contents: read
 
 jobs:
+  authorize-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require trusted main ref
+        env:
+          GITHUB_REF_VALUE: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_VALUE}" != "refs/heads/main" ]]; then
+            echo "Privileged benchmark workflows may run only from refs/heads/main." >&2
+            exit 1
+          fi
+
   prepare-run:
+    needs: authorize-main
     runs-on: ubuntu-latest
     outputs:
       run_id: ${{ steps.identity.outputs.run_id }}
@@ -411,12 +425,13 @@ jobs:
           fi
 
   admission:
-    needs: prepare-run
+    needs: [authorize-main, prepare-run]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     concurrency:
       group: scfuzzbench-run-admission
       cancel-in-progress: false
+      queue: max
     env:
       AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
       MAX_CONCURRENT_RUNS: ${{ vars.SCFUZZBENCH_MAX_CONCURRENT_RUNS || '1' }}
@@ -499,6 +514,7 @@ jobs:
               "run_id": os.environ["RUN_ID"],
               "run_started_at_epoch": started,
               "terraform_backend_key": os.environ["TERRAFORM_BACKEND_KEY"],
+              "existing_bucket_name": os.environ["SCFUZZBENCH_BUCKET"],
               "target_repo_url": os.environ["TARGET_REPO_URL"],
               "target_commit": os.environ["TARGET_COMMIT"],
               "benchmark_type": os.environ["BENCHMARK_TYPE"],
@@ -596,12 +612,13 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   benchmark-run:
-    needs: [prepare-run, admission]
-    if: ${{ always() && needs.prepare-run.result == 'success' && (inputs.dry_run || needs.admission.result == 'success') }}
+    needs: [authorize-main, prepare-run, admission]
+    if: ${{ !cancelled() && needs.authorize-main.result == 'success' && needs.prepare-run.result == 'success' && (inputs.dry_run || needs.admission.result == 'success') }}
     runs-on: ubuntu-latest
     concurrency:
       group: scfuzzbench-run-${{ needs.prepare-run.outputs.run_id }}
       cancel-in-progress: false
+      queue: max
     outputs:
       run_id: ${{ steps.tf_outputs.outputs.run_id }}
       benchmark_uuid: ${{ steps.tf_outputs.outputs.benchmark_uuid }}
@@ -683,6 +700,31 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Revalidate reserved run after acquiring run lock
+        if: ${{ !inputs.dry_run }}
+        env:
+          EXPECTED_BACKEND_KEY: ${{ needs.prepare-run.outputs.terraform_backend_key }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          aws s3 cp \
+            "s3://${SCFUZZBENCH_BUCKET}/run-state/admissions/active/${RUN_ID}.json" \
+            "${RUNNER_TEMP}/active-metadata.json" \
+            --only-show-errors
+          aws s3 cp \
+            "s3://${SCFUZZBENCH_BUCKET}/run-state/runs/${RUN_ID}/cleanup.auto.tfvars.json" \
+            "${RUNNER_TEMP}/cleanup.auto.tfvars.json" \
+            --only-show-errors
+          python3 scripts/benchmark_run_state.py validate-recovery-inputs \
+            --tfvars-json "${RUNNER_TEMP}/cleanup.auto.tfvars.json" \
+            --metadata-json "${RUNNER_TEMP}/active-metadata.json" \
+            --run-id "${RUN_ID}" \
+            --backend-key "${EXPECTED_BACKEND_KEY}" \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --expected-commit "${EXPECTED_COMMIT}" \
+            --expected-status reserved
 
       - name: Ensure this run identity has no active instances
         if: ${{ !inputs.dry_run }}
@@ -1004,22 +1046,17 @@ jobs:
             python3 - <<'PY'
           import json
           import os
-          from scripts.benchmark_run_state import validate_fuzzer_env_entry
+          from scripts.benchmark_run_state import validate_fuzzer_env_map
 
           raw = os.environ["FUZZER_ENV_JSON"]
           try:
               obj = json.loads(raw)
           except Exception as e:
               raise SystemExit(f"Invalid fuzzer_env_json: {e}")
-          if not isinstance(obj, dict):
-              raise SystemExit("fuzzer_env_json must be a JSON object")
-          if len(obj) > 64:
-              raise SystemExit("fuzzer_env_json has too many keys (max 64)")
-          for k, v in obj.items():
-              try:
-                  validate_fuzzer_env_entry(k, v)
-              except ValueError as exc:
-                  raise SystemExit(str(exc)) from exc
+          try:
+              validate_fuzzer_env_map(obj)
+          except ValueError as exc:
+              raise SystemExit(str(exc)) from exc
           PY
           fi
 
@@ -1222,21 +1259,6 @@ jobs:
             --bucket "${SCFUZZBENCH_BUCKET}" \
             --manifest preliminary_run.json
 
-      - name: Record recoverable provisioning failure
-        if: ${{ failure() && !inputs.dry_run && needs.admission.result == 'success' }}
-        env:
-          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
-          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set +e
-          if [[ -f scripts/benchmark_run_state.py ]]; then
-            python3 scripts/benchmark_run_state.py mark-failed \
-              --bucket "${SCFUZZBENCH_BUCKET}" \
-              --run-id "${RUN_ID}" \
-              --workflow-url "${WORKFLOW_URL}" \
-              --output run-state-metadata.json
-          fi
-
       - name: Upload run metadata
         if: ${{ !inputs.dry_run }}
         uses: actions/upload-artifact@v4
@@ -1267,3 +1289,50 @@ jobs:
               echo "- Cleanup is asynchronous; this job does not wait for the fuzzing duration."
             } >> "${GITHUB_STEP_SUMMARY}"
           fi
+
+  finalize-failed-run:
+    needs: [authorize-main, prepare-run, admission, benchmark-run]
+    if: ${{ always() && !inputs.dry_run && needs.authorize-main.result == 'success' && needs.prepare-run.result == 'success' && (needs.admission.result != 'success' || needs.benchmark-run.result != 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: scfuzzbench-run-${{ needs.prepare-run.outputs.run_id }}
+      cancel-in-progress: false
+      queue: max
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
+      SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
+    steps:
+      - name: Checkout trusted main source
+        timeout-minutes: 5
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          url="https://codeload.github.com/${REPO}/tar.gz/${SHA}"
+          curl -fsSL "${url}" -o repo.tar.gz
+          topdir="$(tar -tzf repo.tar.gz | sed -n '1p' | cut -d/ -f1)"
+          tar -xzf repo.tar.gz
+          shopt -s dotglob
+          mv "${topdir}"/* .
+          rm -rf "${topdir}" repo.tar.gz
+
+      - name: Configure AWS credentials (keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Record recoverable provisioning failure
+        env:
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py mark-failed-if-reserved \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${RUN_ID}" \
+            --workflow-url "${WORKFLOW_URL}" \
+            --output run-state-metadata.json

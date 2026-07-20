@@ -78,8 +78,24 @@ variable "target_commit" {
 
 variable "scfuzzbench_commit" {
   type        = string
-  description = "Commit hash for the scfuzzbench repo (used in benchmark UUID)."
+  description = "Full lowercase immutable commit SHA for the canonical scfuzzbench repository."
   default     = ""
+
+  validation {
+    condition     = var.scfuzzbench_commit == "" || can(regex("^[0-9a-f]{40}$", var.scfuzzbench_commit))
+    error_message = "scfuzzbench_commit must be blank during static validation or a full lowercase 40-character commit SHA."
+  }
+}
+
+variable "scfuzzbench_repository" {
+  type        = string
+  description = "Canonical public scfuzzbench repository used for the immutable EC2 bootstrap."
+  default     = "https://github.com/scfuzzbench/scfuzzbench"
+
+  validation {
+    condition     = var.scfuzzbench_repository == "https://github.com/scfuzzbench/scfuzzbench"
+    error_message = "scfuzzbench_repository must be https://github.com/scfuzzbench/scfuzzbench."
+  }
 }
 
 variable "benchmark_type" {
@@ -348,6 +364,34 @@ variable "custom_fuzzer_definitions" {
   }))
   description = "Additional fuzzer definitions to include (local only)."
   default     = []
+
+  validation {
+    condition     = length(var.custom_fuzzer_definitions) == 0
+    error_message = "custom_fuzzer_definitions are local-only and cannot be deployed through the cloud Terraform module."
+  }
+
+  validation {
+    condition = (
+      length(var.custom_fuzzer_definitions) ==
+      length(distinct([for fuzzer in var.custom_fuzzer_definitions : fuzzer.key]))
+      ) && alltrue([
+        for fuzzer in var.custom_fuzzer_definitions :
+        can(regex("^[a-z0-9][a-z0-9-]{0,63}$", fuzzer.key)) &&
+        !contains(["echidna", "foundry", "medusa", "recon-fuzzer"], fuzzer.key)
+    ])
+    error_message = "Custom fuzzer keys must be unique, must match ^[a-z0-9][a-z0-9-]{0,63}$, and must not shadow built-in fuzzers."
+  }
+
+  validation {
+    condition = alltrue([
+      for fuzzer in var.custom_fuzzer_definitions :
+      can(regex("^fuzzers/[A-Za-z0-9_.+-]+(/[A-Za-z0-9_.+-]+)*/install\\.sh$", fuzzer.install_path)) &&
+      can(regex("^fuzzers/[A-Za-z0-9_.+-]+(/[A-Za-z0-9_.+-]+)*/run\\.sh$", fuzzer.run_path)) &&
+      length(regexall("(^|/)\\.\\.?(/|$)", fuzzer.install_path)) == 0 &&
+      length(regexall("(^|/)\\.\\.?(/|$)", fuzzer.run_path)) == 0
+    ])
+    error_message = "Custom fuzzer scripts must be safe repo-relative fuzzers/.../install.sh and fuzzers/.../run.sh paths."
+  }
 }
 
 variable "fuzzers" {
@@ -362,12 +406,56 @@ variable "fuzzers" {
     ])
     error_message = "fuzzers must contain unique fuzzer keys matching ^[a-z0-9][a-z0-9-]{0,63}$."
   }
+
+  validation {
+    condition = alltrue([
+      for fuzzer in var.fuzzers :
+      contains(["echidna", "foundry", "medusa", "recon-fuzzer"], fuzzer)
+    ])
+    error_message = "fuzzers may contain only the built-in cloud fuzzers: echidna, foundry, medusa, and recon-fuzzer."
+  }
 }
 
 variable "fuzzer_env" {
   type        = map(string)
   description = "Fuzzer environment variable overrides passed to fuzzer run scripts."
   default     = {}
+
+  validation {
+    condition     = length(var.fuzzer_env) <= 64
+    error_message = "fuzzer_env must contain at most 64 entries."
+  }
+
+  validation {
+    condition = sum(concat(
+      [0],
+      [
+        for key, value in var.fuzzer_env :
+        (length(base64encode(key)) * 3 / 4) -
+        length(regexall("=", base64encode(key))) +
+        (length(base64encode(value)) * 3 / 4) -
+        length(regexall("=", base64encode(value)))
+      ]
+    )) <= 4096
+    error_message = "fuzzer_env keys and values must contain at most 4096 aggregate UTF-8 bytes."
+  }
+
+  validation {
+    condition = alltrue([
+      for key in keys(var.fuzzer_env) :
+      can(regex("^[A-Z][A-Z0-9_]{0,63}$", key))
+    ])
+    error_message = "fuzzer_env keys must match ^[A-Z][A-Z0-9_]{0,63}$."
+  }
+
+  validation {
+    condition = alltrue([
+      for value in values(var.fuzzer_env) :
+      length(value) <= 2000 &&
+      length(regexall("[\\r\\n\"`$\\\\]", value)) == 0
+    ])
+    error_message = "fuzzer_env values must be at most 2000 characters and cannot contain CR, LF, double quotes, backticks, dollar signs, or backslashes."
+  }
 
   validation {
     condition = length(setintersection(toset(keys(var.fuzzer_env)), toset([
@@ -420,6 +508,7 @@ variable "fuzzer_env" {
       "AWS_SESSION_TOKEN",
       "SCFUZZBENCH_AWS_CREDS_ENV_FILE",
       "SCFUZZBENCH_AWS_CREDS_REFRESH_PID",
+      "SCFUZZBENCH_AWS_CREDS_REFRESH_PID_START_TICKS",
       "SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS",
       "SCFUZZBENCH_BENCHMARK_MANIFEST_B64",
       "SCFUZZBENCH_BENCHMARK_TYPE",
@@ -445,6 +534,7 @@ variable "fuzzer_env" {
       "SCFUZZBENCH_REPO_URL",
       "SCFUZZBENCH_ROOT",
       "SCFUZZBENCH_RUNNER_METRICS_PID",
+      "SCFUZZBENCH_RUNNER_METRICS_PID_START_TICKS",
       "SCFUZZBENCH_RUN_HEARTBEAT_SECONDS",
       "SCFUZZBENCH_RUN_ID",
       "SCFUZZBENCH_RUN_INDEX",

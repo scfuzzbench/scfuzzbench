@@ -14,11 +14,25 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  authorize-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require trusted main ref
+        env:
+          GITHUB_REF_VALUE: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_VALUE}" != "refs/heads/main" ]]; then
+            echo "Privileged documentation workflows may run only from refs/heads/main." >&2
+            exit 1
+          fi
+
   build:
+    needs: authorize-main
     runs-on: ubuntu-latest
     env:
       AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
@@ -94,7 +108,7 @@ jobs:
           path: docs/.vitepress/dist
 
   deploy:
-    needs: build
+    needs: [authorize-main, build]
     runs-on: ubuntu-latest
     environment:
       name: github-pages

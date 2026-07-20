@@ -19,12 +19,27 @@ permissions:
   contents: read
 
 jobs:
+  authorize-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require trusted main ref
+        env:
+          GITHUB_REF_VALUE: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_VALUE}" != "refs/heads/main" ]]; then
+            echo "Privileged benchmark workflows may run only from refs/heads/main." >&2
+            exit 1
+          fi
+
   terraform:
+    needs: authorize-main
     runs-on: ubuntu-latest
     environment: ${{ inputs.action == 'destroy' && 'production' || 'plan' }}
     concurrency:
       group: scfuzzbench-run-${{ inputs.run_id }}
       cancel-in-progress: false
+      queue: max
     env:
       AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
       SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
@@ -67,40 +82,8 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Write backend config from secret
-        env:
-          TF_BACKEND_CONFIG: ${{ secrets.TF_BACKEND_CONFIG }}
-        run: |
-          set -euo pipefail
-          if [ -n "${TF_BACKEND_CONFIG}" ]; then
-            printf '%s' "${TF_BACKEND_CONFIG}" > infrastructure/backend.hcl
-          fi
-
-      - name: Ensure backend config exists
-        run: |
-          if [ ! -f infrastructure/backend.hcl ]; then
-            echo "Missing infrastructure/backend.hcl. Create it or set TF_BACKEND_CONFIG secret." >&2
-            exit 1
-          fi
-
-      - name: Terraform init (remote backend)
-        env:
-          RUN_ID: ${{ inputs.run_id }}
-        run: |
-          set -euo pipefail
-          backend_key=$(python3 - "${RUN_ID}" <<'PY'
-          import sys
-          from scripts.benchmark_run_state import backend_key_for
-
-          print(backend_key_for(sys.argv[1]))
-          PY
-          )
-          make terraform-init-backend \
-            BACKEND_CONFIG=backend.hcl \
-            BACKEND_KEY="${backend_key}" \
-            BACKEND_INIT_FLAGS="-reconfigure -input=false"
-
-      - name: Fetch same-run recovery inputs
+      - name: Fetch and verify trusted same-run recovery inputs
+        id: recovery
         env:
           RUN_ID: ${{ inputs.run_id }}
         run: |
@@ -114,36 +97,111 @@ jobs:
           )
           aws s3 cp \
             "s3://${SCFUZZBENCH_BUCKET}/run-state/runs/${RUN_ID}/cleanup.auto.tfvars.json" \
-            infrastructure/cleanup.auto.tfvars.json \
+            "${RUNNER_TEMP}/cleanup.auto.tfvars.json" \
             --only-show-errors
-          python3 scripts/benchmark_run_state.py validate-recovery-inputs \
-            --tfvars-json infrastructure/cleanup.auto.tfvars.json \
+          aws s3 cp \
+            "s3://${SCFUZZBENCH_BUCKET}/run-state/admissions/active/${RUN_ID}.json" \
+            "${RUNNER_TEMP}/active-metadata.json" \
+            --only-show-errors
+          python3 "${GITHUB_WORKSPACE}/scripts/benchmark_run_state.py" validate-recovery-inputs \
+            --tfvars-json "${RUNNER_TEMP}/cleanup.auto.tfvars.json" \
+            --metadata-json "${RUNNER_TEMP}/active-metadata.json" \
             --run-id "${RUN_ID}" \
             --backend-key "${backend_key}" \
-            --bucket "${SCFUZZBENCH_BUCKET}"
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --github-output "${GITHUB_OUTPUT}"
+          echo "backend_key=${backend_key}" >> "${GITHUB_OUTPUT}"
+
+      - name: Prove provisioning commit belongs to current main
+        env:
+          CURRENT_MAIN_COMMIT: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PROVISIONING_COMMIT: ${{ steps.recovery.outputs.scfuzzbench_commit }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          compare_url="${GITHUB_API_URL}/repos/${REPO}/compare/${PROVISIONING_COMMIT}...${CURRENT_MAIN_COMMIT}"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${compare_url}" \
+            -o "${RUNNER_TEMP}/provisioning-compare-raw.json"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${REPO}/commits/${CURRENT_MAIN_COMMIT}" \
+            -o "${RUNNER_TEMP}/current-main-commit.json"
+          jq --slurpfile head "${RUNNER_TEMP}/current-main-commit.json" \
+            '.head_commit = $head[0]' \
+            "${RUNNER_TEMP}/provisioning-compare-raw.json" \
+            > "${RUNNER_TEMP}/provisioning-compare.json"
+          python3 "${GITHUB_WORKSPACE}/scripts/benchmark_run_state.py" validate-provisioning-commit \
+            --provisioning-commit "${PROVISIONING_COMMIT}" \
+            --current-main-commit "${CURRENT_MAIN_COMMIT}" \
+            --compare-json "${RUNNER_TEMP}/provisioning-compare.json"
+
+      - name: Fetch exact provisioning source
+        env:
+          PROVISIONING_COMMIT: ${{ steps.recovery.outputs.scfuzzbench_commit }}
+          REPO: ${{ github.repository }}
+          TF_BACKEND_CONFIG: ${{ secrets.TF_BACKEND_CONFIG }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TF_BACKEND_CONFIG}" ]]; then
+            echo "TF_BACKEND_CONFIG must configure the pre-existing state backend." >&2
+            exit 1
+          fi
+          archive="${RUNNER_TEMP}/provisioning-source.tar.gz"
+          url="https://codeload.github.com/${REPO}/tar.gz/${PROVISIONING_COMMIT}"
+          curl -fsSL "${url}" -o "${archive}"
+          mkdir provisioning-source
+          tar -xzf "${archive}" -C provisioning-source --strip-components=1
+          test -d provisioning-source/infrastructure
+          cp "${RUNNER_TEMP}/cleanup.auto.tfvars.json" \
+            provisioning-source/infrastructure/cleanup.auto.tfvars.json
+          printf '%s' "${TF_BACKEND_CONFIG}" \
+            > provisioning-source/infrastructure/backend.hcl
+
+      - name: Initialize exact provisioning source and same-run state
+        env:
+          TERRAFORM_BACKEND_KEY: ${{ steps.recovery.outputs.backend_key }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=provisioning-source/infrastructure init \
+            -reconfigure \
+            -input=false \
+            -backend-config=backend.hcl \
+            -backend-config="key=${TERRAFORM_BACKEND_KEY}"
 
       - name: Require exact same-run state outputs
         env:
+          ACTION: ${{ inputs.action }}
+          EXPECTED_BACKEND_KEY: ${{ steps.recovery.outputs.backend_key }}
           RUN_ID: ${{ inputs.run_id }}
         run: |
           set -euo pipefail
-          backend_key=$(python3 - "${RUN_ID}" <<'PY'
-          import sys
-          from scripts.benchmark_run_state import backend_key_for
-
-          print(backend_key_for(sys.argv[1]))
-          PY
-          )
-          state_resources=$(terraform -chdir=infrastructure state list)
+          state_resources=$(terraform -chdir=provisioning-source/infrastructure state list)
           if [[ -z "${state_resources}" ]]; then
             echo "Run ${RUN_ID} has no state resources; use Benchmark Run Cleanup to release an empty reservation." >&2
             exit 1
           fi
-          terraform -chdir=infrastructure output -json > state-outputs.json
-          python3 scripts/benchmark_run_state.py validate-state-outputs \
+          validation_args=()
+          if [[ "${ACTION}" == "destroy" ]]; then
+            validation_args+=(--allow-missing)
+          fi
+          if ! terraform -chdir=provisioning-source/infrastructure output -json > state-outputs.json; then
+            if [[ "${ACTION}" != "destroy" ]]; then
+              exit 1
+            fi
+            echo '{}' > state-outputs.json
+          fi
+          python3 "${GITHUB_WORKSPACE}/scripts/benchmark_run_state.py" validate-state-outputs \
             --outputs-json state-outputs.json \
             --run-id "${RUN_ID}" \
-            --backend-key "${backend_key}"
+            --backend-key "${EXPECTED_BACKEND_KEY}" \
+            "${validation_args[@]}"
 
       - name: Build and verify Terraform ${{ inputs.action }} plan
         env:
@@ -152,24 +210,24 @@ jobs:
           set -euo pipefail
           case "${{ inputs.action }}" in
             plan)
-              terraform -chdir=infrastructure plan \
+              terraform -chdir=provisioning-source/infrastructure plan \
                 -input=false \
                 -var-file=cleanup.auto.tfvars.json \
                 -out=recovery.tfplan
-              terraform -chdir=infrastructure show -json recovery.tfplan > recovery.tfplan.json
-              python3 scripts/benchmark_run_state.py validate-plan \
+              terraform -chdir=provisioning-source/infrastructure show -json recovery.tfplan > recovery.tfplan.json
+              python3 "${GITHUB_WORKSPACE}/scripts/benchmark_run_state.py" validate-plan \
                 --plan-json recovery.tfplan.json \
                 --mode inspect \
                 --run-id "${RUN_ID}"
               ;;
             destroy)
-              terraform -chdir=infrastructure plan \
+              terraform -chdir=provisioning-source/infrastructure plan \
                 -destroy \
                 -input=false \
                 -var-file=cleanup.auto.tfvars.json \
                 -out=cleanup.tfplan
-              terraform -chdir=infrastructure show -json cleanup.tfplan > cleanup.tfplan.json
-              python3 scripts/benchmark_run_state.py validate-plan \
+              terraform -chdir=provisioning-source/infrastructure show -json cleanup.tfplan > cleanup.tfplan.json
+              python3 "${GITHUB_WORKSPACE}/scripts/benchmark_run_state.py" validate-plan \
                 --plan-json cleanup.tfplan.json \
                 --mode cleanup \
                 --run-id "${RUN_ID}"
@@ -178,7 +236,7 @@ jobs:
 
       - name: Apply the verified same-run destroy plan
         if: ${{ inputs.action == 'destroy' }}
-        run: terraform -chdir=infrastructure apply -auto-approve -input=false cleanup.tfplan
+        run: terraform -chdir=provisioning-source/infrastructure apply -auto-approve -input=false cleanup.tfplan
 
       - name: Release recovered run capacity
         if: ${{ inputs.action == 'destroy' }}
@@ -198,7 +256,7 @@ jobs:
             jq -r '.[]' <<<"${remaining}" >&2
             exit 1
           fi
-          python3 scripts/benchmark_run_state.py mark-cleaned \
+          python3 "${GITHUB_WORKSPACE}/scripts/benchmark_run_state.py" mark-cleaned \
             --bucket "${SCFUZZBENCH_BUCKET}" \
             --run-id "${RUN_ID}" \
             --reason manual-recovery \

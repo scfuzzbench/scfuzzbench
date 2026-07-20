@@ -61,7 +61,12 @@ class FoundryVersionScopeTests(unittest.TestCase):
                     terraform,
                 )
             ),
-            2,
+            1,
+        )
+        self.assertIn(
+            "foundry_version_b64              = "
+            "base64encode(local.foundry_release_version)",
+            terraform,
         )
 
 

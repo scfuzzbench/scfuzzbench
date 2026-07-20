@@ -25,11 +25,16 @@ from typing import Any, Iterable
 
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 BACKEND_KEY_RE = re.compile(r"^runs/([A-Za-z0-9][A-Za-z0-9._-]{0,79})/terraform\.tfstate$")
+SCFUZZBENCH_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+BENCHMARK_UUID_RE = re.compile(r"^[0-9a-f]{32}$")
 ACTIVE_PREFIX = "run-state/admissions/active/"
 RUN_STATE_PREFIX = "run-state/runs/"
 MAX_CONCURRENT_RUNS_LIMIT = 20
+FUZZER_ENV_MAX_ENTRIES = 64
+FUZZER_ENV_MAX_UTF8_BYTES = 4096
 HEARTBEAT_STALE_SECONDS = 30 * 60
 SUPPORTED_FUZZERS = {"echidna", "foundry", "medusa", "recon-fuzzer"}
+ACTIVE_RUN_STATUSES = {"reserved", "running", "provisioning-failed"}
 IMMUTABLE_FUZZER_ENV_KEYS = {
     "AWS_ACCESS_KEY_ID",
     "AWS_DEFAULT_REGION",
@@ -57,6 +62,7 @@ IMMUTABLE_FUZZER_ENV_KEYS = {
     "RECON_VERSION",
     "SCFUZZBENCH_AWS_CREDS_ENV_FILE",
     "SCFUZZBENCH_AWS_CREDS_REFRESH_PID",
+    "SCFUZZBENCH_AWS_CREDS_REFRESH_PID_START_TICKS",
     "SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS",
     "SCFUZZBENCH_BENCHMARK_MANIFEST_B64",
     "SCFUZZBENCH_BENCHMARK_TYPE",
@@ -84,6 +90,7 @@ IMMUTABLE_FUZZER_ENV_KEYS = {
     "SCFUZZBENCH_REPO_URL",
     "SCFUZZBENCH_ROOT",
     "SCFUZZBENCH_RUNNER_METRICS_PID",
+    "SCFUZZBENCH_RUNNER_METRICS_PID_START_TICKS",
     "SCFUZZBENCH_RUN_HEARTBEAT_SECONDS",
     "SCFUZZBENCH_RUN_ID",
     "SCFUZZBENCH_RUN_INDEX",
@@ -133,6 +140,7 @@ ALLOWED_RUN_RESOURCE_TYPES = TAGGABLE_RUN_RESOURCE_TYPES | {
     "aws_route_table_association",
     "local_sensitive_file",
     "random_id",
+    "terraform_data",
     "time_static",
     "tls_private_key",
 }
@@ -144,6 +152,51 @@ def validate_run_id(run_id: str) -> str:
             "run_id must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
         )
     return run_id
+
+
+def validate_scfuzzbench_commit(value: str) -> str:
+    if not SCFUZZBENCH_COMMIT_RE.fullmatch(value):
+        raise ValueError(
+            "scfuzzbench_commit must be an exact lowercase 40-character Git commit"
+        )
+    return value
+
+
+def validate_benchmark_uuid(value: str) -> str:
+    if not BENCHMARK_UUID_RE.fullmatch(value):
+        raise ValueError(
+            "benchmark_uuid must be an exact lowercase 32-character hexadecimal value"
+        )
+    return value
+
+
+def validate_benchmark_hours(value: Any, name: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if not math.isfinite(parsed) or not 0.25 <= parsed <= 72:
+        raise ValueError(f"{name} must be in [0.25, 72]")
+    return parsed
+
+
+def normalize_excluded_fuzzers(value: str) -> str:
+    if value == "":
+        return ""
+    if any(character.isspace() for character in value):
+        raise ValueError("exclude_fuzzers must not contain whitespace")
+    fuzzers = value.split(",")
+    if any(not fuzzer for fuzzer in fuzzers):
+        raise ValueError("exclude_fuzzers must be a comma-separated list")
+    unknown = sorted(set(fuzzers) - SUPPORTED_FUZZERS)
+    if unknown:
+        raise ValueError(
+            "exclude_fuzzers contains unsupported fuzzer key(s): "
+            + ", ".join(unknown)
+        )
+    if len(fuzzers) != len(set(fuzzers)):
+        raise ValueError("exclude_fuzzers must not contain duplicate keys")
+    return ",".join(sorted(fuzzers))
 
 
 def backend_key_for(run_id: str) -> str:
@@ -160,21 +213,84 @@ def validate_backend_key(run_id: str, backend_key: str) -> str:
 
 
 def validate_recovery_inputs(
-    payload: dict[str, Any],
+    tfvars_payload: dict[str, Any],
+    metadata_payload: dict[str, Any],
     *,
     run_id: str,
     backend_key: str,
     bucket: str,
-) -> None:
+    expected_commit: str = "",
+    expected_status: str = "",
+) -> str:
     validate_backend_key(run_id, backend_key)
-    if str(payload.get("run_id", "")) != run_id:
-        raise ValueError("recovery inputs do not match run_id")
-    if str(payload.get("terraform_backend_key", "")) != backend_key:
-        raise ValueError("recovery inputs do not match terraform backend key")
-    if str(payload.get("existing_bucket_name", "")) != bucket:
-        raise ValueError("recovery inputs do not match the shared artifact bucket")
-    if "fuzzer_env" in payload:
+    for name, payload in (
+        ("recovery inputs", tfvars_payload),
+        ("run metadata", metadata_payload),
+    ):
+        if str(payload.get("run_id", "")) != run_id:
+            raise ValueError(f"{name} do not match run_id")
+        if str(payload.get("terraform_backend_key", "")) != backend_key:
+            raise ValueError(f"{name} do not match terraform backend key")
+        if str(payload.get("existing_bucket_name", "")) != bucket:
+            raise ValueError(f"{name} do not match the shared artifact bucket")
+    if "fuzzer_env" in tfvars_payload:
         raise ValueError("recovery inputs must not persist fuzzer_env")
+    status = str(metadata_payload.get("status", ""))
+    if status not in ACTIVE_RUN_STATUSES:
+        raise ValueError(f"run metadata has invalid active status {status!r}")
+    if expected_status and status != expected_status:
+        raise ValueError(
+            f"run metadata status {status!r} does not match {expected_status!r}"
+        )
+    tfvars_commit = validate_scfuzzbench_commit(
+        str(tfvars_payload.get("scfuzzbench_commit", ""))
+    )
+    metadata_commit = validate_scfuzzbench_commit(
+        str(metadata_payload.get("scfuzzbench_commit", ""))
+    )
+    if tfvars_commit != metadata_commit:
+        raise ValueError(
+            "recovery inputs and run metadata do not match scfuzzbench_commit"
+        )
+    if expected_commit:
+        expected = validate_scfuzzbench_commit(expected_commit)
+        if tfvars_commit != expected:
+            raise ValueError(
+                "recovery inputs do not match the expected scfuzzbench_commit"
+            )
+    return tfvars_commit
+
+
+def validate_provisioning_commit(
+    provisioning_commit: str,
+    current_main_commit: str,
+    comparison: dict[str, Any],
+) -> None:
+    """Require a persisted provisioning commit to belong to current main.
+
+    The caller obtains ``comparison`` from GitHub's
+    ``compare/{provisioning_commit}...{current_main_commit}`` endpoint.  A
+    different provisioning commit is safe only when the current main commit is
+    ahead and the merge base is exactly the provisioning commit.
+    """
+
+    provisioning = validate_scfuzzbench_commit(provisioning_commit)
+    current = validate_scfuzzbench_commit(current_main_commit)
+    status = str(comparison.get("status", ""))
+    base_commit = str((comparison.get("base_commit") or {}).get("sha", ""))
+    merge_base = str((comparison.get("merge_base_commit") or {}).get("sha", ""))
+    head_commit = str((comparison.get("head_commit") or {}).get("sha", ""))
+    if base_commit != provisioning:
+        raise ValueError("GitHub comparison base does not match provisioning commit")
+    if merge_base != provisioning:
+        raise ValueError("provisioning commit is not an ancestor of current main")
+    if head_commit != current:
+        raise ValueError("GitHub comparison head does not match current main commit")
+    if provisioning == current:
+        if status != "identical":
+            raise ValueError("identical provisioning and main commits did not compare equal")
+    elif status != "ahead":
+        raise ValueError("provisioning commit is not an ancestor of current main")
 
 
 def validate_state_outputs(
@@ -183,21 +299,28 @@ def validate_state_outputs(
     run_id: str,
     backend_key: str,
     benchmark_uuid: str = "",
+    allow_missing: bool = False,
 ) -> None:
-    def output(name: str) -> Any:
+    def output(name: str) -> Any | None:
         item = outputs.get(name)
         if not isinstance(item, dict) or "value" not in item:
+            if allow_missing:
+                return None
             raise ValueError(f"state is missing required {name} output")
         return item["value"]
 
     validate_backend_key(run_id, backend_key)
-    if str(output("run_id")) != run_id:
+    state_run_id = output("run_id")
+    if state_run_id is not None and str(state_run_id) != run_id:
         raise ValueError("state run_id output does not match cleanup identity")
-    if str(output("terraform_backend_key")) != backend_key:
+    state_backend_key = output("terraform_backend_key")
+    if state_backend_key is not None and str(state_backend_key) != backend_key:
         raise ValueError("state backend-key output does not match cleanup identity")
-    actual_uuid = str(output("benchmark_uuid"))
-    if not re.fullmatch(r"[0-9a-f]{32}", actual_uuid):
-        raise ValueError("state benchmark_uuid output is invalid")
+    raw_uuid = output("benchmark_uuid")
+    if raw_uuid is None:
+        return
+    actual_uuid = str(raw_uuid)
+    validate_benchmark_uuid(actual_uuid)
     if benchmark_uuid and actual_uuid != benchmark_uuid:
         raise ValueError("state benchmark_uuid output does not match run metadata")
 
@@ -362,6 +485,25 @@ def validate_fuzzer_env_entry(key: Any, env_value: Any) -> None:
             raise ValueError(
                 f"{key} must be a safe repo-relative path without dot segments"
             )
+
+
+def validate_fuzzer_env_map(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError("fuzzer_env_json must be a JSON object")
+    if len(value) > FUZZER_ENV_MAX_ENTRIES:
+        raise ValueError(
+            f"fuzzer_env_json must contain at most {FUZZER_ENV_MAX_ENTRIES} entries"
+        )
+    aggregate_bytes = 0
+    for key, env_value in value.items():
+        validate_fuzzer_env_entry(key, env_value)
+        aggregate_bytes += len(key.encode("utf-8")) + len(env_value.encode("utf-8"))
+    if aggregate_bytes > FUZZER_ENV_MAX_UTF8_BYTES:
+        raise ValueError(
+            "fuzzer_env_json keys and values must contain at most "
+            f"{FUZZER_ENV_MAX_UTF8_BYTES} aggregate UTF-8 bytes"
+        )
+    return value
 
 
 def validate_benchmark_inputs(values: dict[str, str]) -> dict[str, Any]:
@@ -596,11 +738,7 @@ def validate_benchmark_inputs(values: dict[str, str]) -> dict[str, Any]:
             parsed_env = json.loads(fuzzer_env_raw)
         except json.JSONDecodeError as exc:
             raise ValueError(f"fuzzer_env_json must be valid JSON: {exc}") from exc
-        if not isinstance(parsed_env, dict) or len(parsed_env) > 64:
-            raise ValueError("fuzzer_env_json must be an object with at most 64 keys")
-        for key, env_value in parsed_env.items():
-            validate_fuzzer_env_entry(key, env_value)
-        fuzzer_env = parsed_env
+        fuzzer_env = validate_fuzzer_env_map(parsed_env)
 
     return {
         "fuzzers": fuzzers,
@@ -855,6 +993,18 @@ def cmd_normalize_tools(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_normalize_excluded_fuzzers(args: argparse.Namespace) -> int:
+    raw = os.environ.get("EXCLUDE_FUZZERS", "")
+    normalized = normalize_excluded_fuzzers(raw)
+    if args.require_canonical and raw != normalized:
+        raise ValueError("exclude_fuzzers is not in canonical sorted form")
+    if args.github_output:
+        with Path(args.github_output).open("a") as output:
+            output.write(f"exclude_fuzzers={normalized}\n")
+    print(normalized)
+    return 0
+
+
 def cmd_admit(args: argparse.Namespace) -> int:
     reservation_path = Path(args.reservation_file)
     reservation = json.loads(reservation_path.read_text())
@@ -900,7 +1050,12 @@ def _update_metadata(
 ) -> dict[str, Any]:
     active_key = f"{ACTIVE_PREFIX}{validate_run_id(run_id)}.json"
     metadata = _s3_read_json(bucket, active_key)
+    if str(metadata.get("run_id", "")) != run_id:
+        raise ValueError("active run metadata does not match run_id")
     validate_backend_key(run_id, str(metadata["terraform_backend_key"]))
+    if str(metadata.get("existing_bucket_name", "")) != bucket:
+        raise ValueError("active run metadata does not match the shared artifact bucket")
+    validate_scfuzzbench_commit(str(metadata.get("scfuzzbench_commit", "")))
     metadata.update(updates)
     metadata["updated_at_epoch"] = int(time.time())
     _write_json(output_path, metadata)
@@ -944,9 +1099,51 @@ def cmd_mark_failed(args: argparse.Namespace) -> int:
     return 0
 
 
+def active_reservation_exists(bucket: str, run_id: str) -> bool:
+    active_key = f"{ACTIVE_PREFIX}{validate_run_id(run_id)}.json"
+    return active_key in list_s3_keys(bucket, active_key)
+
+
+def cmd_reservation_exists(args: argparse.Namespace) -> int:
+    run_id = validate_run_id(args.run_id)
+    active = active_reservation_exists(args.bucket, run_id)
+    if args.github_output:
+        with Path(args.github_output).open("a") as output:
+            output.write(f"active={str(active).lower()}\n")
+    print(json.dumps({"active": active, "run_id": run_id}, sort_keys=True))
+    return 0
+
+
+def cmd_mark_failed_if_reserved(args: argparse.Namespace) -> int:
+    run_id = validate_run_id(args.run_id)
+    if not active_reservation_exists(args.bucket, run_id):
+        print(
+            json.dumps(
+                {
+                    "marked_failed": False,
+                    "reason": "no-active-reservation",
+                    "run_id": run_id,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    return cmd_mark_failed(args)
+
+
 def cmd_discover_cleanup(args: argparse.Namespace) -> int:
     now_epoch = args.now_epoch or int(time.time())
-    keys = list_s3_keys(args.bucket, ACTIVE_PREFIX)
+    requested_run_id = (
+        validate_run_id(args.requested_run_id) if args.requested_run_id else ""
+    )
+    force_run_id = validate_run_id(args.force_run_id) if args.force_run_id else ""
+    if force_run_id and requested_run_id and force_run_id != requested_run_id:
+        raise ValueError("forced cleanup run_id does not match requested run_id")
+    selected_run_id = force_run_id or requested_run_id
+    if selected_run_id:
+        keys = [f"{ACTIVE_PREFIX}{selected_run_id}.json"]
+    else:
+        keys = list_s3_keys(args.bucket, ACTIVE_PREFIX)
     instances = active_benchmark_instances()
     instances_by_run: dict[str, list[dict[str, Any]]] = {}
     for instance in instances:
@@ -961,35 +1158,58 @@ def cmd_discover_cleanup(args: argparse.Namespace) -> int:
             continue
         try:
             metadata = _s3_read_json(args.bucket, key)
+            if str(metadata.get("run_id", "")) != run_id:
+                raise ValueError("run metadata does not match reservation key identity")
             validate_backend_key(run_id, str(metadata["terraform_backend_key"]))
-            benchmark_uuid = str(metadata.get("benchmark_uuid", ""))
-            final_count = 0
-            if benchmark_uuid:
-                final_count = sum(
-                    item.endswith(".zip")
-                    for item in list_s3_keys(
-                        args.bucket, f"logs/{run_id}/{benchmark_uuid}/"
-                    )
-                )
-            reason = cleanup_eligibility(
-                metadata,
-                active_instance_count=len(instances_by_run.get(run_id, [])),
-                final_archive_count=final_count,
-                now_epoch=now_epoch,
-                latest_heartbeat_epoch=latest_run_heartbeat_epoch(
-                    args.bucket, run_id
-                ),
+            if str(metadata.get("existing_bucket_name", "")) != args.bucket:
+                raise ValueError("run metadata does not match the shared artifact bucket")
+            provisioning_commit = validate_scfuzzbench_commit(
+                str(metadata.get("scfuzzbench_commit", ""))
             )
+            status = str(metadata.get("status", ""))
+            if status not in ACTIVE_RUN_STATUSES:
+                raise ValueError(f"run metadata has invalid active status {status!r}")
+            benchmark_uuid = str(metadata.get("benchmark_uuid", ""))
+            if benchmark_uuid:
+                validate_benchmark_uuid(benchmark_uuid)
+            elif status != "provisioning-failed":
+                raise ValueError(
+                    "run metadata may omit benchmark_uuid only after provisioning failure"
+                )
+            if force_run_id:
+                reason = "forced-orphan-cleanup"
+            else:
+                final_count = 0
+                if benchmark_uuid:
+                    final_count = sum(
+                        item.endswith(".zip")
+                        for item in list_s3_keys(
+                            args.bucket, f"logs/{run_id}/{benchmark_uuid}/"
+                        )
+                    )
+                reason = cleanup_eligibility(
+                    metadata,
+                    active_instance_count=len(instances_by_run.get(run_id, [])),
+                    final_archive_count=final_count,
+                    now_epoch=now_epoch,
+                    latest_heartbeat_epoch=latest_run_heartbeat_epoch(
+                        args.bucket, run_id
+                    ),
+                )
             if reason:
                 include.append(
                     {
                         "run_id": run_id,
                         "terraform_backend_key": metadata["terraform_backend_key"],
+                        "scfuzzbench_commit": provisioning_commit,
                         "benchmark_uuid": benchmark_uuid,
+                        "status": status,
                         "reason": reason,
                     }
                 )
         except Exception as exc:
+            if force_run_id:
+                raise
             print(f"Skipping malformed cleanup reservation {key}: {exc}", file=sys.stderr)
     print(json.dumps({"include": include}, separators=(",", ":"), sort_keys=True))
     return 0
@@ -1089,14 +1309,32 @@ def cmd_validate_inputs(args: argparse.Namespace) -> int:
 
 
 def cmd_validate_recovery_inputs(args: argparse.Namespace) -> int:
-    payload = json.loads(Path(args.tfvars_json).read_text())
-    validate_recovery_inputs(
-        payload,
+    tfvars_payload = json.loads(Path(args.tfvars_json).read_text())
+    metadata_payload = json.loads(Path(args.metadata_json).read_text())
+    commit = validate_recovery_inputs(
+        tfvars_payload,
+        metadata_payload,
         run_id=args.run_id,
         backend_key=args.backend_key,
         bucket=args.bucket,
+        expected_commit=args.expected_commit,
+        expected_status=args.expected_status,
     )
+    if args.github_output:
+        with Path(args.github_output).open("a") as output:
+            output.write(f"scfuzzbench_commit={commit}\n")
     print("Recovery inputs match the immutable run identity.")
+    return 0
+
+
+def cmd_validate_provisioning_commit(args: argparse.Namespace) -> int:
+    comparison = json.loads(Path(args.compare_json).read_text())
+    validate_provisioning_commit(
+        args.provisioning_commit,
+        args.current_main_commit,
+        comparison,
+    )
+    print("Provisioning commit is current main or an ancestor of current main.")
     return 0
 
 
@@ -1107,6 +1345,7 @@ def cmd_validate_state_outputs(args: argparse.Namespace) -> int:
         run_id=args.run_id,
         backend_key=args.backend_key,
         benchmark_uuid=args.benchmark_uuid,
+        allow_missing=args.allow_missing,
     )
     print("Terraform state outputs match the immutable run identity.")
     return 0
@@ -1126,6 +1365,13 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_tools = subparsers.add_parser("normalize-tools")
     normalize_tools.add_argument("--github-output", default="")
     normalize_tools.set_defaults(func=cmd_normalize_tools)
+
+    normalize_exclusions = subparsers.add_parser("normalize-excluded-fuzzers")
+    normalize_exclusions.add_argument("--github-output", default="")
+    normalize_exclusions.add_argument(
+        "--require-canonical", action="store_true"
+    )
+    normalize_exclusions.set_defaults(func=cmd_normalize_excluded_fuzzers)
 
     admit = subparsers.add_parser("admit")
     admit.add_argument("--bucket", required=True)
@@ -1147,9 +1393,26 @@ def build_parser() -> argparse.ArgumentParser:
     mark_failed.add_argument("--output", default="run-state-metadata.json")
     mark_failed.set_defaults(func=cmd_mark_failed)
 
+    mark_failed_if_reserved = subparsers.add_parser("mark-failed-if-reserved")
+    mark_failed_if_reserved.add_argument("--bucket", required=True)
+    mark_failed_if_reserved.add_argument("--run-id", required=True)
+    mark_failed_if_reserved.add_argument("--workflow-url", required=True)
+    mark_failed_if_reserved.add_argument(
+        "--output", default="run-state-metadata.json"
+    )
+    mark_failed_if_reserved.set_defaults(func=cmd_mark_failed_if_reserved)
+
+    reservation_exists = subparsers.add_parser("reservation-exists")
+    reservation_exists.add_argument("--bucket", required=True)
+    reservation_exists.add_argument("--run-id", required=True)
+    reservation_exists.add_argument("--github-output", default="")
+    reservation_exists.set_defaults(func=cmd_reservation_exists)
+
     discover = subparsers.add_parser("discover-cleanup")
     discover.add_argument("--bucket", required=True)
     discover.add_argument("--now-epoch", type=int, default=0)
+    discover.add_argument("--requested-run-id", default="")
+    discover.add_argument("--force-run-id", default="")
     discover.set_defaults(func=cmd_discover_cleanup)
 
     cleaned = subparsers.add_parser("mark-cleaned")
@@ -1164,16 +1427,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     recovery_inputs = subparsers.add_parser("validate-recovery-inputs")
     recovery_inputs.add_argument("--tfvars-json", required=True)
+    recovery_inputs.add_argument("--metadata-json", required=True)
     recovery_inputs.add_argument("--run-id", required=True)
     recovery_inputs.add_argument("--backend-key", required=True)
     recovery_inputs.add_argument("--bucket", required=True)
+    recovery_inputs.add_argument("--expected-commit", default="")
+    recovery_inputs.add_argument("--expected-status", default="")
+    recovery_inputs.add_argument("--github-output", default="")
     recovery_inputs.set_defaults(func=cmd_validate_recovery_inputs)
+
+    provisioning_commit = subparsers.add_parser("validate-provisioning-commit")
+    provisioning_commit.add_argument("--provisioning-commit", required=True)
+    provisioning_commit.add_argument("--current-main-commit", required=True)
+    provisioning_commit.add_argument("--compare-json", required=True)
+    provisioning_commit.set_defaults(func=cmd_validate_provisioning_commit)
 
     state_outputs = subparsers.add_parser("validate-state-outputs")
     state_outputs.add_argument("--outputs-json", required=True)
     state_outputs.add_argument("--run-id", required=True)
     state_outputs.add_argument("--backend-key", required=True)
     state_outputs.add_argument("--benchmark-uuid", default="")
+    state_outputs.add_argument("--allow-missing", action="store_true")
     state_outputs.set_defaults(func=cmd_validate_state_outputs)
 
     validate_plan = subparsers.add_parser("validate-plan")

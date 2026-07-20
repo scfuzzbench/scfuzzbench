@@ -4,8 +4,6 @@ set -euo pipefail
 source /opt/scfuzzbench/common.sh
 
 register_shutdown_trap
-
-prepare_workspace
 export PATH="/root/.foundry/bin:${PATH}"
 
 require_env RECON_VERSION
@@ -14,6 +12,7 @@ SCFUZZBENCH_FUZZER_LABEL="recon-v${recon_version}"
 export SCFUZZBENCH_FUZZER_LABEL
 
 clone_target
+capture_target_workspace_anchor
 apply_benchmark_type
 
 if [[ "${SCFUZZBENCH_BENCHMARK_TYPE}" == "property" && -n "${ECHIDNA_CONFIG:-}" ]]; then
