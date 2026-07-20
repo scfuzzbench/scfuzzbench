@@ -190,16 +190,19 @@ else:
         *,
         source: str = "",
         extra_env: dict[str, str] | None = None,
+        create_default_corpus: bool = True,
+        local_mode: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         workdir = root / "work"
         logdir = root / "logs"
         target = workdir / "target"
         target.mkdir(parents=True, exist_ok=True)
         corpus = target / "corpus"
-        corpus.mkdir(parents=True, exist_ok=True)
+        if create_default_corpus:
+            corpus.mkdir(parents=True, exist_ok=True)
         env = {
             **os.environ,
-            "SCFUZZBENCH_LOCAL_MODE": "1",
+            "SCFUZZBENCH_LOCAL_MODE": "1" if local_mode else "",
             "SCFUZZBENCH_ROOT": str(root),
             "SCFUZZBENCH_WORKDIR": str(workdir),
             "SCFUZZBENCH_LOG_DIR": str(logdir),
@@ -313,6 +316,27 @@ output.write_bytes(b"PK\\x05\\x06" + b"\\x00" * 18)
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual([], list(corpus.iterdir()))
             self.assertFalse((root / "logs" / "seed_corpus.json").exists())
+
+    def test_empty_default_creates_nested_corpus_when_parent_is_absent(self):
+        for local_mode in (False, True):
+            with self.subTest(local_mode=local_mode):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    corpus = root / "work" / "target" / "corpus" / "echidna"
+
+                    result = self.run_prepare(
+                        root,
+                        extra_env={"SCFUZZBENCH_CORPUS_DIR": str(corpus)},
+                        create_default_corpus=False,
+                        local_mode=local_mode,
+                    )
+
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertTrue(corpus.is_dir())
+                    self.assertEqual([], list(corpus.iterdir()))
+                    self.assertFalse(
+                        (root / "logs" / "seed_corpus.json").exists()
+                    )
 
     def test_corpus_reset_refuses_paths_outside_target_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:

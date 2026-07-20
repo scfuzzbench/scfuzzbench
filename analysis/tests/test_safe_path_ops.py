@@ -657,6 +657,45 @@ print(
             self.assertEqual("keep", sentinel.read_text(encoding="utf-8"))
             self.assertTrue((root / "parent-saved" / "victim").is_dir())
 
+    def test_remove_missing_parent_is_noop_but_symlink_parent_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing_parent = root / "corpus"
+
+            for command in ("remove-file", "remove-tree"):
+                with self.subTest(command=command):
+                    result = self.run_helper(
+                        command,
+                        [
+                            *self.root_args(root),
+                            "--path",
+                            str(missing_parent / "echidna" / "stale"),
+                        ],
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(b"", result.stderr)
+                    self.assertFalse(missing_parent.exists())
+
+            outside = root / "outside"
+            outside_victim = outside / "echidna" / "stale"
+            outside_victim.mkdir(parents=True)
+            sentinel = outside_victim / "sentinel"
+            sentinel.write_text("keep", encoding="utf-8")
+            missing_parent.symlink_to(outside, target_is_directory=True)
+
+            rejected = self.run_helper(
+                "remove-tree",
+                [
+                    *self.root_args(root),
+                    "--path",
+                    str(missing_parent / "echidna" / "stale"),
+                ],
+            )
+
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertIn(b"safe path operation failed", rejected.stderr)
+            self.assertEqual("keep", sentinel.read_text(encoding="utf-8"))
+
     def test_read_rejects_name_swap_and_emits_no_unverified_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

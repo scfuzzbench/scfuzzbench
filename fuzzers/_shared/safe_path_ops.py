@@ -191,8 +191,9 @@ def _open_parent(
     parts: tuple[str, ...],
     *,
     create: bool = False,
+    missing_ok: bool = False,
     mode: int = 0o700,
-) -> Iterator[tuple[int, str]]:
+) -> Iterator[tuple[int, str] | None]:
     if not parts:
         raise SafePathError("operation requires a strict descendant")
     current = os.dup(root_fd)
@@ -202,6 +203,9 @@ def _open_parent(
                 child = os.open(component, DIRECTORY_FLAGS, dir_fd=current)
             except FileNotFoundError:
                 if not create:
+                    if missing_ok:
+                        yield None
+                        return
                     raise
                 os.mkdir(component, mode=mode, dir_fd=current)
                 child = os.open(component, DIRECTORY_FLAGS, dir_fd=current)
@@ -372,7 +376,11 @@ def _remove_tree_at(parent_fd: int, name: str) -> None:
 def _remove(args: argparse.Namespace, *, tree: bool) -> None:
     parts = _relative_parts(args.path, args.root_path, args.root_anchor)
     with _open_anchor(args.root_path, args.root_anchor, args.root_identity) as root_fd:
-        with _open_parent(root_fd, parts) as (parent_fd, name):
+        with _open_parent(root_fd, parts, missing_ok=True) as parent:
+            if parent is None:
+                _verify_anchor_path(args.root_anchor, root_fd)
+                return
+            parent_fd, name = parent
             _run_test_hook()
             _verify_anchor_path(args.root_anchor, root_fd)
             _verify_directory_path(

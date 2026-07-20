@@ -1521,6 +1521,7 @@ preliminary_read_active_owner() {
   local lock_file="${owner_file}.lock"
   local lock_fd
   local loop_pid loop_start capture_pid capture_start extra
+  [[ -f "${lock_file}" && ! -L "${lock_file}" ]] || return 1
   exec {lock_fd}<>"${lock_file}" || return 1
   flock "${lock_fd}" || {
     exec {lock_fd}>&-
