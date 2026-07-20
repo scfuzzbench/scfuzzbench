@@ -120,6 +120,87 @@ class WorkflowSafetyContractTests(unittest.TestCase):
             workflow("benchmark-preliminary.yml"),
         )
 
+    def test_s3_inspect_handles_empty_prefix_without_hiding_list_errors(self):
+        body = next(
+            body
+            for body in run_bodies(workflow("s3-inspect.yml"))
+            if "aws s3api list-objects-v2" in body
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            aws = temp / "aws"
+            aws.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == "s3api" ]]
+[[ "$2" == "list-objects-v2" ]]
+case "${FAKE_AWS_RESULT}" in
+  empty)
+    echo None
+    ;;
+  objects)
+    for index in $(seq -w 1 305); do
+      printf '2026-07-20T00:00:00Z\\t1\\tlogs/object-%s\\n' "${index}"
+    done
+    ;;
+  error)
+    echo "Access denied" >&2
+    exit 42
+    ;;
+esac
+"""
+            )
+            aws.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{temp}:{os.environ['PATH']}",
+                "SCFUZZBENCH_BUCKET": "benchmark-bucket",
+                "PREFIX": "logs/empty/",
+            }
+
+            empty = subprocess.run(
+                ["bash", "-c", body],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=temp,
+                env={**env, "FAKE_AWS_RESULT": "empty"},
+            )
+            self.assertEqual(0, empty.returncode, empty.stderr)
+            self.assertIn(
+                "No objects found under s3://benchmark-bucket/logs/empty/",
+                empty.stdout,
+            )
+            self.assertNotIn("None", empty.stdout)
+
+            objects = subprocess.run(
+                ["bash", "-c", body],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=temp,
+                env={**env, "FAKE_AWS_RESULT": "objects"},
+            )
+            self.assertEqual(0, objects.returncode, objects.stderr)
+            listing = [
+                line for line in objects.stdout.splitlines() if "\t" in line
+            ]
+            self.assertEqual(300, len(listing))
+            self.assertTrue(listing[0].endswith("logs/object-006"))
+            self.assertTrue(listing[-1].endswith("logs/object-305"))
+
+            error = subprocess.run(
+                ["bash", "-c", body],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=temp,
+                env={**env, "FAKE_AWS_RESULT": "error"},
+            )
+            self.assertEqual(42, error.returncode)
+            self.assertIn("Access denied", error.stderr)
+            self.assertNotIn("No objects found", error.stdout)
+
     def test_failure_finalization_is_cancellation_aware_and_idempotent(self):
         contents = workflow("benchmark-run.yml")
         blocks = job_blocks(contents)

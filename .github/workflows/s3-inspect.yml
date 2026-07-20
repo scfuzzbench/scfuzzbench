@@ -67,7 +67,19 @@ jobs:
         run: |
           set -euo pipefail
           echo "Listing s3://${SCFUZZBENCH_BUCKET}/${PREFIX}"
-          aws s3 ls --recursive "s3://${SCFUZZBENCH_BUCKET}/${PREFIX}" | tail -300
+          listing_file="$(mktemp)"
+          trap 'rm -f "${listing_file}"' EXIT
+          aws s3api list-objects-v2 \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --prefix "${PREFIX}" \
+            --query 'Contents[].[LastModified, Size, Key]' \
+            --output text \
+            --no-cli-pager > "${listing_file}"
+          if [[ ! -s "${listing_file}" ]] || grep -Fxq 'None' "${listing_file}"; then
+            echo "No objects found under s3://${SCFUZZBENCH_BUCKET}/${PREFIX}"
+          else
+            tail -n 300 "${listing_file}"
+          fi
 
       - name: Print object
         if: ${{ inputs.key != '' }}
