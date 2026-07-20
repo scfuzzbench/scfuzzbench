@@ -163,6 +163,25 @@ class PreliminaryRunnerShellTests(unittest.TestCase):
             )
         self.assertEqual("stale-token-ignored", result.stdout.strip())
 
+    def test_stop_before_preliminary_start_is_silent_and_creates_no_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "preliminary-checkpoints"
+            result = run_bash(
+                f"""
+                export SCFUZZBENCH_ROOT={shlex.quote(tmp)}
+                source {shlex.quote(str(COMMON_SH))}
+                prepare_workspace
+                stop_preliminary_snapshots
+                if [[ -e {shlex.quote(str(state_dir))} ]]; then
+                  echo preliminary-state-created
+                  exit 1
+                fi
+                echo stopped-before-start
+                """
+            )
+        self.assertEqual("stopped-before-start", result.stdout.strip())
+        self.assertEqual("", result.stderr)
+
     def test_atomic_owner_write_does_not_change_runner_umask(self):
         with tempfile.TemporaryDirectory() as tmp:
             owner = Path(tmp) / "preliminary-checkpoints" / "active.pid"

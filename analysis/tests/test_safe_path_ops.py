@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -7,7 +8,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 import zipfile
 
 
@@ -656,6 +659,98 @@ print(
             self.assertIn(b"safe path operation failed", result.stderr)
             self.assertEqual("keep", sentinel.read_text(encoding="utf-8"))
             self.assertTrue((root / "parent-saved" / "victim").is_dir())
+
+    def test_remove_missing_parent_is_noop_but_symlink_parent_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing_parent = root / "corpus"
+
+            for command in ("remove-file", "remove-tree"):
+                with self.subTest(command=command):
+                    result = self.run_helper(
+                        command,
+                        [
+                            *self.root_args(root),
+                            "--path",
+                            str(missing_parent / "echidna" / "stale"),
+                        ],
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(b"", result.stderr)
+                    self.assertFalse(missing_parent.exists())
+
+            outside = root / "outside"
+            outside_victim = outside / "echidna" / "stale"
+            outside_victim.mkdir(parents=True)
+            sentinel = outside_victim / "sentinel"
+            sentinel.write_text("keep", encoding="utf-8")
+            missing_parent.symlink_to(outside, target_is_directory=True)
+
+            rejected = self.run_helper(
+                "remove-tree",
+                [
+                    *self.root_args(root),
+                    "--path",
+                    str(missing_parent / "echidna" / "stale"),
+                ],
+            )
+
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertIn(b"safe path operation failed", rejected.stderr)
+            self.assertEqual("keep", sentinel.read_text(encoding="utf-8"))
+
+    def test_remove_missing_child_rejects_swapped_existing_parent_prefix(self):
+        spec = importlib.util.spec_from_file_location(
+            "safe_path_ops_missing_parent_probe", HELPER
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent = root / "parent"
+            parent.mkdir()
+            outside = root / "outside"
+            outside_victim = outside / "missing" / "victim"
+            outside_victim.mkdir(parents=True)
+            sentinel = outside_victim / "sentinel"
+            sentinel.write_text("keep", encoding="utf-8")
+            root_stat = root.stat()
+            args = SimpleNamespace(
+                path=str(parent / "missing" / "victim"),
+                root_path=str(root),
+                root_anchor=str(root.resolve(strict=True)),
+                root_identity=f"{root_stat.st_dev}:{root_stat.st_ino}",
+            )
+            real_open = module.os.open
+            swapped = False
+
+            def swap_after_parent_open(path, flags, *open_args, **open_kwargs):
+                nonlocal swapped
+                descriptor = real_open(path, flags, *open_args, **open_kwargs)
+                if (
+                    path == "parent"
+                    and open_kwargs.get("dir_fd") is not None
+                    and not swapped
+                ):
+                    swapped = True
+                    parent.rename(root / "parent-saved")
+                    parent.symlink_to(outside, target_is_directory=True)
+                return descriptor
+
+            with mock.patch.object(
+                module.os, "open", side_effect=swap_after_parent_open
+            ):
+                with self.assertRaises((OSError, module.SafePathError)):
+                    module._remove(args, tree=True)
+
+            self.assertTrue(swapped)
+            self.assertTrue(parent.is_symlink())
+            self.assertTrue((parent / "missing" / "victim").is_dir())
+            self.assertEqual("keep", sentinel.read_text(encoding="utf-8"))
 
     def test_read_rejects_name_swap_and_emits_no_unverified_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
