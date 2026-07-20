@@ -1392,7 +1392,9 @@ preliminary_process_identity() {
     return 1
   fi
   local process_stat remainder
-  IFS= read -r process_stat <"/proc/${pid}/stat" || return 1
+  # A process can exit after the readability check. Redirect stderr before
+  # opening procfs so either an open or read race fails closed without noise.
+  IFS= read -r process_stat 2>/dev/null <"/proc/${pid}/stat" || return 1
   # The command name in field 2 can contain whitespace and parentheses. Strip
   # through the final ") " and parse only the fixed-position remainder.
   remainder="${process_stat##*) }"

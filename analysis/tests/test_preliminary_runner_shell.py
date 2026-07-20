@@ -21,6 +21,58 @@ def run_bash(script: str, *, check: bool = True) -> subprocess.CompletedProcess:
 
 
 class PreliminaryRunnerShellTests(unittest.TestCase):
+    def test_process_identity_disappearance_is_silent_and_fail_closed(self):
+        common = shlex.quote(str(COMMON_SH))
+        open_race = run_bash(
+            f"""
+            set -T
+            source {common}
+            sleep 30 &
+            target=$!
+            cleanup_target() {{
+              trap - DEBUG
+              kill "$target" 2>/dev/null || true
+              wait "$target" 2>/dev/null || true
+            }}
+            trap cleanup_target EXIT
+            arm_race=0
+            remove_target_before_proc_open() {{
+              if [[ "$arm_race" == 1 && "$BASH_COMMAND" == *'read -r process_stat'* ]]; then
+                arm_race=0
+                kill "$target"
+                wait "$target" 2>/dev/null || true
+              fi
+            }}
+            trap remove_target_before_proc_open DEBUG
+            arm_race=1
+            if preliminary_process_identity "$target"; then
+              echo unexpected-success
+              exit 1
+            fi
+            trap - DEBUG
+            echo open-race-rejected
+            """
+        )
+        self.assertEqual("open-race-rejected", open_race.stdout.strip())
+        self.assertEqual("", open_race.stderr)
+
+        read_race = run_bash(
+            f"""
+            source {common}
+            read() {{
+              echo 'read: read error: 0: No such process' >&2
+              return 1
+            }}
+            if preliminary_process_identity "$$"; then
+              echo unexpected-success
+              exit 1
+            fi
+            echo read-race-rejected
+            """
+        )
+        self.assertEqual("read-race-rejected", read_race.stdout.strip())
+        self.assertEqual("", read_race.stderr)
+
     def test_interval_defaults_hourly_and_supports_explicit_disable(self):
         common = shlex.quote(str(COMMON_SH))
         result = run_bash(
