@@ -1680,14 +1680,22 @@ def write_progress_metrics_summary_csv(
 
 
 def build_runs(events: Iterable[Event]) -> Dict[str, Dict[str, List[float]]]:
-    runs: Dict[str, Dict[str, List[float]]] = {}
+    run_events: Dict[str, Dict[str, Dict[str, float]]] = {}
     for event in events:
         run_key = f"{event.run_id}:{event.instance_id}:{event.fuzzer_label}"
-        runs.setdefault(event.fuzzer, {}).setdefault(run_key, []).append(event.elapsed_seconds)
-    for fuzzer_runs in runs.values():
-        for run_key, times in fuzzer_runs.items():
-            fuzzer_runs[run_key] = sorted(set(times))
-    return runs
+        event_times = run_events.setdefault(event.fuzzer, {}).setdefault(run_key, {})
+        if (
+            event.event not in event_times
+            or event.elapsed_seconds < event_times[event.event]
+        ):
+            event_times[event.event] = event.elapsed_seconds
+    return {
+        fuzzer: {
+            run_key: sorted(event_times.values())
+            for run_key, event_times in fuzzer_runs.items()
+        }
+        for fuzzer, fuzzer_runs in run_events.items()
+    }
 
 
 def build_event_sets(events: Iterable[Event]) -> Dict[str, set]:
