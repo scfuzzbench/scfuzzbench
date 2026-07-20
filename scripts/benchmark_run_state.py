@@ -1104,6 +1104,23 @@ def active_reservation_exists(bucket: str, run_id: str) -> bool:
     return active_key in list_s3_keys(bucket, active_key)
 
 
+def _read_active_reservation_if_present(
+    bucket: str, run_id: str
+) -> tuple[bool, Any]:
+    active_key = f"{ACTIVE_PREFIX}{validate_run_id(run_id)}.json"
+    if active_key not in list_s3_keys(bucket, active_key):
+        return False, None
+    try:
+        return True, _s3_read_json(bucket, active_key)
+    except subprocess.CalledProcessError:
+        # A concurrent cleanup may delete the reservation between the strongly
+        # consistent listing and read.  Confirm that race before treating the
+        # failed read as an idempotent no-op; otherwise preserve the AWS error.
+        if active_key not in list_s3_keys(bucket, active_key):
+            return False, None
+        raise
+
+
 def cmd_reservation_exists(args: argparse.Namespace) -> int:
     run_id = validate_run_id(args.run_id)
     active = active_reservation_exists(args.bucket, run_id)
@@ -1140,8 +1157,20 @@ def cmd_discover_cleanup(args: argparse.Namespace) -> int:
     if force_run_id and requested_run_id and force_run_id != requested_run_id:
         raise ValueError("forced cleanup run_id does not match requested run_id")
     selected_run_id = force_run_id or requested_run_id
+    selected_metadata: Any = None
     if selected_run_id:
-        keys = [f"{ACTIVE_PREFIX}{selected_run_id}.json"]
+        active_key = f"{ACTIVE_PREFIX}{selected_run_id}.json"
+        reservation_present, selected_metadata = (
+            _read_active_reservation_if_present(args.bucket, selected_run_id)
+        )
+        if not reservation_present:
+            print(
+                json.dumps(
+                    {"include": []}, separators=(",", ":"), sort_keys=True
+                )
+            )
+            return 0
+        keys = [active_key]
     else:
         keys = list_s3_keys(args.bucket, ACTIVE_PREFIX)
     instances = active_benchmark_instances()
@@ -1157,7 +1186,11 @@ def cmd_discover_cleanup(args: argparse.Namespace) -> int:
         if run_id is None:
             continue
         try:
-            metadata = _s3_read_json(args.bucket, key)
+            metadata = (
+                selected_metadata
+                if selected_run_id
+                else _s3_read_json(args.bucket, key)
+            )
             if str(metadata.get("run_id", "")) != run_id:
                 raise ValueError("run metadata does not match reservation key identity")
             validate_backend_key(run_id, str(metadata["terraform_backend_key"]))
@@ -1208,7 +1241,7 @@ def cmd_discover_cleanup(args: argparse.Namespace) -> int:
                     }
                 )
         except Exception as exc:
-            if force_run_id:
+            if selected_run_id:
                 raise
             print(f"Skipping malformed cleanup reservation {key}: {exc}", file=sys.stderr)
     print(json.dumps({"include": include}, separators=(",", ":"), sort_keys=True))
