@@ -1,4 +1,7 @@
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -147,6 +150,99 @@ class WorkflowSafetyContractTests(unittest.TestCase):
             block.index("Revalidate reserved run after acquiring run lock"),
             block.index("Terraform init (remote backend)"),
         )
+
+    def test_captured_terraform_state_lists_disable_color(self):
+        capture_pattern = re.compile(
+            r"(?m)^\s*(?P<variable>[A-Za-z_][A-Za-z0-9_]*)="
+            r"\$\((?P<command>terraform[^\n]*\bstate\s+list\b[^\n]*)\)\s*$"
+        )
+        captures: dict[tuple[str, str], str] = {}
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            for match in capture_pattern.finditer(path.read_text()):
+                captures[(path.name, match.group("variable"))] = match.group(
+                    "command"
+                )
+
+        self.assertEqual(
+            {
+                ("benchmark-cleanup.yml", "state_resources"),
+                ("benchmark-run.yml", "existing_state"),
+                ("terraform-cd.yml", "state_resources"),
+            },
+            set(captures),
+        )
+        for location, command in captures.items():
+            with self.subTest(location=location):
+                self.assertRegex(
+                    command,
+                    r"\bstate\s+list\s+-no-color(?:\s|$)",
+                )
+
+    def test_fresh_state_check_avoids_ansi_only_output_and_keeps_errors(self):
+        body = next(
+            body
+            for body in run_bodies(workflow("benchmark-run.yml"))
+            if "existing_state=$(terraform " in body
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            fake_bin = temp / "bin"
+            fake_bin.mkdir()
+            terraform = fake_bin / "terraform"
+            terraform.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${FAKE_TERRAFORM_ERROR:-0}" == "1" ]]; then
+  echo "backend unavailable" >&2
+  exit 1
+fi
+if [[ " $* " == *" state list -no-color "* ]]; then
+  exit 0
+fi
+printf '\\033[0m'
+"""
+            )
+            terraform.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "RUN_ID": "gh-123-1",
+            }
+
+            ansi_probe = subprocess.run(
+                [
+                    str(terraform),
+                    "-chdir=infrastructure",
+                    "state",
+                    "list",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual("\x1b[0m", ansi_probe.stdout)
+
+            fresh = subprocess.run(
+                ["bash", "-c", body],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=temp,
+                env=env,
+            )
+            self.assertEqual(0, fresh.returncode, fresh.stderr)
+
+            failed = subprocess.run(
+                ["bash", "-c", body],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=temp,
+                env={**env, "FAKE_TERRAFORM_ERROR": "1"},
+            )
+            self.assertNotEqual(0, failed.returncode)
+            self.assertIn("backend unavailable", failed.stderr)
 
     def test_forced_cleanup_is_explicit_and_never_global(self):
         contents = workflow("benchmark-cleanup.yml")
