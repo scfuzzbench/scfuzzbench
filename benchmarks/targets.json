@@ -21,7 +21,7 @@
       "id": "superform-v2-periphery",
       "label": "Superform v2-periphery",
       "repo": "https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench",
-      "commit": "4d56ecd0efe4bd63c95ef92c14d48135838fbb10",
+      "commit": "102eeaf5e2f49963bdd007c7358739b0a0e59e84",
       "properties_path": "test/recon/Properties.sol",
       "rationale": "Represents cross-chain vault periphery behavior with asynchronous routing and share-accounting invariants.",
       "related_work_refs": [

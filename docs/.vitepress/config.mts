@@ -42,7 +42,6 @@ export default defineConfig({
       { text: "Transparency", link: "/transparency" },
       { text: "Methodology", link: "/methodology" },
       { text: "Operations", link: "/operations" },
-      { text: "Run Errors", link: "/run-errors" },
       { text: "GitHub", link: "https://github.com/scfuzzbench/scfuzzbench" },
     ],
 
@@ -58,7 +57,6 @@ export default defineConfig({
           { text: "Transparency", link: "/transparency" },
           { text: "Methodology", link: "/methodology" },
           { text: "Operations", link: "/operations" },
-          { text: "Run Errors", link: "/run-errors" },
         ],
       },
     ],

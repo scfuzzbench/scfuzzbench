@@ -53,7 +53,7 @@
     },
     {
       "target_id": "superform-v2-periphery",
-      "target_commit": "4d56ecd0efe4bd63c95ef92c14d48135838fbb10",
+      "target_commit": "102eeaf5e2f49963bdd007c7358739b0a0e59e84",
       "notes": "Only the two instrumented health-check canaries are mapped. The target documents historical findings, but their current event aliases are left unmapped until each alias-to-root-cause relationship is independently reviewed.",
       "canaries": [
         {
@@ -61,7 +61,7 @@
           "title": "Assertion-path canary",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench/blob/4d56ecd0efe4bd63c95ef92c14d48135838fbb10/test/recon/Properties.sol#L716-L719",
+              "url": "https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench/blob/102eeaf5e2f49963bdd007c7358739b0a0e59e84/test/recon/Properties.sol#L716-L719",
               "description": "The pinned harness marks this assertion helper as an expected fuzzing discovery."
             }
           ],
@@ -82,7 +82,7 @@
           "title": "Invariant-path canary",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench/blob/4d56ecd0efe4bd63c95ef92c14d48135838fbb10/test/recon/Properties.sol#L721-L725",
+              "url": "https://github.com/scfuzzbench/superform-v2-periphery-scfuzzbench/blob/102eeaf5e2f49963bdd007c7358739b0a0e59e84/test/recon/Properties.sol#L721-L725",
               "description": "The pinned harness marks this invariant as an immediate expected failure."
             }
           ],
