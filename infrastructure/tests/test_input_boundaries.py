@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import hashlib
 import json
 import os
 import random
@@ -56,25 +57,34 @@ def incompressible_fuzzer_env() -> dict[str, str]:
 
 @unittest.skipUnless(shutil.which(TERRAFORM), "terraform is not installed")
 class TerraformInputBoundaryTests(unittest.TestCase):
-    def test_benchmark_manifest_output_declassifies_only_public_metadata(self):
+    def test_benchmark_outputs_declassify_only_public_metadata(self):
         outputs = (INFRASTRUCTURE / "outputs.tf").read_text(encoding="utf-8")
-        match = re.search(
-            r'^output "benchmark_manifest" \{.*?^\}',
-            outputs,
-            flags=re.MULTILINE | re.DOTALL,
-        )
-        self.assertIsNotNone(match)
-        output_block = match.group(0)
+        output_blocks = {}
+        for name in ("benchmark_uuid", "benchmark_manifest"):
+            match = re.search(
+                rf'^output "{name}" \{{.*?^\}}',
+                outputs,
+                flags=re.MULTILINE | re.DOTALL,
+            )
+            self.assertIsNotNone(match)
+            output_blocks[name] = match.group(0)
+        manifest_output_block = output_blocks["benchmark_manifest"]
+        uuid_output_block = output_blocks["benchmark_uuid"]
         self.assertIn(
             "value       = local.benchmark_manifest",
-            output_block,
+            manifest_output_block,
         )
         self.assertNotIn(
             "nonsensitive(local.benchmark_manifest)",
-            output_block,
+            manifest_output_block,
         )
         self.assertNotRegex(
-            output_block,
+            manifest_output_block,
+            r"(?m)^\s*sensitive\s*=\s*true\s*$",
+        )
+        self.assertIn("local.benchmark_uuid", uuid_output_block)
+        self.assertNotRegex(
+            uuid_output_block,
             r"(?m)^\s*sensitive\s*=\s*true\s*$",
         )
 
@@ -175,6 +185,21 @@ class TerraformInputBoundaryTests(unittest.TestCase):
             "local.ubuntu_ami_id",
             ami_field.group(1),
         )
+        benchmark_derivation = re.search(
+            r"(?ms)^  benchmark_definition_json\s+=.*?"
+            r"^  benchmark_manifest_b64\s+=.*?$",
+            main,
+        )
+        self.assertIsNotNone(benchmark_derivation)
+        benchmark_derivation_block = benchmark_derivation.group(0)
+        self.assertIn(
+            "benchmark_uuid            = md5(local.benchmark_definition_json)",
+            benchmark_derivation_block,
+        )
+        self.assertIn(
+            "benchmark_manifest = merge(local.benchmark_definition, {",
+            benchmark_derivation_block,
+        )
         ami_data = main.split(
             'data "aws_ssm_parameter" "ubuntu_ami" {', 1
         )[1].split('\ndata "aws_caller_identity"', 1)[0]
@@ -195,11 +220,11 @@ class TerraformInputBoundaryTests(unittest.TestCase):
                 self.assertNotIn(secret_source, manifest_locals)
 
         # Exercise Terraform's plan-time nested sensitivity propagation using
-        # the production AMI field and output blocks. Without the field-level
-        # nonsensitive(...), plan fails with "Output refers to sensitive
-        # values" before any resource is created. Declassifying the whole
-        # object is both broader and invalid in Terraform 1.5 because only the
-        # nested AMI attribute is marked sensitive.
+        # the production AMI field, UUID/manifest derivation, and both public
+        # output blocks. Without the field-level nonsensitive(...), plan fails
+        # with "Output refers to sensitive values" before any resource is
+        # created. Wrapping either derived public output is redundant and also
+        # fails at plan time in Terraform 1.5.
         with tempfile.TemporaryDirectory() as tmp:
             fixture = Path(tmp)
             (fixture / "main.tf").write_text(
@@ -207,6 +232,11 @@ class TerraformInputBoundaryTests(unittest.TestCase):
 variable "provider_sensitive_ami" {
   type      = string
   sensitive = true
+}
+
+variable "terraform_backend_key" {
+  type    = string
+  default = "runs/sensitivity-regression/terraform.tfstate"
 }
 
 locals {
@@ -222,13 +252,17 @@ locals {
                 + ami_field.group(1)
                 + """
   }, {})
-  benchmark_manifest = merge(local.benchmark_definition, {
-    run_id = "sensitivity-regression"
-  })
+  run_id               = "sensitivity-regression"
+  run_started_at_epoch = 1
+"""
+                + benchmark_derivation_block
+                + """
 }
 
 """
-                + output_block
+                + uuid_output_block
+                + "\n\n"
+                + manifest_output_block
                 + "\n",
                 encoding="utf-8",
             )
@@ -260,18 +294,52 @@ locals {
                     check=True,
                 ).stdout
             )
-            planned_output = plan_json["planned_values"]["outputs"][
+            planned_outputs = plan_json["planned_values"]["outputs"]
+            planned_manifest = planned_outputs[
                 "benchmark_manifest"
             ]
-            self.assertFalse(planned_output["sensitive"])
+            planned_uuid = planned_outputs["benchmark_uuid"]
+            self.assertFalse(planned_manifest["sensitive"])
+            self.assertFalse(planned_uuid["sensitive"])
+            benchmark_definition = {
+                "benchmark_type": "property",
+                "ubuntu_ami_id": "ami-0123456789abcdef0",
+            }
+            expected_uuid = hashlib.md5(
+                json.dumps(
+                    benchmark_definition,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            self.assertEqual(expected_uuid, planned_uuid["value"])
             self.assertEqual(
                 {
+                    "artifact_prefix": (
+                        "logs/sensitivity-regression/" + expected_uuid
+                    ),
                     "benchmark_type": "property",
                     "run_id": "sensitivity-regression",
+                    "run_started_at_epoch": 1,
+                    "run_state_metadata_key": (
+                        "run-state/runs/sensitivity-regression/metadata.json"
+                    ),
+                    "terraform_backend_key": (
+                        "runs/sensitivity-regression/terraform.tfstate"
+                    ),
                     "ubuntu_ami_id": "ami-0123456789abcdef0",
                 },
-                planned_output["value"],
+                planned_manifest["value"],
             )
+
+        self.assertIn(
+            "value       = local.benchmark_uuid",
+            uuid_output_block,
+        )
+        self.assertNotIn(
+            "nonsensitive(local.benchmark_uuid)",
+            uuid_output_block,
+        )
 
     def test_direct_fuzzer_env_and_custom_fuzzer_boundaries(self):
         with tempfile.TemporaryDirectory() as tmp:
