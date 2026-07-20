@@ -25,7 +25,7 @@ output "run_namespace" {
 
 output "benchmark_uuid" {
   description = "Benchmark UUID used for S3 prefixes."
-  value       = nonsensitive(local.benchmark_uuid)
+  value       = local.benchmark_uuid
 }
 
 output "benchmark_manifest" {
