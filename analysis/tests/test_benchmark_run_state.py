@@ -348,6 +348,92 @@ class BenchmarkRunStateTests(unittest.TestCase):
                     active_instances.assert_not_called()
                     read_reservation.assert_not_called()
 
+    def test_exact_cleanup_concurrent_reservation_deletion_is_noop(self):
+        active_key = "run-state/admissions/active/gh-100-1.json"
+        for force in (False, True):
+            with self.subTest(force=force):
+                args = mock.Mock(
+                    bucket="shared-bucket",
+                    now_epoch=2_000,
+                    requested_run_id="gh-100-1",
+                    force_run_id="gh-100-1" if force else "",
+                )
+                read_failure = self.module.subprocess.CalledProcessError(
+                    1, ["aws", "s3", "cp"]
+                )
+                with (
+                    mock.patch.object(
+                        self.module,
+                        "list_s3_keys",
+                        side_effect=[[active_key], []],
+                    ) as list_keys,
+                    mock.patch.object(
+                        self.module, "active_benchmark_instances"
+                    ) as active_instances,
+                    mock.patch.object(
+                        self.module,
+                        "_s3_read_json",
+                        side_effect=read_failure,
+                    ) as read_reservation,
+                    mock.patch("builtins.print") as output,
+                ):
+                    self.assertEqual(
+                        0, self.module.cmd_discover_cleanup(args)
+                    )
+
+                self.assertEqual(
+                    [
+                        mock.call("shared-bucket", active_key),
+                        mock.call("shared-bucket", active_key),
+                    ],
+                    list_keys.call_args_list,
+                )
+                read_reservation.assert_called_once_with(
+                    "shared-bucket", active_key
+                )
+                active_instances.assert_not_called()
+                self.assertEqual(
+                    {"include": []},
+                    json.loads(output.call_args.args[0]),
+                )
+
+    def test_exact_cleanup_read_errors_fail_closed_when_key_remains(self):
+        active_key = "run-state/admissions/active/gh-100-1.json"
+        for force in (False, True):
+            with self.subTest(force=force):
+                args = mock.Mock(
+                    bucket="shared-bucket",
+                    now_epoch=2_000,
+                    requested_run_id="gh-100-1",
+                    force_run_id="gh-100-1" if force else "",
+                )
+                read_failure = self.module.subprocess.CalledProcessError(
+                    1, ["aws", "s3", "cp"]
+                )
+                with (
+                    mock.patch.object(
+                        self.module,
+                        "list_s3_keys",
+                        side_effect=[[active_key], [active_key]],
+                    ) as list_keys,
+                    mock.patch.object(
+                        self.module, "active_benchmark_instances"
+                    ) as active_instances,
+                    mock.patch.object(
+                        self.module,
+                        "_s3_read_json",
+                        side_effect=read_failure,
+                    ),
+                    self.assertRaises(
+                        self.module.subprocess.CalledProcessError
+                    ) as raised,
+                ):
+                    self.module.cmd_discover_cleanup(args)
+
+                self.assertIs(read_failure, raised.exception)
+                self.assertEqual(2, list_keys.call_count)
+                active_instances.assert_not_called()
+
     def test_forced_cleanup_run_ids_must_match_and_never_fall_back_global(self):
         with self.assertRaisesRegex(ValueError, "does not match"):
             self.module.cmd_discover_cleanup(
@@ -446,6 +532,33 @@ class BenchmarkRunStateTests(unittest.TestCase):
             objects = self.module.list_s3_objects("bucket", "prefix/")
 
         self.assertEqual(["prefix/one", "prefix/two"], [item["Key"] for item in objects])
+        self.assertIn("--no-paginate", aws.call_args_list[0].args)
+        self.assertIn("--continuation-token", aws.call_args_list[1].args)
+        self.assertIn("opaque-token", aws.call_args_list[1].args)
+
+    def test_active_reservation_probe_matches_exact_key_across_pages(self):
+        active_key = "run-state/admissions/active/gh-100-1.json"
+        pages = [
+            {
+                "Contents": [{"Key": f"{active_key}.prefix-collision"}],
+                "IsTruncated": True,
+                "NextContinuationToken": "opaque-token",
+            },
+            {
+                "Contents": [{"Key": active_key}],
+                "IsTruncated": False,
+            },
+        ]
+        with mock.patch.object(
+            self.module, "_aws_json", side_effect=pages
+        ) as aws:
+            self.assertTrue(
+                self.module.active_reservation_exists(
+                    "shared-bucket", "gh-100-1"
+                )
+            )
+
+        self.assertEqual(2, aws.call_count)
         self.assertIn("--no-paginate", aws.call_args_list[0].args)
         self.assertIn("--continuation-token", aws.call_args_list[1].args)
         self.assertIn("opaque-token", aws.call_args_list[1].args)
