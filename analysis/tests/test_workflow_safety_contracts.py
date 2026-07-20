@@ -151,7 +151,7 @@ class WorkflowSafetyContractTests(unittest.TestCase):
             block.index("Terraform init (remote backend)"),
         )
 
-    def test_captured_terraform_state_lists_disable_color(self):
+    def test_captured_terraform_state_lists_disable_color_and_wrapper(self):
         capture_pattern = re.compile(
             r"(?m)^\s*(?P<variable>[A-Za-z_][A-Za-z0-9_]*)="
             r"\$\((?P<command>terraform[^\n]*\bstate\s+list\b[^\n]*)\)\s*$"
@@ -177,8 +177,21 @@ class WorkflowSafetyContractTests(unittest.TestCase):
                     command,
                     r"\bstate\s+list\s+-no-color(?:\s|$)",
                 )
+                filename, variable = location
+                capturing_job = next(
+                    block
+                    for block in job_blocks(workflow(filename)).values()
+                    if f"{variable}=$(" in block
+                )
+                self.assertRegex(
+                    capturing_job,
+                    r"(?ms)uses: hashicorp/setup-terraform@v3\n"
+                    r"\s+with:\n"
+                    r"(?:\s+[^\n]+\n)*?"
+                    r"\s+terraform_wrapper: false$",
+                )
 
-    def test_fresh_state_check_avoids_ansi_only_output_and_keeps_errors(self):
+    def test_fresh_state_check_rejects_wrapper_output_but_direct_cli_is_empty(self):
         body = next(
             body
             for body in run_bodies(workflow("benchmark-run.yml"))
@@ -186,9 +199,9 @@ class WorkflowSafetyContractTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
-            fake_bin = temp / "bin"
-            fake_bin.mkdir()
-            terraform = fake_bin / "terraform"
+            direct_bin = temp / "direct-bin"
+            direct_bin.mkdir()
+            terraform = direct_bin / "terraform"
             terraform.write_text(
                 """#!/usr/bin/env bash
 set -euo pipefail
@@ -205,7 +218,7 @@ printf '\\033[0m'
             terraform.chmod(0o755)
             env = {
                 **os.environ,
-                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "PATH": f"{direct_bin}:{os.environ['PATH']}",
                 "RUN_ID": "gh-123-1",
             }
 
@@ -222,6 +235,40 @@ printf '\\033[0m'
                 env=env,
             )
             self.assertEqual("\x1b[0m", ansi_probe.stdout)
+
+            wrapped_bin = temp / "wrapped-bin"
+            wrapped_bin.mkdir()
+            wrapper = wrapped_bin / "terraform"
+            wrapper.write_text(
+                f"""#!/usr/bin/env bash
+set +e
+{terraform} "$@"
+status=$?
+set -e
+printf '%s\\n' \\
+  '::set-output name=stdout::' \\
+  '::set-output name=stderr::' \\
+  "::set-output name=exitcode::${{status}}"
+exit "${{status}}"
+"""
+            )
+            wrapper.chmod(0o755)
+            wrapped = subprocess.run(
+                ["bash", "-c", body],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=temp,
+                env={
+                    **env,
+                    "PATH": f"{wrapped_bin}:{os.environ['PATH']}",
+                },
+            )
+            self.assertNotEqual(0, wrapped.returncode)
+            self.assertIn(
+                "::set-output name=stdout::",
+                wrapped.stderr,
+            )
 
             fresh = subprocess.run(
                 ["bash", "-c", body],
