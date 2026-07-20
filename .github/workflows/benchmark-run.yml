@@ -780,7 +780,7 @@ jobs:
           RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
         run: |
           set -euo pipefail
-          existing_state=$(terraform -chdir=infrastructure state list 2>state-list.err || true)
+          existing_state=$(terraform -chdir=infrastructure state list -no-color 2>state-list.err || true)
           if [[ -n "${existing_state}" ]]; then
             echo "Fresh run ${RUN_ID} unexpectedly has existing Terraform resources:" >&2
             printf '%s\n' "${existing_state}" >&2

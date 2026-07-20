@@ -265,7 +265,7 @@ jobs:
           RUN_ID: ${{ matrix.run_id }}
         run: |
           set -euo pipefail
-          state_resources=$(terraform -chdir=provisioning-source/infrastructure state list 2>state-list.err || true)
+          state_resources=$(terraform -chdir=provisioning-source/infrastructure state list -no-color 2>state-list.err || true)
           if [[ -s state-list.err ]] && ! grep -q "No state file was found" state-list.err; then
             cat state-list.err >&2
             exit 1

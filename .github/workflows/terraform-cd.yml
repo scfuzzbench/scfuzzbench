@@ -182,7 +182,7 @@ jobs:
           RUN_ID: ${{ inputs.run_id }}
         run: |
           set -euo pipefail
-          state_resources=$(terraform -chdir=provisioning-source/infrastructure state list)
+          state_resources=$(terraform -chdir=provisioning-source/infrastructure state list -no-color)
           if [[ -z "${state_resources}" ]]; then
             echo "Run ${RUN_ID} has no state resources; use Benchmark Run Cleanup to release an empty reservation." >&2
             exit 1
