@@ -198,12 +198,18 @@ def _open_parent(
         raise SafePathError("operation requires a strict descendant")
     current = os.dup(root_fd)
     try:
-        for component in parts[:-1]:
+        for index, component in enumerate(parts[:-1]):
             try:
                 child = os.open(component, DIRECTORY_FLAGS, dir_fd=current)
             except FileNotFoundError:
                 if not create:
                     if missing_ok:
+                        _verify_directory_path(
+                            root_fd,
+                            parts[:index],
+                            current,
+                            "existing parent prefix",
+                        )
                         yield None
                         return
                     raise
