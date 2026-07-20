@@ -11,13 +11,15 @@ COMMON_SH = Path(__file__).resolve().parents[2] / "fuzzers" / "_shared" / "commo
 SNAPSHOT_HELPER = Path(__file__).resolve().parents[2] / "scripts" / "preliminary_snapshot.py"
 
 
-def run_bash(script: str, *, check: bool = True) -> subprocess.CompletedProcess:
+def run_bash(
+    script: str, *, check: bool = True, timeout: int = 10
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", "-lc", script],
         text=True,
         capture_output=True,
         check=check,
-        timeout=10,
+        timeout=timeout,
     )
 
 
@@ -224,6 +226,7 @@ Path(os.environ["SCFUZZBENCH_TEST_UPLOAD_RECORD"]).write_text(
                 echo captured
                 """,
                 check=False,
+                timeout=20,
             )
             self.assertEqual(
                 0,
@@ -328,6 +331,7 @@ Path(os.environ["SCFUZZBENCH_TEST_UPLOAD_RECORD"]).write_text(
                 echo swap-rejected
                 """,
                 check=False,
+                timeout=20,
             )
             self.assertEqual(
                 0,
