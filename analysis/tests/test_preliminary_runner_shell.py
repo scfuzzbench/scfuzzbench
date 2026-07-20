@@ -1,3 +1,4 @@
+import json
 import shlex
 import subprocess
 from pathlib import Path
@@ -10,13 +11,15 @@ COMMON_SH = Path(__file__).resolve().parents[2] / "fuzzers" / "_shared" / "commo
 SNAPSHOT_HELPER = Path(__file__).resolve().parents[2] / "scripts" / "preliminary_snapshot.py"
 
 
-def run_bash(script: str, *, check: bool = True) -> subprocess.CompletedProcess:
+def run_bash(
+    script: str, *, check: bool = True, timeout: int = 10
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", "-lc", script],
         text=True,
         capture_output=True,
         check=check,
-        timeout=10,
+        timeout=timeout,
     )
 
 
@@ -115,6 +118,233 @@ class PreliminaryRunnerShellTests(unittest.TestCase):
             )
         self.assertEqual("stopped", result.stdout.strip())
         self.assertNotIn("numeric run ID", result.stderr)
+
+    def test_detached_capture_rebuilds_trust_anchors_after_resourcing_common(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            upload_record = root / "upload.json"
+            upload_helper = root / "record_pinned_upload.py"
+            upload_helper.write_text(
+                """\
+import json
+import os
+from pathlib import Path
+import sys
+import zipfile
+
+
+def value(flag):
+    index = sys.argv.index(flag)
+    return sys.argv[index + 1]
+
+
+root_path = Path(value("--root-path"))
+root_anchor = value("--root-anchor")
+root_identity = value("--root-identity")
+source = Path(value("--path"))
+resolved_root = str(root_path.resolve(strict=True))
+root_stat = root_path.stat()
+expected_identity = f"{root_stat.st_dev}:{root_stat.st_ino}"
+resolved_source = str(source.resolve(strict=True))
+if root_anchor != resolved_root:
+    raise SystemExit("framework root anchor was not reconstructed exactly")
+if root_identity != expected_identity:
+    raise SystemExit("framework root identity was not reconstructed exactly")
+if os.path.commonpath((resolved_root, resolved_source)) != resolved_root:
+    raise SystemExit("snapshot archive escaped the reconstructed root")
+if not source.is_file():
+    raise SystemExit("snapshot archive was not created")
+with zipfile.ZipFile(source) as archive:
+    if "logs/runner.log" not in archive.namelist():
+        raise SystemExit("snapshot did not capture the anchored log tree")
+
+Path(os.environ["SCFUZZBENCH_TEST_UPLOAD_RECORD"]).write_text(
+    json.dumps(
+        {
+            "root_path": str(root_path),
+            "root_anchor": root_anchor,
+            "root_identity": root_identity,
+            "archive_size": source.stat().st_size,
+            "runner_log_captured": True,
+            "bucket": value("--bucket"),
+            "key": value("--key"),
+            "immutable": "--immutable" in sys.argv,
+        },
+        sort_keys=True,
+    ),
+    encoding="utf-8",
+)
+""",
+                encoding="utf-8",
+            )
+            result = run_bash(
+                f"""
+                unset SCFUZZBENCH_LOCAL_MODE
+                export SCFUZZBENCH_ROOT={shlex.quote(str(root))}
+                export SCFUZZBENCH_WORKDIR={shlex.quote(str(root / "work"))}
+                export SCFUZZBENCH_LOG_DIR={shlex.quote(str(root / "logs"))}
+                export SCFUZZBENCH_COMMON_SH={shlex.quote(str(COMMON_SH))}
+                export SCFUZZBENCH_SAFE_PATH_OPS={shlex.quote(
+                    str(COMMON_SH.with_name("safe_path_ops.py"))
+                )}
+                export SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT={shlex.quote(str(SNAPSHOT_HELPER))}
+                export SCFUZZBENCH_PINNED_UPLOAD_HELPER={shlex.quote(str(upload_helper))}
+                export SCFUZZBENCH_TEST_UPLOAD_RECORD={shlex.quote(str(upload_record))}
+                export SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE=1
+                export SCFUZZBENCH_S3_BUCKET=test-bucket
+                export SCFUZZBENCH_RUN_ID=gh-24680-1
+                export SCFUZZBENCH_BENCHMARK_UUID={'a' * 32}
+                export SCFUZZBENCH_FUZZER_KEY=foundry
+                export SCFUZZBENCH_RUN_INDEX=0
+                export SCFUZZBENCH_FUZZER_LABEL=foundry-test
+                export SCFUZZBENCH_INSTANCE_ID=i-0123abcd
+                export SCFUZZBENCH_TIMEOUT_SECONDS=180
+                export SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS=60
+                export SCFUZZBENCH_PRELIMINARY_HELPER_TIMEOUT_SECONDS=30
+                export SCFUZZBENCH_PRELIMINARY_UPLOAD_ATTEMPTS=1
+                export SCFUZZBENCH_PRELIMINARY_UPLOAD_RETRY_SECONDS=0
+                source {shlex.quote(str(COMMON_SH))}
+                prepare_workspace
+                printf 'runner started\n' >"$SCFUZZBENCH_LOG_DIR/runner.log"
+                export SCFUZZBENCH_RUN_STARTED_AT_EPOCH=$(( $(date +%s) - 58 ))
+                cleanup_test_loop() {{
+                  stop_preliminary_snapshots 2>/dev/null || true
+                }}
+                trap cleanup_test_loop EXIT
+                start_preliminary_snapshots
+                for _ in $(seq 1 400); do
+                  if [[ -s "$SCFUZZBENCH_TEST_UPLOAD_RECORD" \
+                        && ! -e "$SCFUZZBENCH_ROOT/preliminary-checkpoints/active.pid" ]]; then
+                    break
+                  fi
+                  sleep 0.02
+                done
+                [[ -s "$SCFUZZBENCH_TEST_UPLOAD_RECORD" ]]
+                [[ ! -e "$SCFUZZBENCH_ROOT/preliminary-checkpoints/active.pid" ]]
+                stop_preliminary_snapshots
+                trap - EXIT
+                echo captured
+                """,
+                check=False,
+                timeout=20,
+            )
+            self.assertEqual(
+                0,
+                result.returncode,
+                msg=f"stdout={result.stdout!r}\nstderr={result.stderr!r}",
+            )
+            self.assertEqual("captured", result.stdout.strip())
+            self.assertIn(
+                "Uploaded preliminary checkpoint 000001", result.stderr
+            )
+            upload = json.loads(upload_record.read_text(encoding="utf-8"))
+            root_stat = root.stat()
+            self.assertEqual(str(root), upload["root_path"])
+            self.assertEqual(str(root.resolve()), upload["root_anchor"])
+            self.assertEqual(
+                f"{root_stat.st_dev}:{root_stat.st_ino}",
+                upload["root_identity"],
+            )
+            self.assertGreater(upload["archive_size"], 0)
+            self.assertTrue(upload["runner_log_captured"])
+            self.assertEqual("test-bucket", upload["bucket"])
+            self.assertEqual(
+                "preliminary/gh-24680-1/"
+                f"{'a' * 32}/snapshots/000001/"
+                "foundry-0-i-0123abcd/snapshot.zip",
+                upload["key"],
+            )
+            self.assertTrue(upload["immutable"])
+
+    def test_detached_capture_rejects_log_root_swap_after_parent_pin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            upload_record = root / "unexpected-upload"
+            upload_helper = root / "record_unexpected_upload.py"
+            upload_helper.write_text(
+                """\
+import os
+from pathlib import Path
+
+
+Path(os.environ["SCFUZZBENCH_TEST_UPLOAD_RECORD"]).write_text(
+    "uploaded\\n",
+    encoding="utf-8",
+)
+""",
+                encoding="utf-8",
+            )
+            result = run_bash(
+                f"""
+                unset SCFUZZBENCH_LOCAL_MODE
+                export SCFUZZBENCH_ROOT={shlex.quote(str(root))}
+                export SCFUZZBENCH_WORKDIR={shlex.quote(str(root / "work"))}
+                export SCFUZZBENCH_LOG_DIR={shlex.quote(str(root / "logs"))}
+                export SCFUZZBENCH_COMMON_SH={shlex.quote(str(COMMON_SH))}
+                export SCFUZZBENCH_SAFE_PATH_OPS={shlex.quote(
+                    str(COMMON_SH.with_name("safe_path_ops.py"))
+                )}
+                export SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT={shlex.quote(str(SNAPSHOT_HELPER))}
+                export SCFUZZBENCH_PINNED_UPLOAD_HELPER={shlex.quote(str(upload_helper))}
+                export SCFUZZBENCH_TEST_UPLOAD_RECORD={shlex.quote(str(upload_record))}
+                export SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE=1
+                export SCFUZZBENCH_S3_BUCKET=test-bucket
+                export SCFUZZBENCH_RUN_ID=gh-24680-1
+                export SCFUZZBENCH_BENCHMARK_UUID={'a' * 32}
+                export SCFUZZBENCH_FUZZER_KEY=foundry
+                export SCFUZZBENCH_RUN_INDEX=0
+                export SCFUZZBENCH_FUZZER_LABEL=foundry-test
+                export SCFUZZBENCH_INSTANCE_ID=i-0123abcd
+                export SCFUZZBENCH_TIMEOUT_SECONDS=180
+                export SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS=60
+                export SCFUZZBENCH_PRELIMINARY_HELPER_TIMEOUT_SECONDS=30
+                export SCFUZZBENCH_PRELIMINARY_UPLOAD_ATTEMPTS=1
+                export SCFUZZBENCH_PRELIMINARY_UPLOAD_RETRY_SECONDS=0
+                source {shlex.quote(str(COMMON_SH))}
+                prepare_workspace
+                printf 'trusted runner log\n' >"$SCFUZZBENCH_LOG_DIR/runner.log"
+                mv "$SCFUZZBENCH_LOG_DIR" "$SCFUZZBENCH_ROOT/trusted-logs"
+                mkdir "$SCFUZZBENCH_ROOT/replacement-logs"
+                printf 'untrusted replacement\n' \
+                  >"$SCFUZZBENCH_ROOT/replacement-logs/runner.log"
+                ln -s replacement-logs "$SCFUZZBENCH_LOG_DIR"
+                export SCFUZZBENCH_RUN_STARTED_AT_EPOCH=$(( $(date +%s) - 59 ))
+                cleanup_test_loop() {{
+                  stop_preliminary_snapshots 2>/dev/null || true
+                }}
+                trap cleanup_test_loop EXIT
+                start_preliminary_snapshots
+                seen_active=0
+                for _ in $(seq 1 400); do
+                  if [[ -e "$SCFUZZBENCH_ROOT/preliminary-checkpoints/active.pid" ]]; then
+                    seen_active=1
+                  elif [[ "$seen_active" == 1 ]]; then
+                    break
+                  fi
+                  sleep 0.02
+                done
+                [[ "$seen_active" == 1 ]]
+                [[ ! -e "$SCFUZZBENCH_ROOT/preliminary-checkpoints/active.pid" ]]
+                [[ ! -e "$SCFUZZBENCH_TEST_UPLOAD_RECORD" ]]
+                stop_preliminary_snapshots
+                trap - EXIT
+                echo swap-rejected
+                """,
+                check=False,
+                timeout=20,
+            )
+            self.assertEqual(
+                0,
+                result.returncode,
+                msg=f"stdout={result.stdout!r}\nstderr={result.stderr!r}",
+            )
+            self.assertEqual("swap-rejected", result.stdout.strip())
+            self.assertIn("trusted root path changed", result.stderr)
+            self.assertIn(
+                "Preliminary checkpoint 1 failed; the live campaign continues.",
+                result.stderr,
+            )
+            self.assertFalse(upload_record.exists())
 
     def test_existing_matching_object_is_idempotent_but_divergent_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

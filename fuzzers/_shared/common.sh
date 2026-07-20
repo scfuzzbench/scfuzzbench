@@ -1779,9 +1779,26 @@ start_preliminary_snapshots() {
         continue
       fi
       local common_path="${SCFUZZBENCH_COMMON_SH:-${SCFUZZBENCH_ROOT}/common.sh}"
+      # Re-sourcing intentionally clears inherited trust anchors. Restore only
+      # the parent runner's established framework/log pins as positional
+      # arguments; safe_path_ops then rejects any path or inode swap instead of
+      # trusting whichever directories happen to occupy those paths now.
       setsid bash -c \
-        'set -euo pipefail; source "$1"; preliminary_capture_supervisor "$2" "$3"' \
-        preliminary-capture "${common_path}" "${checkpoint}" "${scheduled_at}" &
+        'set -euo pipefail
+         source "$1"
+         SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR="$4"
+         SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY="$5"
+         SCFUZZBENCH_LOG_ROOT_ANCHOR="$6"
+         SCFUZZBENCH_LOG_ROOT_IDENTITY="$7"
+         preliminary_capture_supervisor "$2" "$3"' \
+        preliminary-capture \
+        "${common_path}" \
+        "${checkpoint}" \
+        "${scheduled_at}" \
+        "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+        "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" \
+        "${SCFUZZBENCH_LOG_ROOT_ANCHOR}" \
+        "${SCFUZZBENCH_LOG_ROOT_IDENTITY}" &
       capture_pid=$!
       capture_start=$(preliminary_wait_for_process_start_ticks "${capture_pid}") || {
         wait "${capture_pid}" 2>/dev/null || true
