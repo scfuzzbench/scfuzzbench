@@ -24,6 +24,7 @@ class AnalyzeSummaryTests(unittest.TestCase):
         events = [
             self.event("i-run-1", "invariant_alpha", 10.0),
             self.event("i-run-1", "invariant_beta", 10.0),
+            self.event("i-run-1", "invariant_gamma", 10.0),
             self.event("i-run-1", "invariant_alpha", 4.0),
             self.event("i-run-1", "invariant_alpha", 12.0),
             self.event("i-run-2", "invariant_alpha", 7.0),
@@ -32,7 +33,7 @@ class AnalyzeSummaryTests(unittest.TestCase):
 
         runs = analyze.build_runs(events)
         self.assertEqual(
-            [4.0, 10.0],
+            [4.0, 10.0, 10.0],
             runs["echidna"]["benchmark-1:i-run-1:echidna-0"],
         )
         self.assertEqual(
@@ -47,11 +48,12 @@ class AnalyzeSummaryTests(unittest.TestCase):
                 row = next(csv.DictReader(handle))
 
         self.assertEqual("2", row["runs"])
-        self.assertEqual("2", row["unique_bugs"])
-        self.assertEqual("1.500", row["mean_bugs_per_run"])
-        self.assertEqual("1.500", row["median_bugs_per_run"])
+        self.assertEqual("3", row["unique_bugs"])
+        self.assertEqual("2.000", row["mean_bugs_per_run"])
+        self.assertEqual("2.000", row["median_bugs_per_run"])
+        self.assertEqual("1.414", row["stdev_bugs_per_run"])
         self.assertEqual("1", row["min_bugs_per_run"])
-        self.assertEqual("2", row["max_bugs_per_run"])
+        self.assertEqual("3", row["max_bugs_per_run"])
         self.assertEqual("4.500", row["mean_ttfb_seconds"])
         self.assertEqual("4.500", row["median_ttfb_seconds"])
 
