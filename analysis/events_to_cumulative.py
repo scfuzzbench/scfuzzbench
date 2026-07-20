@@ -36,7 +36,9 @@ def load_events_csv(path: Path) -> List[dict]:
 
 def infer_run_id(path: Path) -> Optional[str]:
     for part in path.parts:
-        if part.isdigit() and len(part) >= 8:
+        if (part.isdigit() and len(part) >= 8) or re.fullmatch(
+            r"gh-[0-9]+-[0-9]+", part
+        ):
             return part
     return None
 

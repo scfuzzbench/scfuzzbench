@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 
@@ -156,6 +157,49 @@ class PreliminarySnapshotTests(unittest.TestCase):
                         item["sha256"],
                     )
             self.assertEqual("event one\nevent two\n", (logs / "fuzzer.log").read_text())
+
+    def test_archive_publish_rejects_parent_swap_without_touching_outside(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            staging.mkdir()
+            (staging / "checkpoint.json").write_text(
+                '{"complete":false}\n', encoding="utf-8"
+            )
+            capture = root / "capture"
+            capture.mkdir()
+            outside = root / "outside"
+            outside.mkdir()
+            sentinel = outside / "snapshot.zip"
+            sentinel.write_bytes(b"keep")
+            archive = capture / "snapshot.zip"
+            safe = self.module._load_safe_path_ops()
+            original_publish = safe._publish_temporary
+
+            def swap_then_publish(*args, **kwargs):
+                capture.rename(root / "capture-saved")
+                capture.symlink_to(outside, target_is_directory=True)
+                return original_publish(*args, **kwargs)
+
+            info = root.stat()
+            with (
+                mock.patch.object(
+                    safe, "_publish_temporary", side_effect=swap_then_publish
+                ),
+                self.assertRaises((OSError, safe.SafePathError)),
+            ):
+                self.module._zip_tree(
+                    staging,
+                    archive,
+                    epoch=1784422800,
+                    safe=safe,
+                    framework_root_path=str(root),
+                    framework_root_anchor=str(root.resolve(strict=True)),
+                    framework_root_identity=f"{info.st_dev}:{info.st_ino}",
+                )
+
+            self.assertEqual(b"keep", sentinel.read_bytes())
+            self.assertTrue((root / "capture-saved" / "snapshot.zip").is_file())
 
     def test_capture_rejects_key_path_injection(self):
         with tempfile.TemporaryDirectory() as tmp:

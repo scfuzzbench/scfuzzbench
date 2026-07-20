@@ -2,16 +2,23 @@
 
 Each fuzzer lives in `fuzzers/<name>/` with an `install.sh` and `run.sh`. Common behavior (clone, build, upload, timeout, shutdown) is in `fuzzers/_shared/common.sh`. Per-fuzzer configuration is provided via `fuzzer_env` in your local `tfvars`.
 
+Cloud `fuzzer_env` accepts ordinary fuzzer settings plus a small
+`SCFUZZBENCH_*` safe allowlist: `SCFUZZBENCH_WORKERS`, runner-metrics controls,
+and the documented Foundry corpus/showmap controls below. Framework-owned
+identity, credential, AWS, timing, helper, and filesystem settings are
+rejected; use their dedicated workflow/Terraform inputs instead. Corpus
+directory overrides must be repo-relative paths and are resolved strictly
+beneath the cloned target before any reset or upload.
+
 ## Shared settings
 
-- `SCFUZZBENCH_PROPERTIES_PATH`: repo-relative path to the properties file that gets patched for `benchmark_type` switching.
-- `SCFUZZBENCH_SHUTDOWN_GRACE_SECONDS`, `SCFUZZBENCH_TIMEOUT_GRACE_SECONDS`: graceful shutdown/timeouts.
-- `SCFUZZBENCH_GIT_TOKEN_SSM_PARAMETER`: SSM name for a token used to clone private target repos.
+- `properties_path` (dedicated Terraform/workflow input): repo-relative path to the properties file that gets patched for `benchmark_type` switching.
+- `git_token_ssm_parameter_name` (dedicated Terraform/workflow input): SSM name for a token used to clone private target repos.
 - `SCFUZZBENCH_WORKERS`: override default worker count (defaults to vCPU count on the instance).
 - `SCFUZZBENCH_RUNNER_METRICS`: set to `0` to disable runner metrics collection (default `1`).
 - `SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS`: sampling interval in seconds for runner metrics (default `5`).
-- `SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS`: immutable preliminary checkpoint interval (default `3600`; set to `0` or `off` to disable). Cloud runners align checkpoints to `SCFUZZBENCH_RUN_STARTED_AT_EPOCH`; local mode never uploads them.
-- `SCFUZZBENCH_SEED_CORPUS_SOURCE`: optional target-relative/absolute directory or `s3://bucket/prefix`. The same raw file tree is copied into every selected fuzzer corpus; no corpus-format conversion or archive extraction is performed. Inputs are limited to 10,000 regular, non-hardlinked files and 1 GiB.
+- `preliminary_interval_seconds` (dedicated input): immutable preliminary checkpoint interval. Cloud runners align checkpoints to `SCFUZZBENCH_RUN_STARTED_AT_EPOCH`; local mode never uploads them.
+- `shared_seed_corpus_source` (dedicated input): optional target-relative directory or `s3://bucket/prefix`. The same raw file tree is copied into every selected fuzzer corpus; no corpus-format conversion or archive extraction is performed. Inputs are limited to 10,000 regular, non-hardlinked files and 1 GiB.
 - `SCFUZZBENCH_LOCAL_MODE`: set to `1` to enable local mode (used by `scripts/local-run.sh`). Changes workspace to `~/.scfuzzbench/`, skips shutdown/upload/apt, saves results locally.
 - `SCFUZZBENCH_COMMON_SH`: path to `common.sh` (default: `/opt/scfuzzbench/common.sh`). Set automatically by `local-run.sh`.
 - `SCFUZZBENCH_BIN_DIR`: directory for installed binaries (default: `/usr/local/bin`, or `~/.local/bin` in local mode).
@@ -27,7 +34,7 @@ Environment variables:
   `ECHIDNA_CI_TOKEN` (local only; never pass it as a Terraform variable)
 - `ECHIDNA_CONFIG` or `ECHIDNA_TARGET` (required; add `ECHIDNA_CONTRACT` if needed)
 - `ECHIDNA_WORKERS`, `ECHIDNA_TEST_MODE`, `ECHIDNA_EXTRA_ARGS`
-- `ECHIDNA_CORPUS_DIR`
+- `ECHIDNA_CORPUS_DIR` (optional repo-relative path beneath the cloned target)
 - `ECHIDNA_RTS_ARGS` (optional; defaults to `-A1g`; set to empty to disable RTS args)
 
 Notes:
@@ -45,8 +52,8 @@ Notes:
 Environment variables:
 - `RECON_VERSION` (required)
 - `ECHIDNA_CONFIG` or `ECHIDNA_TARGET` (required; add `ECHIDNA_CONTRACT` if needed)
-- `RECON_WORKERS`, `RECON_TEST_MODE`, `RECON_EXTRA_ARGS`, `RECON_CORPUS_DIR`
-- Fallback compatibility knobs: `ECHIDNA_WORKERS`, `ECHIDNA_TEST_MODE`, `ECHIDNA_EXTRA_ARGS`, `ECHIDNA_CORPUS_DIR`
+- `RECON_WORKERS`, `RECON_TEST_MODE`, `RECON_EXTRA_ARGS`, `RECON_CORPUS_DIR` (corpus path must be repo-relative)
+- Fallback compatibility knobs: `ECHIDNA_WORKERS`, `ECHIDNA_TEST_MODE`, `ECHIDNA_EXTRA_ARGS`, `ECHIDNA_CORPUS_DIR` (corpus path must be repo-relative)
 
 Notes:
 - Runs with `recon fuzz . --format text`.
@@ -59,7 +66,7 @@ Environment variables:
 - Source mode (all required together): `MEDUSA_GIT_REPO`, `MEDUSA_GIT_REF`,
   `MEDUSA_GIT_COMMIT`, `MEDUSA_GO_VERSION`, `MEDUSA_GO_SHA256`
 - `MEDUSA_CONFIG` (optional; defaults to `medusa.json` when present)
-- `MEDUSA_WORKERS`, `MEDUSA_CORPUS_DIR`, `MEDUSA_EXTRA_ARGS`
+- `MEDUSA_WORKERS`, `MEDUSA_CORPUS_DIR` (repo-relative), `MEDUSA_EXTRA_ARGS`
 - `MEDUSA_PRUNE_FREQUENCY` (non-negative minutes; defaults to `0`, which disables the background corpus-pruner goroutine)
 
 Notes:
@@ -82,6 +89,8 @@ Environment variables:
 - `FOUNDRY_VERSION` or (`FOUNDRY_GIT_REPO` + `FOUNDRY_GIT_REF`)
 - `FOUNDRY_THREADS` (defaults to `SCFUZZBENCH_WORKERS`, passes `--threads` to `forge test`)
 - `FOUNDRY_TEST_ARGS` (passed to `forge test`; scfuzzbench adds `--invariant-workers auto` unless this includes an explicit `--invariant-workers` value)
+- `FOUNDRY_CORPUS_DIR` (optional repo-relative path beneath the cloned target)
+- `SCFUZZBENCH_FOUNDRY_KEEP_CORPUS` (`0` or `1`; preserves the invariant corpus when enabled)
 - `SCFUZZBENCH_FOUNDRY_SOURCE_PATCH` (path to the digest-verified throughput pulse patch; cloud and `scripts/local-run.sh` set this automatically for the default pinned source)
 - `SCFUZZBENCH_FOUNDRY_SHOWMAP` (set to `1` to opt in to Foundry showmap replay after the main campaign; disabled by default)
 - `SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS` (optional timeout override for showmap replay; default is the smaller of the campaign timeout and 1800 seconds)

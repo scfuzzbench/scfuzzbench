@@ -259,7 +259,8 @@ class GenerateDocsSiteTests(unittest.TestCase):
     def test_run_social_description_is_url_specific(self):
         module = load_generate_docs_site()
         run = module.Run(
-            run_id=1772801774,
+            run_id="1772801774",
+            run_started_at_epoch=1772801774,
             benchmark_uuid="454f886c9668a94e8595de32219ce2b9",
             manifest_key="runs/1772801774/454f886c9668a94e8595de32219ce2b9/manifest.json",
             manifest={
@@ -280,6 +281,21 @@ class GenerateDocsSiteTests(unittest.TestCase):
         self.assertIn("Target Recon-Fuzz/scfuzzbench", desc)
         self.assertIn("Commit 0123456789", desc)
         self.assertIn("Fuzzers foundry, echidna, medusa", desc)
+
+    def test_run_manifest_pattern_accepts_isolated_and_legacy_ids(self):
+        module = load_generate_docs_site()
+        uuid = "a" * 32
+
+        self.assertIsNotNone(
+            module.RUN_MANIFEST_RE.match(
+                f"runs/gh-123456-2/{uuid}/manifest.json"
+            )
+        )
+        self.assertIsNotNone(
+            module.RUN_MANIFEST_RE.match(
+                f"runs/1772801774/{uuid}/manifest.json"
+            )
+        )
 
     def test_preliminary_page_repeats_non_terminal_warning_and_as_of_context(self):
         module = load_generate_docs_site()
@@ -480,7 +496,6 @@ class GenerateDocsSiteTests(unittest.TestCase):
                 now=1_800_000_001,
                 generated_at="now",
             )
-
 
 if __name__ == "__main__":
     unittest.main()

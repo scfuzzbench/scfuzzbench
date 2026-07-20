@@ -26,6 +26,7 @@ from analysis.trial_run import (  # noqa: E402
     MIN_RUNS_PER_FUZZER,
     format_trial_run_warning,
 )
+from scripts.benchmark_run_state import run_started_at_epoch  # noqa: E402
 from scripts.preliminary_results import (  # noqa: E402
     ANALYSIS_META_RE,
     FINALIZED_KEY_RE,
@@ -44,7 +45,9 @@ from scripts.preliminary_results import (  # noqa: E402
 )
 
 
-RUN_MANIFEST_RE = re.compile(r"^runs/([0-9]+)/([0-9a-f]{32})/manifest\.json$")
+RUN_MANIFEST_RE = re.compile(
+    r"^runs/([A-Za-z0-9][A-Za-z0-9._-]{0,79})/([0-9a-f]{32})/manifest\.json$"
+)
 MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<url>[^)\s]+)(?:\s+\"[^\"]*\")?\)")
 PRICING_API_REGION = "us-east-1"
 SITE_ORIGIN = "https://scfuzzbench.com"
@@ -217,7 +220,7 @@ def first_heading_text(lines: list[str]) -> str:
     return ""
 
 
-def run_social_title(run_id: int, benchmark_uuid: str, target_repo_url: str) -> str:
+def run_social_title(run_id: str, benchmark_uuid: str, target_repo_url: str) -> str:
     target_label = compact_repo_label(target_repo_url)
     if target_label:
         return f"scfuzzbench run {run_id} - {target_label}"
@@ -228,7 +231,7 @@ def run_social_description(run: Run) -> str:
     m = run.manifest
     parts: list[str] = [
         f"Benchmark {run.benchmark_uuid}",
-        f"Date {utc_ts(run.run_id)}",
+        f"Date {utc_ts(run.run_started_at_epoch)}",
         f"Timeout {run.timeout_hours:g}h",
     ]
 
@@ -945,7 +948,8 @@ def generate_preliminary_pages(
 
 @dataclass(frozen=True)
 class Run:
-    run_id: int
+    run_id: str
+    run_started_at_epoch: int
     benchmark_uuid: str
     manifest_key: str
     manifest: dict
@@ -981,15 +985,15 @@ def main() -> int:
     now = int(time.time())
     generated_at = dt.datetime.fromtimestamp(now, tz=dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
-    # Discover manifests via the timestamp-first run index.
+    # Discover manifests via the run-identity-first index.
     keys = list_keys(bucket, "runs/", profile=profile)
     print(f"Discovered {len(keys)} S3 keys under runs/")
-    candidates: list[tuple[int, str, str]] = []
+    candidates: list[tuple[str, str, str]] = []
     for key in keys:
         m = RUN_MANIFEST_RE.match(key)
         if not m:
             continue
-        run_id = int(m.group(1))
+        run_id = m.group(1)
         benchmark_uuid = m.group(2)
         candidates.append((run_id, benchmark_uuid, key))
 
@@ -1012,7 +1016,11 @@ def main() -> int:
             continue
 
         timeout_hours = safe_float(manifest.get("timeout_hours", 24), 24.0)
-        deadline = run_id + int(timeout_hours * 3600) + int(args.grace_seconds)
+        try:
+            started_at_epoch = run_started_at_epoch(run_id, manifest)
+        except ValueError:
+            continue
+        deadline = started_at_epoch + int(timeout_hours * 3600) + int(args.grace_seconds)
         if now < deadline:
             continue
 
@@ -1034,6 +1042,7 @@ def main() -> int:
         complete_runs.append(
             Run(
                 run_id=run_id,
+                run_started_at_epoch=started_at_epoch,
                 benchmark_uuid=benchmark_uuid,
                 manifest_key=manifest_key,
                 manifest=manifest,
@@ -1044,7 +1053,10 @@ def main() -> int:
             )
         )
 
-    complete_runs.sort(key=lambda r: (r.run_id, r.benchmark_uuid), reverse=True)
+    complete_runs.sort(
+        key=lambda r: (r.run_started_at_epoch, r.run_id, r.benchmark_uuid),
+        reverse=True,
+    )
     print(f"Found {len(complete_runs)} complete runs (timeout + grace)")
 
     generate_preliminary_pages(
@@ -1084,7 +1096,9 @@ def main() -> int:
     rm_tree_children(
         docs_dir / "runs",
         keep_files={"index.md"},
-        dir_name_re=re.compile(r"^(?:[0-9]+|latest)$"),
+        dir_name_re=re.compile(
+            r"^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,79}|latest)$"
+        ),
     )
     rm_tree_children(
         docs_dir / "benchmarks",
@@ -1141,7 +1155,7 @@ def main() -> int:
                 + " | ".join(
                     [
                         f"[`{r.run_id}`](./{r.run_id}/{r.benchmark_uuid}/)",
-                        f"`{utc_ts(r.run_id)}`",
+                        f"`{utc_ts(r.run_started_at_epoch)}`",
                         f"[`{r.benchmark_uuid}`](../benchmarks/{r.benchmark_uuid}/)",
                         target_cell,
                         f"`{commit_short}`" if commit_short else "",
@@ -1153,8 +1167,8 @@ def main() -> int:
         runs_lines.append("")
     write_text(docs_dir / "runs" / "index.md", "\n".join(runs_lines).rstrip() + "\n")
 
-    # Per-run-id pages (group benchmarks that share a timestamp run ID).
-    by_run_id: dict[int, list[Run]] = {}
+    # Per-run-id pages (normally one benchmark per isolated Actions run).
+    by_run_id: dict[str, list[Run]] = {}
     for r in complete_runs:
         by_run_id.setdefault(r.run_id, []).append(r)
 
@@ -1168,7 +1182,7 @@ def main() -> int:
         lines.append("")
         lines.append(f"# Run `{run_id}`")
         lines.append("")
-        lines.append(f"- Date (UTC): `{utc_ts(run_id)}`")
+        lines.append(f"- Date (UTC): `{utc_ts(runs[0].run_started_at_epoch)}`")
         lines.append(f"- Benchmarks: `{len(runs)}`")
         lines.append("")
         lines.append("| Benchmark | Details | Target | Commit | Timeout |")
@@ -1200,7 +1214,10 @@ def main() -> int:
     for r in complete_runs:
         by_benchmark.setdefault(r.benchmark_uuid, []).append(r)
     for uuid, runs in by_benchmark.items():
-        runs.sort(key=lambda rr: rr.run_id, reverse=True)
+        runs.sort(
+            key=lambda rr: (rr.run_started_at_epoch, rr.run_id),
+            reverse=True,
+        )
 
     bench_lines: list[str] = []
     bench_lines.append("---")
@@ -1223,7 +1240,7 @@ def main() -> int:
         # Sort by latest run time so the index is useful at a glance.
         bench_entries: list[tuple[int, str, Run]] = []
         for uuid, runs in by_benchmark.items():
-            bench_entries.append((runs[0].run_id, uuid, runs[0]))
+            bench_entries.append((runs[0].run_started_at_epoch, uuid, runs[0]))
         bench_entries.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
         for _, uuid, latest_run in bench_entries:
@@ -1249,7 +1266,7 @@ def main() -> int:
                     [
                         f"[`{short_uuid(uuid)}`](./{uuid}/)",
                         f"[`{latest_run.run_id}`](../runs/{latest_run.run_id}/{uuid}/)",
-                        f"`{utc_ts(latest_run.run_id)}`",
+                        f"`{utc_ts(latest_run.run_started_at_epoch)}`",
                         target_cell,
                         f"`{commit_short}`" if commit_short else "",
                         f"`{bench_type}`" if bench_type else "",
@@ -1282,7 +1299,7 @@ def main() -> int:
         lines.append("## Latest")
         lines.append("")
         lines.append(f"- Run: [`{latest_run.run_id}`](../../runs/{latest_run.run_id}/{uuid}/)")
-        lines.append(f"- Date (UTC): `{utc_ts(latest_run.run_id)}`")
+        lines.append(f"- Date (UTC): `{utc_ts(latest_run.run_started_at_epoch)}`")
         if repo:
             lines.append(f"- Target: [{repo}]({repo})" if repo.startswith("http") else f"- Target: `{repo}`")
         if commit:
@@ -1319,7 +1336,7 @@ def main() -> int:
                 + " | ".join(
                     [
                         f"[`{r.run_id}`](../../runs/{r.run_id}/{uuid}/)",
-                        f"`{utc_ts(r.run_id)}`",
+                        f"`{utc_ts(r.run_started_at_epoch)}`",
                         status,
                     ]
                 )
@@ -1336,7 +1353,7 @@ def main() -> int:
         lines: list[str] = []
         lines.append(f"# Run `{r.run_id}`")
         lines.append("")
-        lines.append(f"- Date (UTC): `{utc_ts(r.run_id)}`")
+        lines.append(f"- Date (UTC): `{utc_ts(r.run_started_at_epoch)}`")
         lines.append(f"- Benchmark: [`{r.benchmark_uuid}`](../../../benchmarks/{r.benchmark_uuid}/)")
         lines.append(f"- Timeout: `{r.timeout_hours:g}h`")
         lines.append("")

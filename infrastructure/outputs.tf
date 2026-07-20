@@ -9,8 +9,18 @@ output "run_id" {
 }
 
 output "run_started_at_epoch" {
-  description = "Unix epoch used to align preliminary checkpoints."
+  description = "Unix timestamp generated with the run identity and used to align checkpoints."
   value       = local.run_started_at_epoch
+}
+
+output "terraform_backend_key" {
+  description = "Run-scoped remote-state key."
+  value       = var.terraform_backend_key
+}
+
+output "run_namespace" {
+  description = "Run-scoped prefix used for AWS resource names."
+  value       = local.name_prefix
 }
 
 output "benchmark_uuid" {

@@ -12,14 +12,18 @@ def write_common_sh(tmp_dir: Path) -> Path:
     common_sh = tmp_dir / "common.sh"
     common_sh.write_text(
         """
-register_shutdown_trap() { :; }
 prepare_workspace() {
   mkdir -p "${SCFUZZBENCH_WORKDIR}/target" "${SCFUZZBENCH_LOG_DIR}"
+}
+register_shutdown_trap() { prepare_workspace; }
+resolve_target_corpus_dir() {
+  printf '%s/%s\\n' "${SCFUZZBENCH_WORKDIR}/target" "${1:-$2}"
 }
 prepare_shared_seed_corpus() { :; }
 clone_target() {
   printf 'shrinkLimit: 100000\\n' > "${SCFUZZBENCH_WORKDIR}/target/echidna.yaml"
 }
+capture_target_workspace_anchor() { :; }
 apply_benchmark_type() { :; }
 build_target() { :; }
 set_default_worker_env() { :; }

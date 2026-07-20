@@ -65,6 +65,71 @@ jobs:
             const LABEL_APPROVED = "benchmark/03-approved";
             const STATUS_LABELS = [LABEL_PENDING, LABEL_VALIDATED, LABEL_APPROVED];
             const DEFAULT_FUZZERS = ["echidna", "medusa", "foundry", "recon-fuzzer"];
+            const SUPPORTED_FUZZERS = new Set(DEFAULT_FUZZERS);
+            const IMMUTABLE_FUZZER_ENV_KEYS = new Set([
+              "AWS_ACCESS_KEY_ID",
+              "AWS_DEFAULT_REGION",
+              "AWS_REGION",
+              "AWS_SECRET_ACCESS_KEY",
+              "AWS_SESSION_TOKEN",
+              "SCFUZZBENCH_AWS_CREDS_ENV_FILE",
+              "SCFUZZBENCH_AWS_CREDS_REFRESH_PID",
+              "SCFUZZBENCH_AWS_CREDS_REFRESH_PID_START_TICKS",
+              "SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS",
+              "SCFUZZBENCH_BENCHMARK_MANIFEST_B64",
+              "SCFUZZBENCH_BENCHMARK_TYPE",
+              "SCFUZZBENCH_BENCHMARK_UUID",
+              "SCFUZZBENCH_BIN_DIR",
+              "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION",
+              "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH",
+              "SCFUZZBENCH_COMMIT",
+              "SCFUZZBENCH_COMMON_SH",
+              "SCFUZZBENCH_CORPUS_DIR",
+              "SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE",
+              "SCFUZZBENCH_GIT_TOKEN_SSM_PARAMETER",
+              "SCFUZZBENCH_GIT_TOKEN",
+              "SCFUZZBENCH_LOCAL_MODE",
+              "SCFUZZBENCH_FUZZER_KEY",
+              "SCFUZZBENCH_FUZZER_LABEL",
+              "SCFUZZBENCH_INSTANCE_ID",
+              "SCFUZZBENCH_LOG_DIR",
+              "SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS",
+              "SCFUZZBENCH_PRELIMINARY_PID",
+              "SCFUZZBENCH_PRELIMINARY_PID_START_TICKS",
+              "SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT",
+              "SCFUZZBENCH_PROPERTIES_PATH",
+              "SCFUZZBENCH_REPO_URL",
+              "SCFUZZBENCH_ROOT",
+              "SCFUZZBENCH_RUNNER_METRICS_PID",
+              "SCFUZZBENCH_RUNNER_METRICS_PID_START_TICKS",
+              "SCFUZZBENCH_RUN_HEARTBEAT_SECONDS",
+              "SCFUZZBENCH_RUN_ID",
+              "SCFUZZBENCH_RUN_INDEX",
+              "SCFUZZBENCH_RUN_STARTED_AT_EPOCH",
+              "SCFUZZBENCH_S3_BUCKET",
+              "SCFUZZBENCH_SEED_CORPUS_MAX_BYTES",
+              "SCFUZZBENCH_SEED_CORPUS_MAX_FILES",
+              "SCFUZZBENCH_SHUTDOWN_GRACE_SECONDS",
+              "SCFUZZBENCH_TIMEOUT_GRACE_SECONDS",
+              "SCFUZZBENCH_TIMEOUT_SECONDS",
+              "SCFUZZBENCH_UPLOAD_DONE",
+              "SCFUZZBENCH_WORKDIR",
+              "SCFUZZBENCH_WORKERS_RESOLVED",
+            ]);
+            const SAFE_SCFUZZBENCH_FUZZER_ENV_KEYS = new Set([
+              "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS",
+              "SCFUZZBENCH_FOUNDRY_SHOWMAP",
+              "SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS",
+              "SCFUZZBENCH_RUNNER_METRICS",
+              "SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS",
+              "SCFUZZBENCH_WORKERS",
+            ]);
+            const CORPUS_OVERRIDE_ENV_KEYS = new Set([
+              "ECHIDNA_CORPUS_DIR",
+              "FOUNDRY_CORPUS_DIR",
+              "MEDUSA_CORPUS_DIR",
+              "RECON_CORPUS_DIR",
+            ]);
 
             function uniq(arr) {
               return Array.from(new Set(arr));
@@ -183,8 +248,9 @@ jobs:
               if (!obj || typeof obj !== "object" || Array.isArray(obj)) return fail("fuzzer_env_json must be a JSON object.");
 
               const keys = Object.keys(obj);
-              if (keys.length > 64) return fail("fuzzer_env_json has too many keys (max 64).");
+              if (keys.length > 64) return fail("fuzzer_env_json must contain at most 64 entries.");
               const protectedToolKeys = new Set([
+                "ECHIDNA_VERSION",
                 "ECHIDNA_CI_TOKEN",
                 "ECHIDNA_CI_TOKEN_SSM_PARAMETER",
                 "ECHIDNA_CI_REPO",
@@ -193,11 +259,17 @@ jobs:
                 "ECHIDNA_CI_ARTIFACT_SHA256",
                 "ECHIDNA_CI_COMMIT",
                 "ECHIDNA_CI_TOKEN_KMS_KEY_ARN",
+                "FOUNDRY_GIT_REPO",
+                "FOUNDRY_GIT_REF",
+                "FOUNDRY_VERSION",
+                "SCFUZZBENCH_FOUNDRY_SOURCE_PATCH",
+                "MEDUSA_VERSION",
                 "MEDUSA_GIT_REPO",
                 "MEDUSA_GIT_REF",
                 "MEDUSA_GIT_COMMIT",
                 "MEDUSA_GO_VERSION",
                 "MEDUSA_GO_SHA256",
+                "RECON_VERSION",
               ]);
               const reservedSeedKeys = new Set([
                 "SCFUZZBENCH_SEED_CORPUS_SOURCE",
@@ -206,8 +278,17 @@ jobs:
                 "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
               ]);
 
+              let aggregateUtf8Bytes = 0;
+              const utf8Encoder = new TextEncoder();
               for (const k of keys) {
                 if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(k)) return fail(`Invalid fuzzer env key: ${k}`);
+                if (
+                  k.startsWith("AWS_") ||
+                  (k.startsWith("SCFUZZBENCH_") && !SAFE_SCFUZZBENCH_FUZZER_ENV_KEYS.has(k)) ||
+                  IMMUTABLE_FUZZER_ENV_KEYS.has(k)
+                ) {
+                  return fail(`fuzzer_env_json may not override ${k}`);
+                }
                 if (protectedToolKeys.has(k)) {
                   return fail(`Use the dedicated benchmark request field instead of fuzzer_env_json for ${k}`);
                 }
@@ -215,9 +296,41 @@ jobs:
                 const v = obj[k];
                 if (typeof v !== "string") return fail(`Env value for ${k} must be a string`);
                 if (v.length > 2000) return fail(`Env value for ${k} too long (max 2000 chars)`);
+                aggregateUtf8Bytes += utf8Encoder.encode(k).length + utf8Encoder.encode(v).length;
                 // Values are rendered into user-data as: export KEY="VALUE"
                 // Keep this conservative to avoid shell injection and quoting pitfalls.
                 if (/[\r\n"`$\\]/.test(v)) return fail(`Env value for ${k} contains a forbidden character`);
+                const booleanValues = new Set(["0", "1", "false", "no", "off", "on", "true", "yes"]);
+                if (
+                  (k === "SCFUZZBENCH_RUNNER_METRICS" || k === "SCFUZZBENCH_FOUNDRY_SHOWMAP") &&
+                  !booleanValues.has(v.toLowerCase())
+                ) return fail(`${k} must be a boolean value`);
+                if (k === "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS" && v !== "0" && v !== "1") {
+                  return fail(`${k} must be 0 or 1`);
+                }
+                const integerBounds = {
+                  SCFUZZBENCH_WORKERS: [1, 256],
+                  SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS: [1, 300],
+                  SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS: [1, 3600],
+                };
+                if (Object.hasOwn(integerBounds, k)) {
+                  const [minimum, maximum] = integerBounds[k];
+                  if (!/^[0-9]+$/.test(v) || Number(v) < minimum || Number(v) > maximum) {
+                    return fail(`${k} must be an integer in [${minimum}, ${maximum}]`);
+                  }
+                }
+                if (
+                  CORPUS_OVERRIDE_ENV_KEYS.has(k) &&
+                  v !== "" &&
+                  (
+                    v.startsWith("/") ||
+                    !/^[A-Za-z0-9_.+/-]+$/.test(v) ||
+                    /(^|\/)\.\.?(\/|$)/.test(v)
+                  )
+                ) return fail(`${k} must be a safe repo-relative path without dot segments`);
+              }
+              if (aggregateUtf8Bytes > 4096) {
+                return fail("fuzzer_env_json keys and values must contain at most 4096 aggregate UTF-8 bytes");
               }
               return ok(JSON.stringify(obj));
             }
@@ -323,6 +436,10 @@ jobs:
               for (const v of fuzzers) {
                 if (typeof v !== "string" || !keyRe.test(v)) {
                   errors.push(`Invalid fuzzer key: ${JSON.stringify(v)}`);
+                  continue;
+                }
+                if (!SUPPORTED_FUZZERS.has(v)) {
+                  errors.push(`Unsupported cloud fuzzer key: ${JSON.stringify(v)}`);
                   continue;
                 }
                 sanitized.push(v);

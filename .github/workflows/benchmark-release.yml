@@ -36,15 +36,54 @@ permissions:
   contents: write
 
 jobs:
+  authorize-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require trusted main ref
+        env:
+          GITHUB_REF_VALUE: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_VALUE}" != "refs/heads/main" ]]; then
+            echo "Privileged benchmark workflows may run only from refs/heads/main." >&2
+            exit 1
+          fi
+
   discover:
+    needs: authorize-main
     runs-on: ubuntu-latest
     outputs:
+      exclude_fuzzers: ${{ steps.release_inputs.outputs.exclude_fuzzers }}
       has_runs: ${{ steps.discover.outputs.has_runs }}
       matrix: ${{ steps.discover.outputs.matrix }}
     env:
       AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
       SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
     steps:
+      - name: Checkout trusted main source
+        timeout-minutes: 5
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          url="https://codeload.github.com/${REPO}/tar.gz/${SHA}"
+          curl -fsSL "${url}" -o repo.tar.gz
+          topdir="$(tar -tzf repo.tar.gz | sed -n '1p' | cut -d/ -f1)"
+          tar -xzf repo.tar.gz
+          shopt -s dotglob
+          mv "${topdir}"/* .
+          rm -rf "${topdir}" repo.tar.gz
+
+      - name: Validate and canonicalize release inputs
+        id: release_inputs
+        env:
+          EXCLUDE_FUZZERS: ${{ inputs.exclude_fuzzers }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py normalize-excluded-fuzzers \
+            --github-output "${GITHUB_OUTPUT}"
+
       - name: Ensure AWS credentials are configured
         run: |
           if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
@@ -84,14 +123,23 @@ jobs:
             matrix=$(python3 - <<'PY'
           import json
           import os
+          from scripts.benchmark_run_state import (
+              validate_benchmark_hours,
+              validate_benchmark_uuid,
+              validate_run_id,
+          )
 
           entry = {
-              "benchmark_uuid": os.environ["BENCHMARK_UUID"],
-              "run_id": os.environ["RUN_ID"],
+              "benchmark_uuid": validate_benchmark_uuid(
+                  os.environ["BENCHMARK_UUID"]
+              ),
+              "run_id": validate_run_id(os.environ["RUN_ID"]),
           }
           report_budget = os.environ.get("REPORT_BUDGET_HOURS", "").strip()
           if report_budget:
-              entry["report_budget_hours"] = report_budget
+              entry["report_budget_hours"] = validate_benchmark_hours(
+                  report_budget, "report_budget_hours"
+              )
           print(json.dumps({"include": [entry]}, separators=(",", ":")))
           PY
             )
@@ -105,6 +153,11 @@ jobs:
           import os
           import subprocess
           import time
+          from scripts.benchmark_run_state import (
+              validate_benchmark_hours,
+              validate_benchmark_uuid,
+              validate_run_id,
+          )
 
           bucket = os.environ["SCFUZZBENCH_BUCKET"]
           grace = int(os.environ.get("GRACE_SECONDS", "3600"))
@@ -135,12 +188,18 @@ jobs:
               parts = run_prefix.strip("/").split("/")
               if len(parts) < 2:
                   continue
-              run_id = parts[1]
+              try:
+                  run_id = validate_run_id(parts[1])
+              except ValueError:
+                  continue
               for bench_prefix in list_prefixes(f"logs/{run_id}/"):
                   bench_parts = bench_prefix.strip("/").split("/")
                   if len(bench_parts) < 3:
                       continue
-                  benchmark_uuid = bench_parts[2]
+                  try:
+                      benchmark_uuid = validate_benchmark_uuid(bench_parts[2])
+                  except ValueError:
+                      continue
                   manifest_key = f"logs/{run_id}/{benchmark_uuid}/manifest.json"
                   try:
                       manifest_raw = aws("s3", "cp", f"s3://{bucket}/{manifest_key}", "-")
@@ -148,12 +207,25 @@ jobs:
                   except Exception:
                       continue
                   try:
-                      timeout_hours = float(manifest.get("timeout_hours", 24))
-                  except Exception:
-                      timeout_hours = 24.0
-                  try:
-                      run_start = int(run_id)
+                      timeout_hours = validate_benchmark_hours(
+                          manifest.get("timeout_hours"), "timeout_hours"
+                      )
                   except ValueError:
+                      continue
+                  if manifest.get("run_id") != run_id:
+                      continue
+                  if (
+                      manifest.get("artifact_prefix")
+                      != f"logs/{run_id}/{benchmark_uuid}"
+                  ):
+                      continue
+                  try:
+                      run_start = int(manifest.get("run_started_at_epoch", run_id))
+                  except (TypeError, ValueError):
+                      # Opaque run IDs require explicit manifest provenance.
+                      # Numeric legacy IDs remain their historical timestamp.
+                      continue
+                  if run_start <= 0:
                       continue
                   if now >= run_start + int(timeout_hours * 3600) + grace:
                       runs.append(
@@ -176,16 +248,33 @@ jobs:
           echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
 
   release:
-    needs: discover
+    needs: [authorize-main, discover]
     if: ${{ needs.discover.outputs.has_runs == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    concurrency:
+      group: scfuzzbench-release-${{ matrix.run_id }}-${{ matrix.benchmark_uuid }}
+      cancel-in-progress: false
     env:
       AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
+      BENCHMARK_UUID: ${{ matrix.benchmark_uuid }}
+      RUN_ID: ${{ matrix.run_id }}
       SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
     steps:
+      - name: Revalidate release identity before credentials
+        run: |
+          set -euo pipefail
+          if [[ ! "${RUN_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$ ]]; then
+            echo "Invalid release run_id." >&2
+            exit 1
+          fi
+          if [[ ! "${BENCHMARK_UUID}" =~ ^[0-9a-f]{32}$ ]]; then
+            echo "Invalid release benchmark_uuid." >&2
+            exit 1
+          fi
+
       - name: Checkout (tarball)
         timeout-minutes: 5
         env:
@@ -201,6 +290,14 @@ jobs:
           mv "${topdir}"/* .
           rm -rf "${topdir}" repo.tar.gz
 
+      - name: Revalidate canonical release inputs before credentials
+        env:
+          EXCLUDE_FUZZERS: ${{ needs.discover.outputs.exclude_fuzzers }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py normalize-excluded-fuzzers \
+            --require-canonical
+
       - name: Configure AWS credentials (keys)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -214,7 +311,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          tag="scfuzzbench-${{ matrix.benchmark_uuid }}-${{ matrix.run_id }}"
+          tag="scfuzzbench-${BENCHMARK_UUID}-${RUN_ID}"
           if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             echo "exists=true" >> "${GITHUB_OUTPUT}"
           else
@@ -239,11 +336,11 @@ jobs:
           REPORT_BUDGET_HOURS: ${{ matrix.report_budget_hours }}
         run: |
           set -euo pipefail
-          dest_root="${GITHUB_WORKSPACE}/analysis-artifacts/${{ matrix.run_id }}"
+          dest_root="${GITHUB_WORKSPACE}/analysis-artifacts/${RUN_ID}"
           analysis_dir="${dest_root}/analysis"
           mkdir -p "${analysis_dir}"
-          logs_manifest_key="logs/${{ matrix.run_id }}/${{ matrix.benchmark_uuid }}/manifest.json"
-          runs_manifest_key="runs/${{ matrix.run_id }}/${{ matrix.benchmark_uuid }}/manifest.json"
+          logs_manifest_key="logs/${RUN_ID}/${BENCHMARK_UUID}/manifest.json"
+          runs_manifest_key="runs/${RUN_ID}/${BENCHMARK_UUID}/manifest.json"
           if aws s3 cp "s3://${SCFUZZBENCH_BUCKET}/${logs_manifest_key}" "${analysis_dir}/manifest.json"; then
             echo "Fetched manifest from ${logs_manifest_key}"
           else
@@ -251,25 +348,36 @@ jobs:
             echo "Fetched manifest from ${runs_manifest_key}"
           fi
 
-          timeout_hours="${{ matrix.timeout_hours }}"
-          if [[ -z "${timeout_hours}" || "${timeout_hours}" == "null" ]]; then
-            timeout_hours=$(ANALYSIS_DIR="${analysis_dir}" python3 - <<'PY'
+          validated=$(ANALYSIS_DIR="${analysis_dir}" python3 - <<'PY'
           import json
           import os
           from pathlib import Path
+          from scripts.benchmark_run_state import validate_benchmark_hours
 
           manifest_path = Path(os.environ["ANALYSIS_DIR"]) / "manifest.json"
           manifest = json.loads(manifest_path.read_text())
-          value = manifest.get("timeout_hours", 24)
-          print(value)
+          run_id = os.environ["RUN_ID"]
+          benchmark_uuid = os.environ["BENCHMARK_UUID"]
+          if manifest.get("run_id") != run_id:
+              raise ValueError("release manifest run_id does not match its key")
+          if manifest.get("benchmark_uuid", benchmark_uuid) != benchmark_uuid:
+              raise ValueError("release manifest benchmark_uuid does not match its key")
+          if manifest.get("artifact_prefix") != f"logs/{run_id}/{benchmark_uuid}":
+              raise ValueError("release manifest artifact_prefix does not match its key")
+          timeout = validate_benchmark_hours(
+              manifest.get("timeout_hours"), "timeout_hours"
+          )
+          report_raw = os.environ.get("REPORT_BUDGET_HOURS", "").strip()
+          report = (
+              validate_benchmark_hours(report_raw, "report_budget_hours")
+              if report_raw
+              else timeout
+          )
+          print(json.dumps({"report": report, "timeout": timeout}))
           PY
-            )
-          fi
-
-          report_budget="${REPORT_BUDGET_HOURS}"
-          if [[ -z "${report_budget}" ]]; then
-            report_budget="${timeout_hours}"
-          fi
+          )
+          timeout_hours=$(jq -r '.timeout' <<<"${validated}")
+          report_budget=$(jq -r '.report' <<<"${validated}")
 
           {
             echo "timeout_hours=${timeout_hours}"
@@ -288,7 +396,7 @@ jobs:
           DEST: ${{ steps.manifest.outputs.dest_root }}
           DURATION_HOURS: ${{ steps.manifest.outputs.report_budget_hours }}
           REPORT_BUDGET: ${{ steps.manifest.outputs.report_budget_hours }}
-          EXCLUDE_FUZZERS: ${{ inputs.exclude_fuzzers }}
+          EXCLUDE_FUZZERS: ${{ needs.discover.outputs.exclude_fuzzers }}
           COVERAGE_OVER_TIME: ${{ inputs.coverage_over_time }}
         run: |
           set -euo pipefail
@@ -400,7 +508,7 @@ jobs:
           set -euo pipefail
           analysis_dir="${{ steps.manifest.outputs.analysis_dir }}"
           release_dir="${{ steps.bundles.outputs.release_dir }}"
-          s3_prefix="analysis/${{ matrix.benchmark_uuid }}/${{ matrix.run_id }}"
+          s3_prefix="analysis/${BENCHMARK_UUID}/${RUN_ID}"
 
           aws s3 cp "${analysis_dir}/REPORT.md" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/REPORT.md" --content-type text/markdown
           aws s3 cp "${analysis_dir}/bugs_over_time.png" "s3://${SCFUZZBENCH_BUCKET}/${s3_prefix}/bugs_over_time.png" --content-type image/png
@@ -481,9 +589,9 @@ jobs:
           cp "${report_path}" "${release_body}"
 
           base_url="https://${SCFUZZBENCH_BUCKET}.s3.${AWS_REGION}.amazonaws.com"
-          analysis_base="${base_url}/analysis/${{ matrix.benchmark_uuid }}/${{ matrix.run_id }}"
-          logs_base="${base_url}/logs/${{ matrix.run_id }}/${{ matrix.benchmark_uuid }}"
-          corpus_base="${base_url}/corpus/${{ matrix.run_id }}/${{ matrix.benchmark_uuid }}"
+          analysis_base="${base_url}/analysis/${BENCHMARK_UUID}/${RUN_ID}"
+          logs_base="${base_url}/logs/${RUN_ID}/${BENCHMARK_UUID}"
+          corpus_base="${base_url}/corpus/${RUN_ID}/${BENCHMARK_UUID}"
           bundles_base="${analysis_base}/bundles"
 
           {
@@ -571,22 +679,28 @@ jobs:
         if: ${{ steps.release_check.outputs.exists != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_BODY: ${{ steps.body.outputs.release_body }}
+          RELEASE_TAG: ${{ steps.release_check.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${{ steps.release_check.outputs.tag }}"
-          gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --title "${tag}" --notes-file "${{ steps.body.outputs.release_body }}"
+          gh release create "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${RELEASE_TAG}" \
+            --notes-file "${RELEASE_BODY}"
 
       - name: Close preliminary stream
+        env:
+          CANONICAL_TAG: ${{ steps.release_check.outputs.tag }}
         run: |
           set -euo pipefail
           python3 scripts/preliminary_results.py mark-finalized \
             --bucket "${SCFUZZBENCH_BUCKET}" \
-            --run-id "${{ matrix.run_id }}" \
-            --benchmark-uuid "${{ matrix.benchmark_uuid }}" \
-            --canonical-tag "${{ steps.release_check.outputs.tag }}"
+            --run-id "${RUN_ID}" \
+            --benchmark-uuid "${BENCHMARK_UUID}" \
+            --canonical-tag "${CANONICAL_TAG}"
 
   refresh_docs:
-    needs: [discover, release]
+    needs: [authorize-main, discover, release]
     if: ${{ needs.discover.outputs.has_runs == 'true' && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     steps:

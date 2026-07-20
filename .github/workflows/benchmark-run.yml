@@ -252,7 +252,7 @@ on:
         required: false
     outputs:
       run_id:
-        description: "Opaque run identifier."
+        description: "Immutable opaque run ID generated before Terraform init."
         value: ${{ jobs.benchmark-run.outputs.run_id }}
       benchmark_uuid:
         description: "Benchmark UUID (derived from manifest)."
@@ -261,12 +261,364 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: scfuzzbench-shared-terraform
-
 jobs:
-  benchmark-run:
+  authorize-main:
     runs-on: ubuntu-latest
+    steps:
+      - name: Require trusted main ref
+        env:
+          GITHUB_REF_VALUE: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_VALUE}" != "refs/heads/main" ]]; then
+            echo "Privileged benchmark workflows may run only from refs/heads/main." >&2
+            exit 1
+          fi
+
+  prepare-run:
+    needs: authorize-main
+    runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.identity.outputs.run_id }}
+      run_started_at_epoch: ${{ steps.identity.outputs.run_started_at_epoch }}
+      terraform_backend_key: ${{ steps.identity.outputs.terraform_backend_key }}
+      reservation_key: ${{ steps.identity.outputs.reservation_key }}
+      metadata_key: ${{ steps.identity.outputs.metadata_key }}
+      cleanup_tfvars_key: ${{ steps.identity.outputs.cleanup_tfvars_key }}
+      echidna_ci_repo: ${{ steps.tool_sources.outputs.echidna_ci_repo }}
+      echidna_ci_run_id: ${{ steps.tool_sources.outputs.echidna_ci_run_id }}
+      echidna_ci_artifact_name: ${{ steps.tool_sources.outputs.echidna_ci_artifact_name }}
+      echidna_ci_artifact_sha256: ${{ steps.tool_sources.outputs.echidna_ci_artifact_sha256 }}
+      echidna_ci_commit: ${{ steps.tool_sources.outputs.echidna_ci_commit }}
+      echidna_ci_token_ssm_parameter_name: ${{ steps.tool_sources.outputs.echidna_ci_token_ssm_parameter_name }}
+      echidna_ci_token_kms_key_arn: ${{ steps.tool_sources.outputs.echidna_ci_token_kms_key_arn }}
+      medusa_git_repo: ${{ steps.tool_sources.outputs.medusa_git_repo }}
+      medusa_git_ref: ${{ steps.tool_sources.outputs.medusa_git_ref }}
+      medusa_git_commit: ${{ steps.tool_sources.outputs.medusa_git_commit }}
+      medusa_go_version: ${{ steps.tool_sources.outputs.medusa_go_version }}
+      medusa_go_sha256: ${{ steps.tool_sources.outputs.medusa_go_sha256 }}
+    steps:
+      - name: Checkout (tarball)
+        timeout-minutes: 5
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          url="https://codeload.github.com/${REPO}/tar.gz/${SHA}"
+          curl -fsSL "${url}" -o repo.tar.gz
+          topdir="$(tar -tzf repo.tar.gz | sed -n '1p' | cut -d/ -f1)"
+          tar -xzf repo.tar.gz
+          shopt -s dotglob
+          mv "${topdir}"/* .
+          rm -rf "${topdir}" repo.tar.gz
+
+      - name: Normalize bleeding-edge tool inputs before admission
+        id: tool_sources
+        env:
+          ECHIDNA_CI_JSON: ${{ inputs.echidna_ci_json }}
+          MEDUSA_SOURCE_JSON: ${{ inputs.medusa_source_json }}
+          CALL_ECHIDNA_CI_REPO: ${{ inputs.echidna_ci_repo }}
+          CALL_ECHIDNA_CI_RUN_ID: ${{ inputs.echidna_ci_run_id }}
+          CALL_ECHIDNA_CI_ARTIFACT_NAME: ${{ inputs.echidna_ci_artifact_name }}
+          CALL_ECHIDNA_CI_ARTIFACT_SHA256: ${{ inputs.echidna_ci_artifact_sha256 }}
+          CALL_ECHIDNA_CI_COMMIT: ${{ inputs.echidna_ci_commit }}
+          CALL_ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.echidna_ci_token_ssm_parameter_name }}
+          CALL_ECHIDNA_CI_TOKEN_KMS_KEY_ARN: ${{ inputs.echidna_ci_token_kms_key_arn }}
+          CALL_MEDUSA_GIT_REPO: ${{ inputs.medusa_git_repo }}
+          CALL_MEDUSA_GIT_REF: ${{ inputs.medusa_git_ref }}
+          CALL_MEDUSA_GIT_COMMIT: ${{ inputs.medusa_git_commit }}
+          CALL_MEDUSA_GO_VERSION: ${{ inputs.medusa_go_version }}
+          CALL_MEDUSA_GO_SHA256: ${{ inputs.medusa_go_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py normalize-tools \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Generate immutable run identity
+        id: identity
+        env:
+          GITHUB_RUN_ATTEMPT_VALUE: ${{ github.run_attempt }}
+          GITHUB_RUN_ID_VALUE: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py identity \
+            --github-run-id "${GITHUB_RUN_ID_VALUE}" \
+            --github-run-attempt "${GITHUB_RUN_ATTEMPT_VALUE}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Validate all cloud inputs before admission
+        env:
+          TARGET_REPO_URL: ${{ inputs.target_repo_url }}
+          TARGET_COMMIT: ${{ inputs.target_commit }}
+          BENCHMARK_TYPE: ${{ inputs.benchmark_type }}
+          INSTANCE_TYPE: ${{ inputs.instance_type }}
+          INSTANCES_PER_FUZZER: ${{ inputs.instances_per_fuzzer }}
+          TIMEOUT_HOURS: ${{ inputs.timeout_hours }}
+          PRELIMINARY_INTERVAL_MINUTES: ${{ inputs.preliminary_interval_minutes }}
+          FUZZERS_JSON: ${{ inputs.fuzzers_json }}
+          FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
+          FOUNDRY_GIT_REF: ${{ inputs.foundry_git_ref }}
+          ECHIDNA_VERSION: ${{ inputs.echidna_version }}
+          ECHIDNA_CI_REPO: ${{ steps.tool_sources.outputs.echidna_ci_repo }}
+          ECHIDNA_CI_RUN_ID: ${{ steps.tool_sources.outputs.echidna_ci_run_id }}
+          ECHIDNA_CI_ARTIFACT_NAME: ${{ steps.tool_sources.outputs.echidna_ci_artifact_name }}
+          ECHIDNA_CI_ARTIFACT_SHA256: ${{ steps.tool_sources.outputs.echidna_ci_artifact_sha256 }}
+          ECHIDNA_CI_COMMIT: ${{ steps.tool_sources.outputs.echidna_ci_commit }}
+          ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ steps.tool_sources.outputs.echidna_ci_token_ssm_parameter_name }}
+          ECHIDNA_CI_TOKEN_KMS_KEY_ARN: ${{ steps.tool_sources.outputs.echidna_ci_token_kms_key_arn }}
+          MEDUSA_VERSION: ${{ inputs.medusa_version }}
+          MEDUSA_GIT_REPO: ${{ steps.tool_sources.outputs.medusa_git_repo }}
+          MEDUSA_GIT_REF: ${{ steps.tool_sources.outputs.medusa_git_ref }}
+          MEDUSA_GIT_COMMIT: ${{ steps.tool_sources.outputs.medusa_git_commit }}
+          MEDUSA_GO_VERSION: ${{ steps.tool_sources.outputs.medusa_go_version }}
+          MEDUSA_GO_SHA256: ${{ steps.tool_sources.outputs.medusa_go_sha256 }}
+          RECON_VERSION: ${{ inputs.recon_version }}
+          GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
+          PROPERTIES_PATH: ${{ inputs.properties_path }}
+          FUZZER_ENV_JSON: ${{ inputs.fuzzer_env_json }}
+          SHARED_SEED_CORPUS_SOURCE: ${{ inputs.shared_seed_corpus_source }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py validate-inputs
+
+      - name: Preflight bleeding-edge tool pins before admission
+        env:
+          ECHIDNA_CI_REPO: ${{ steps.tool_sources.outputs.echidna_ci_repo }}
+          ECHIDNA_CI_RUN_ID: ${{ steps.tool_sources.outputs.echidna_ci_run_id }}
+          ECHIDNA_CI_ARTIFACT_NAME: ${{ steps.tool_sources.outputs.echidna_ci_artifact_name }}
+          ECHIDNA_CI_ARTIFACT_SHA256: ${{ steps.tool_sources.outputs.echidna_ci_artifact_sha256 }}
+          ECHIDNA_CI_COMMIT: ${{ steps.tool_sources.outputs.echidna_ci_commit }}
+          MEDUSA_GIT_REPO: ${{ steps.tool_sources.outputs.medusa_git_repo }}
+          MEDUSA_GIT_REF: ${{ steps.tool_sources.outputs.medusa_git_ref }}
+          MEDUSA_GIT_COMMIT: ${{ steps.tool_sources.outputs.medusa_git_commit }}
+          MEDUSA_GO_VERSION: ${{ steps.tool_sources.outputs.medusa_go_version }}
+          MEDUSA_GO_SHA256: ${{ steps.tool_sources.outputs.medusa_go_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_bleeding_edge_tools.py \
+            --echidna-ci-repo "${ECHIDNA_CI_REPO}" \
+            --echidna-ci-run-id "${ECHIDNA_CI_RUN_ID}" \
+            --echidna-ci-artifact-name "${ECHIDNA_CI_ARTIFACT_NAME}" \
+            --echidna-ci-artifact-sha256 "${ECHIDNA_CI_ARTIFACT_SHA256}" \
+            --echidna-ci-commit "${ECHIDNA_CI_COMMIT}" \
+            --medusa-git-repo "${MEDUSA_GIT_REPO}" \
+            --medusa-git-ref "${MEDUSA_GIT_REF}" \
+            --medusa-git-commit "${MEDUSA_GIT_COMMIT}" \
+            --medusa-go-version "${MEDUSA_GO_VERSION}" \
+            --medusa-go-sha256 "${MEDUSA_GO_SHA256}"
+
+      - name: Require external shared infrastructure
+        if: ${{ !inputs.dry_run }}
+        env:
+          SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
+          TF_BACKEND_CONFIG: ${{ secrets.TF_BACKEND_CONFIG }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SCFUZZBENCH_BUCKET}" ]]; then
+            echo "SCFUZZBENCH_BUCKET must name a pre-existing shared artifact bucket." >&2
+            exit 1
+          fi
+          if [[ -z "${TF_BACKEND_CONFIG}" ]]; then
+            echo "TF_BACKEND_CONFIG must configure the pre-existing state bucket and lock table." >&2
+            exit 1
+          fi
+
+  admission:
+    needs: [authorize-main, prepare-run]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: scfuzzbench-run-admission
+      cancel-in-progress: false
+      queue: max
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
+      MAX_CONCURRENT_RUNS: ${{ vars.SCFUZZBENCH_MAX_CONCURRENT_RUNS || '1' }}
+      SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
+    steps:
+      - name: Checkout (tarball)
+        timeout-minutes: 5
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          url="https://codeload.github.com/${REPO}/tar.gz/${SHA}"
+          curl -fsSL "${url}" -o repo.tar.gz
+          topdir="$(tar -tzf repo.tar.gz | sed -n '1p' | cut -d/ -f1)"
+          tar -xzf repo.tar.gz
+          shopt -s dotglob
+          mv "${topdir}"/* .
+          rm -rf "${topdir}" repo.tar.gz
+
+      - name: Configure AWS credentials (keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Prepare recoverable run metadata
+        env:
+          BENCHMARK_TYPE: ${{ inputs.benchmark_type }}
+          CLEANUP_TFVARS_KEY: ${{ needs.prepare-run.outputs.cleanup_tfvars_key }}
+          ECHIDNA_VERSION: ${{ inputs.echidna_version }}
+          ECHIDNA_CI_REPO: ${{ needs.prepare-run.outputs.echidna_ci_repo }}
+          ECHIDNA_CI_RUN_ID: ${{ needs.prepare-run.outputs.echidna_ci_run_id }}
+          ECHIDNA_CI_ARTIFACT_NAME: ${{ needs.prepare-run.outputs.echidna_ci_artifact_name }}
+          ECHIDNA_CI_ARTIFACT_SHA256: ${{ needs.prepare-run.outputs.echidna_ci_artifact_sha256 }}
+          ECHIDNA_CI_COMMIT: ${{ needs.prepare-run.outputs.echidna_ci_commit }}
+          ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ needs.prepare-run.outputs.echidna_ci_token_ssm_parameter_name }}
+          ECHIDNA_CI_TOKEN_KMS_KEY_ARN: ${{ needs.prepare-run.outputs.echidna_ci_token_kms_key_arn }}
+          FOUNDRY_GIT_REF: ${{ inputs.foundry_git_ref }}
+          FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
+          FUZZERS_JSON: ${{ inputs.fuzzers_json }}
+          GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
+          INSTANCE_TYPE: ${{ inputs.instance_type }}
+          INSTANCES_PER_FUZZER: ${{ inputs.instances_per_fuzzer }}
+          MEDUSA_VERSION: ${{ inputs.medusa_version }}
+          MEDUSA_GIT_REPO: ${{ needs.prepare-run.outputs.medusa_git_repo }}
+          MEDUSA_GIT_REF: ${{ needs.prepare-run.outputs.medusa_git_ref }}
+          MEDUSA_GIT_COMMIT: ${{ needs.prepare-run.outputs.medusa_git_commit }}
+          MEDUSA_GO_VERSION: ${{ needs.prepare-run.outputs.medusa_go_version }}
+          MEDUSA_GO_SHA256: ${{ needs.prepare-run.outputs.medusa_go_sha256 }}
+          PRELIMINARY_INTERVAL_MINUTES: ${{ inputs.preliminary_interval_minutes }}
+          PROPERTIES_PATH: ${{ inputs.properties_path }}
+          RECON_VERSION: ${{ inputs.recon_version }}
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+          RUN_STARTED_AT_EPOCH: ${{ needs.prepare-run.outputs.run_started_at_epoch }}
+          TARGET_COMMIT: ${{ inputs.target_commit }}
+          TARGET_REPO_URL: ${{ inputs.target_repo_url }}
+          TERRAFORM_BACKEND_KEY: ${{ needs.prepare-run.outputs.terraform_backend_key }}
+          TIMEOUT_HOURS: ${{ inputs.timeout_hours }}
+          SHARED_SEED_CORPUS_SOURCE: ${{ inputs.shared_seed_corpus_source }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          fuzzers_raw = os.environ.get("FUZZERS_JSON", "").strip()
+          fuzzers = json.loads(fuzzers_raw or '["echidna","medusa","foundry","recon-fuzzer"]')
+          started = int(os.environ["RUN_STARTED_AT_EPOCH"])
+          timeout_hours = float(os.environ["TIMEOUT_HOURS"])
+          preliminary_interval_seconds = int(
+              float(os.environ["PRELIMINARY_INTERVAL_MINUTES"]) * 60
+          )
+          reservation = {
+              "schema_version": 1,
+              "status": "reserved",
+              "run_id": os.environ["RUN_ID"],
+              "run_started_at_epoch": started,
+              "terraform_backend_key": os.environ["TERRAFORM_BACKEND_KEY"],
+              "existing_bucket_name": os.environ["SCFUZZBENCH_BUCKET"],
+              "target_repo_url": os.environ["TARGET_REPO_URL"],
+              "target_commit": os.environ["TARGET_COMMIT"],
+              "benchmark_type": os.environ["BENCHMARK_TYPE"],
+              "instance_type": os.environ["INSTANCE_TYPE"],
+              "instances_per_fuzzer": int(os.environ["INSTANCES_PER_FUZZER"]),
+              "timeout_hours": timeout_hours,
+              "preliminary_interval_seconds": preliminary_interval_seconds,
+              "fuzzers": fuzzers,
+              "shared_seed_corpus_source": os.environ["SHARED_SEED_CORPUS_SOURCE"],
+              "scfuzzbench_commit": os.environ["GITHUB_SHA"],
+              "benchmark_uuid": "",
+              "github_repository": os.environ["GITHUB_REPOSITORY"],
+              "github_run_id": os.environ["GITHUB_RUN_ID"],
+              "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "workflow_url": (
+                  f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+                  f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+              ),
+              # The normal path cleans as soon as all final archives exist and
+              # instances are terminal. This deadline is only orphan recovery.
+              "orphan_after_epoch": started + math.ceil(timeout_hours * 3600) + 3 * 3600,
+          }
+          cleanup_tfvars = {
+              "aws_region": os.environ["AWS_REGION"],
+              "existing_bucket_name": os.environ["SCFUZZBENCH_BUCKET"],
+              "target_repo_url": os.environ["TARGET_REPO_URL"],
+              "target_commit": os.environ["TARGET_COMMIT"],
+              "benchmark_type": os.environ["BENCHMARK_TYPE"],
+              "instance_type": os.environ["INSTANCE_TYPE"],
+              "instances_per_fuzzer": int(os.environ["INSTANCES_PER_FUZZER"]),
+              "timeout_hours": timeout_hours,
+              "preliminary_interval_seconds": preliminary_interval_seconds,
+              "fuzzers": fuzzers,
+              "run_id": os.environ["RUN_ID"],
+              "run_started_at_epoch": started,
+              "terraform_backend_key": os.environ["TERRAFORM_BACKEND_KEY"],
+              "scfuzzbench_commit": os.environ["GITHUB_SHA"],
+              "shared_seed_corpus_source": os.environ["SHARED_SEED_CORPUS_SOURCE"],
+          }
+          # Preserve every non-secret optional apply variable. Fuzzer env values
+          # are deliberately not persisted: destroy mode does not need user-data
+          # inputs and callers may treat those values as sensitive.
+          nonsecret_optional_inputs = {}
+          for env_name, tf_name in {
+              "FOUNDRY_GIT_REPO": "foundry_git_repo",
+              "FOUNDRY_GIT_REF": "foundry_git_ref",
+              "ECHIDNA_VERSION": "echidna_version",
+              "ECHIDNA_CI_REPO": "echidna_ci_repo",
+              "ECHIDNA_CI_RUN_ID": "echidna_ci_run_id",
+              "ECHIDNA_CI_ARTIFACT_NAME": "echidna_ci_artifact_name",
+              "ECHIDNA_CI_ARTIFACT_SHA256": "echidna_ci_artifact_sha256",
+              "ECHIDNA_CI_COMMIT": "echidna_ci_commit",
+              "ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME": "echidna_ci_token_ssm_parameter_name",
+              "ECHIDNA_CI_TOKEN_KMS_KEY_ARN": "echidna_ci_token_kms_key_arn",
+              "MEDUSA_VERSION": "medusa_version",
+              "MEDUSA_GIT_REPO": "medusa_git_repo",
+              "MEDUSA_GIT_REF": "medusa_git_ref",
+              "MEDUSA_GIT_COMMIT": "medusa_git_commit",
+              "MEDUSA_GO_VERSION": "medusa_go_version",
+              "MEDUSA_GO_SHA256": "medusa_go_sha256",
+              "PROPERTIES_PATH": "properties_path",
+              "RECON_VERSION": "recon_version",
+              "GIT_TOKEN_SSM_PARAMETER_NAME": "git_token_ssm_parameter_name",
+          }.items():
+              value = os.environ.get(env_name, "").strip()
+              if value:
+                  cleanup_tfvars[tf_name] = value
+                  nonsecret_optional_inputs[tf_name] = value
+          reservation["nonsecret_optional_inputs"] = nonsecret_optional_inputs
+          Path("reservation.json").write_text(
+              json.dumps(reservation, indent=2, sort_keys=True) + "\n"
+          )
+          Path("cleanup.auto.tfvars.json").write_text(
+              json.dumps(cleanup_tfvars, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+          aws s3 cp cleanup.auto.tfvars.json \
+            "s3://${SCFUZZBENCH_BUCKET}/${CLEANUP_TFVARS_KEY}" \
+            --only-show-errors --content-type application/json
+
+      - name: Atomically reserve repository run capacity
+        env:
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py admit \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --max-concurrent-runs "${MAX_CONCURRENT_RUNS}" \
+            --reservation-file reservation.json
+          {
+            echo "Run admission reserved."
+            echo ""
+            echo "- Run ID: ${RUN_ID}"
+            echo "- Maximum concurrent runs: ${MAX_CONCURRENT_RUNS}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  benchmark-run:
+    needs: [authorize-main, prepare-run, admission]
+    if: ${{ !cancelled() && needs.authorize-main.result == 'success' && needs.prepare-run.result == 'success' && (inputs.dry_run || needs.admission.result == 'success') }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: scfuzzbench-run-${{ needs.prepare-run.outputs.run_id }}
+      cancel-in-progress: false
+      queue: max
     outputs:
       run_id: ${{ steps.tf_outputs.outputs.run_id }}
       benchmark_uuid: ${{ steps.tf_outputs.outputs.benchmark_uuid }}
@@ -289,97 +641,31 @@ jobs:
           mv "${topdir}"/* .
           rm -rf "${topdir}" repo.tar.gz
 
-      - name: Normalize bleeding-edge tool inputs
+      - name: Reuse pre-admission normalized tool inputs
         id: tool_sources
         env:
-          ECHIDNA_CI_JSON: ${{ inputs.echidna_ci_json }}
-          MEDUSA_SOURCE_JSON: ${{ inputs.medusa_source_json }}
-          CALL_ECHIDNA_CI_REPO: ${{ inputs.echidna_ci_repo }}
-          CALL_ECHIDNA_CI_RUN_ID: ${{ inputs.echidna_ci_run_id }}
-          CALL_ECHIDNA_CI_ARTIFACT_NAME: ${{ inputs.echidna_ci_artifact_name }}
-          CALL_ECHIDNA_CI_ARTIFACT_SHA256: ${{ inputs.echidna_ci_artifact_sha256 }}
-          CALL_ECHIDNA_CI_COMMIT: ${{ inputs.echidna_ci_commit }}
-          CALL_ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.echidna_ci_token_ssm_parameter_name }}
-          CALL_ECHIDNA_CI_TOKEN_KMS_KEY_ARN: ${{ inputs.echidna_ci_token_kms_key_arn }}
-          CALL_MEDUSA_GIT_REPO: ${{ inputs.medusa_git_repo }}
-          CALL_MEDUSA_GIT_REF: ${{ inputs.medusa_git_ref }}
-          CALL_MEDUSA_GIT_COMMIT: ${{ inputs.medusa_git_commit }}
-          CALL_MEDUSA_GO_VERSION: ${{ inputs.medusa_go_version }}
-          CALL_MEDUSA_GO_SHA256: ${{ inputs.medusa_go_sha256 }}
+          ECHIDNA_CI_REPO: ${{ needs.prepare-run.outputs.echidna_ci_repo }}
+          ECHIDNA_CI_RUN_ID: ${{ needs.prepare-run.outputs.echidna_ci_run_id }}
+          ECHIDNA_CI_ARTIFACT_NAME: ${{ needs.prepare-run.outputs.echidna_ci_artifact_name }}
+          ECHIDNA_CI_ARTIFACT_SHA256: ${{ needs.prepare-run.outputs.echidna_ci_artifact_sha256 }}
+          ECHIDNA_CI_COMMIT: ${{ needs.prepare-run.outputs.echidna_ci_commit }}
+          ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ needs.prepare-run.outputs.echidna_ci_token_ssm_parameter_name }}
+          ECHIDNA_CI_TOKEN_KMS_KEY_ARN: ${{ needs.prepare-run.outputs.echidna_ci_token_kms_key_arn }}
+          MEDUSA_GIT_REPO: ${{ needs.prepare-run.outputs.medusa_git_repo }}
+          MEDUSA_GIT_REF: ${{ needs.prepare-run.outputs.medusa_git_ref }}
+          MEDUSA_GIT_COMMIT: ${{ needs.prepare-run.outputs.medusa_git_commit }}
+          MEDUSA_GO_VERSION: ${{ needs.prepare-run.outputs.medusa_go_version }}
+          MEDUSA_GO_SHA256: ${{ needs.prepare-run.outputs.medusa_go_sha256 }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json
           import os
 
-          groups = {
-              "echidna": {
-                  "raw": os.environ.get("ECHIDNA_CI_JSON", "").strip(),
-                  "keys": [
-                      "echidna_ci_repo",
-                      "echidna_ci_run_id",
-                      "echidna_ci_artifact_name",
-                      "echidna_ci_artifact_sha256",
-                      "echidna_ci_commit",
-                      "echidna_ci_token_ssm_parameter_name",
-                      "echidna_ci_token_kms_key_arn",
-                  ],
-                  "identity_keys": [
-                      "echidna_ci_repo",
-                      "echidna_ci_run_id",
-                      "echidna_ci_artifact_name",
-                      "echidna_ci_artifact_sha256",
-                      "echidna_ci_commit",
-                      "echidna_ci_token_ssm_parameter_name",
-                  ],
-              },
-              "medusa": {
-                  "raw": os.environ.get("MEDUSA_SOURCE_JSON", "").strip(),
-                  "keys": [
-                      "medusa_git_repo",
-                      "medusa_git_ref",
-                      "medusa_git_commit",
-                      "medusa_go_version",
-                      "medusa_go_sha256",
-                  ],
-                  "identity_keys": ["medusa_git_repo", "medusa_git_ref", "medusa_git_commit"],
-              },
+          output = {
+              key.lower(): value
+              for key, value in os.environ.items()
+              if key.startswith(("ECHIDNA_CI_", "MEDUSA_"))
           }
-
-          output = {}
-          for group in groups.values():
-              direct = {
-                  key: os.environ.get(f"CALL_{key.upper()}", "")
-                  for key in group["keys"]
-              }
-              raw = group["raw"]
-              if raw:
-                  if any(direct[key] for key in group["identity_keys"]):
-                      raise SystemExit("manual JSON tool inputs cannot be combined with reusable-workflow tool inputs")
-                  try:
-                      parsed = json.loads(raw)
-                  except Exception as exc:
-                      raise SystemExit(f"invalid bleeding-edge tool JSON: {exc}")
-                  if not isinstance(parsed, dict):
-                      raise SystemExit("bleeding-edge tool JSON must be an object")
-                  unexpected = sorted(set(parsed) - set(group["keys"]))
-                  if unexpected:
-                      raise SystemExit(f"unexpected bleeding-edge tool keys: {', '.join(unexpected)}")
-                  direct = {key: parsed.get(key, "") for key in group["keys"]}
-              for key, value in direct.items():
-                  if not isinstance(value, str):
-                      raise SystemExit(f"{key} must be a string")
-                  if "\n" in value or "\r" in value:
-                      raise SystemExit(f"{key} must be a single line")
-                  if len(value) > 500:
-                      raise SystemExit(f"{key} is too long")
-                  output[key] = value
-
-          output["medusa_go_version"] = output["medusa_go_version"] or "1.24.0"
-          output["medusa_go_sha256"] = (
-              output["medusa_go_sha256"]
-              or "dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858"
-          )
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
               for key, value in output.items():
                   handle.write(f"{key}={value}\n")
@@ -415,18 +701,46 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Ensure no benchmark instances are active
+      - name: Revalidate reserved run after acquiring run lock
         if: ${{ !inputs.dry_run }}
+        env:
+          EXPECTED_BACKEND_KEY: ${{ needs.prepare-run.outputs.terraform_backend_key }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          aws s3 cp \
+            "s3://${SCFUZZBENCH_BUCKET}/run-state/admissions/active/${RUN_ID}.json" \
+            "${RUNNER_TEMP}/active-metadata.json" \
+            --only-show-errors
+          aws s3 cp \
+            "s3://${SCFUZZBENCH_BUCKET}/run-state/runs/${RUN_ID}/cleanup.auto.tfvars.json" \
+            "${RUNNER_TEMP}/cleanup.auto.tfvars.json" \
+            --only-show-errors
+          python3 scripts/benchmark_run_state.py validate-recovery-inputs \
+            --tfvars-json "${RUNNER_TEMP}/cleanup.auto.tfvars.json" \
+            --metadata-json "${RUNNER_TEMP}/active-metadata.json" \
+            --run-id "${RUN_ID}" \
+            --backend-key "${EXPECTED_BACKEND_KEY}" \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --expected-commit "${EXPECTED_COMMIT}" \
+            --expected-status reserved
+
+      - name: Ensure this run identity has no active instances
+        if: ${{ !inputs.dry_run }}
+        env:
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
         run: |
           set -euo pipefail
           active_instances=$(aws ec2 describe-instances \
             --filters \
               "Name=tag:Project,Values=scfuzzbench" \
+              "Name=tag:RunId,Values=${RUN_ID}" \
               "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped" \
             --query 'Reservations[].Instances[].InstanceId' \
             --output json)
           if [[ "$(jq 'length' <<<"${active_instances}")" != "0" ]]; then
-            echo "Another benchmark still has active instances:" >&2
+            echo "Run identity ${RUN_ID} already has active instances:" >&2
             jq -r '.[]' <<<"${active_instances}" >&2
             exit 1
           fi
@@ -451,7 +765,31 @@ jobs:
 
       - name: Terraform init (remote backend)
         if: ${{ !inputs.dry_run }}
-        run: make terraform-init-backend BACKEND_CONFIG=backend.hcl
+        env:
+          TERRAFORM_BACKEND_KEY: ${{ needs.prepare-run.outputs.terraform_backend_key }}
+        run: |
+          set -euo pipefail
+          make terraform-init-backend \
+            BACKEND_CONFIG=backend.hcl \
+            BACKEND_KEY="${TERRAFORM_BACKEND_KEY}" \
+            BACKEND_INIT_FLAGS="-reconfigure -input=false"
+
+      - name: Require a fresh run state
+        if: ${{ !inputs.dry_run }}
+        env:
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          existing_state=$(terraform -chdir=infrastructure state list 2>state-list.err || true)
+          if [[ -n "${existing_state}" ]]; then
+            echo "Fresh run ${RUN_ID} unexpectedly has existing Terraform resources:" >&2
+            printf '%s\n' "${existing_state}" >&2
+            exit 1
+          fi
+          if [[ -s state-list.err ]] && ! grep -q "No state file was found" state-list.err; then
+            cat state-list.err >&2
+            exit 1
+          fi
 
       - name: Validate inputs
         env:
@@ -708,52 +1046,17 @@ jobs:
             python3 - <<'PY'
           import json
           import os
-          import re
+          from scripts.benchmark_run_state import validate_fuzzer_env_map
+
           raw = os.environ["FUZZER_ENV_JSON"]
           try:
               obj = json.loads(raw)
           except Exception as e:
               raise SystemExit(f"Invalid fuzzer_env_json: {e}")
-          if not isinstance(obj, dict):
-              raise SystemExit("fuzzer_env_json must be a JSON object")
-          if len(obj) > 64:
-              raise SystemExit("fuzzer_env_json has too many keys (max 64)")
-          key_re = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
-          forbidden = re.compile(r'[\r\n"`$\\\\]')
-          protected_tool_keys = {
-              "ECHIDNA_CI_TOKEN",
-              "ECHIDNA_CI_TOKEN_SSM_PARAMETER",
-              "ECHIDNA_CI_REPO",
-              "ECHIDNA_CI_RUN_ID",
-              "ECHIDNA_CI_ARTIFACT_NAME",
-              "ECHIDNA_CI_ARTIFACT_SHA256",
-              "ECHIDNA_CI_COMMIT",
-              "ECHIDNA_CI_TOKEN_KMS_KEY_ARN",
-              "MEDUSA_GIT_REPO",
-              "MEDUSA_GIT_REF",
-              "MEDUSA_GIT_COMMIT",
-              "MEDUSA_GO_VERSION",
-              "MEDUSA_GO_SHA256",
-          }
-          reserved_seed_keys = {
-              "SCFUZZBENCH_SEED_CORPUS_SOURCE",
-              "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
-              "SCFUZZBENCH_SEED_CORPUS_HELPER",
-              "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
-          }
-          for k, v in obj.items():
-              if not isinstance(k, str) or not key_re.match(k):
-                  raise SystemExit(f"Invalid env key: {k}")
-              if k in protected_tool_keys:
-                  raise SystemExit(f"Use the dedicated workflow input instead of fuzzer_env_json for {k}")
-              if k in reserved_seed_keys:
-                  raise SystemExit(f"fuzzer_env_json cannot override framework-owned seed variable: {k}")
-              if not isinstance(v, str):
-                  raise SystemExit(f"Env value for {k} must be a string")
-              if len(v) > 2000:
-                  raise SystemExit(f"Env value for {k} too long (max 2000 chars)")
-              if forbidden.search(v):
-                  raise SystemExit(f"Env value for {k} contains a forbidden character")
+          try:
+              validate_fuzzer_env_map(obj)
+          except ValueError as exc:
+              raise SystemExit(str(exc)) from exc
           PY
           fi
 
@@ -815,11 +1118,12 @@ jobs:
           GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
           FUZZER_ENV_JSON: ${{ inputs.fuzzer_env_json }}
           PROPERTIES_PATH: ${{ inputs.properties_path }}
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+          RUN_STARTED_AT_EPOCH: ${{ needs.prepare-run.outputs.run_started_at_epoch }}
           SHARED_SEED_CORPUS_SOURCE: ${{ inputs.shared_seed_corpus_source }}
+          TERRAFORM_BACKEND_KEY: ${{ needs.prepare-run.outputs.terraform_backend_key }}
         run: |
           set -euo pipefail
-          run_started_at_epoch=$(date +%s)
-          run_id="${run_started_at_epoch}"
           preliminary_interval_seconds=$(python3 - <<'PY'
           import os
           print(int(float(os.environ["PRELIMINARY_INTERVAL_MINUTES"]) * 60))
@@ -840,8 +1144,9 @@ jobs:
             -var "timeout_hours=${TIMEOUT_HOURS}"
             -var "preliminary_interval_seconds=${preliminary_interval_seconds}"
             -var "fuzzers=${fuzzers}"
-            -var "run_id=${run_id}"
-            -var "run_started_at_epoch=${run_started_at_epoch}"
+            -var "run_id=${RUN_ID}"
+            -var "run_started_at_epoch=${RUN_STARTED_AT_EPOCH}"
+            -var "terraform_backend_key=${TERRAFORM_BACKEND_KEY}"
             -var "scfuzzbench_commit=${GITHUB_SHA}"
             -var "shared_seed_corpus_source=${SHARED_SEED_CORPUS_SOURCE}"
           )
@@ -886,39 +1191,62 @@ jobs:
           if [[ -n "${GIT_TOKEN_SSM_PARAMETER_NAME}" ]]; then
             tf_args+=(-var "git_token_ssm_parameter_name=${GIT_TOKEN_SSM_PARAMETER_NAME}")
           fi
-
-          if [[ -n "${FUZZER_ENV_JSON}" || -n "${PROPERTIES_PATH}" ]]; then
-            merged=$(python3 - <<'PY'
-          import json
-          import os
-
-          data = {}
-          raw = os.environ.get("FUZZER_ENV_JSON", "").strip()
-          if raw:
-              data.update(json.loads(raw))
-          prop = os.environ.get("PROPERTIES_PATH", "").strip()
-          if prop:
-              data["SCFUZZBENCH_PROPERTIES_PATH"] = prop
-          print(json.dumps(data))
-          PY
-            )
-            tf_args+=(-var "fuzzer_env=${merged}")
+          if [[ -n "${PROPERTIES_PATH}" ]]; then
+            tf_args+=(-var "properties_path=${PROPERTIES_PATH}")
           fi
 
-          terraform -chdir=infrastructure apply -auto-approve "${tf_args[@]}"
-          echo "run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+          if [[ -n "${FUZZER_ENV_JSON}" ]]; then
+            tf_args+=(-var "fuzzer_env=${FUZZER_ENV_JSON}")
+          fi
+
+          terraform -chdir=infrastructure plan \
+            -input=false \
+            -out=run.tfplan \
+            "${tf_args[@]}"
+          terraform -chdir=infrastructure show -json run.tfplan > run.tfplan.json
+          python3 scripts/benchmark_run_state.py validate-plan \
+            --plan-json run.tfplan.json \
+            --mode apply \
+            --run-id "${RUN_ID}"
+          terraform -chdir=infrastructure apply -auto-approve -input=false run.tfplan
+          echo "run_id=${RUN_ID}" >> "${GITHUB_OUTPUT}"
 
       - name: Collect Terraform outputs
         id: tf_outputs
         if: ${{ !inputs.dry_run }}
+        env:
+          EXPECTED_BACKEND_KEY: ${{ needs.prepare-run.outputs.terraform_backend_key }}
+          EXPECTED_RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
         run: |
+          set -euo pipefail
           terraform -chdir=infrastructure output -json > run_metadata.json
           run_id=$(jq -r '.run_id.value' run_metadata.json)
           benchmark_uuid=$(jq -r '.benchmark_uuid.value' run_metadata.json)
+          backend_key=$(jq -r '.terraform_backend_key.value' run_metadata.json)
+          if [[ "${run_id}" != "${EXPECTED_RUN_ID}" ]]; then
+            echo "Terraform output run_id ${run_id} does not match ${EXPECTED_RUN_ID}." >&2
+            exit 1
+          fi
+          if [[ "${backend_key}" != "${EXPECTED_BACKEND_KEY}" ]]; then
+            echo "Terraform output backend key ${backend_key} does not match ${EXPECTED_BACKEND_KEY}." >&2
+            exit 1
+          fi
           {
             echo "run_id=${run_id}"
             echo "benchmark_uuid=${benchmark_uuid}"
           } >> "${GITHUB_OUTPUT}"
+
+      - name: Record running state and recovery outputs
+        if: ${{ !inputs.dry_run }}
+        env:
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py mark-running \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${RUN_ID}" \
+            --terraform-outputs run_metadata.json \
+            --output run-state-metadata.json
 
       - name: Publish preliminary run metadata
         if: ${{ !inputs.dry_run }}
@@ -935,9 +1263,10 @@ jobs:
         if: ${{ !inputs.dry_run }}
         uses: actions/upload-artifact@v4
         with:
-          name: run-metadata
+          name: run-metadata-${{ needs.prepare-run.outputs.run_id }}
           path: |
             run_metadata.json
+            run-state-metadata.json
             preliminary_run.json
 
       - name: Summary
@@ -955,6 +1284,55 @@ jobs:
               echo ""
               echo "- Run ID: ${{ steps.tf_outputs.outputs.run_id }}"
               echo "- Benchmark UUID: ${{ steps.tf_outputs.outputs.benchmark_uuid }}"
+              echo "- Terraform backend key: ${{ needs.prepare-run.outputs.terraform_backend_key }}"
               echo "- Preliminary checkpoints: every ${{ inputs.preliminary_interval_minutes }} minute(s) (0 disables)"
+              echo "- Cleanup is asynchronous; this job does not wait for the fuzzing duration."
             } >> "${GITHUB_STEP_SUMMARY}"
           fi
+
+  finalize-failed-run:
+    needs: [authorize-main, prepare-run, admission, benchmark-run]
+    if: ${{ always() && !inputs.dry_run && needs.authorize-main.result == 'success' && needs.prepare-run.result == 'success' && (needs.admission.result != 'success' || needs.benchmark-run.result != 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: scfuzzbench-run-${{ needs.prepare-run.outputs.run_id }}
+      cancel-in-progress: false
+      queue: max
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
+      SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
+    steps:
+      - name: Checkout trusted main source
+        timeout-minutes: 5
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          url="https://codeload.github.com/${REPO}/tar.gz/${SHA}"
+          curl -fsSL "${url}" -o repo.tar.gz
+          topdir="$(tar -tzf repo.tar.gz | sed -n '1p' | cut -d/ -f1)"
+          tar -xzf repo.tar.gz
+          shopt -s dotglob
+          mv "${topdir}"/* .
+          rm -rf "${topdir}" repo.tar.gz
+
+      - name: Configure AWS credentials (keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Record recoverable provisioning failure
+        env:
+          RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py mark-failed-if-reserved \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${RUN_ID}" \
+            --workflow-url "${WORKFLOW_URL}" \
+            --output run-state-metadata.json

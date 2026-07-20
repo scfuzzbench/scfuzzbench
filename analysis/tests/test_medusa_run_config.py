@@ -13,10 +13,27 @@ def write_common_sh(tmp_dir: Path) -> Path:
     common_sh = tmp_dir / "common.sh"
     common_sh.write_text(
         """
-register_shutdown_trap() { :; }
 prepare_workspace() { mkdir -p "${SCFUZZBENCH_WORKDIR}/target" "${SCFUZZBENCH_LOG_DIR}"; }
+register_shutdown_trap() { prepare_workspace; }
+resolve_target_corpus_dir() {
+  printf '%s/%s\\n' "${SCFUZZBENCH_WORKDIR}/target" "${1:-$2}"
+}
 prepare_shared_seed_corpus() { :; }
 clone_target() { :; }
+capture_target_workspace_anchor() {
+  SCFUZZBENCH_TARGET_ROOT_ANCHOR=$(realpath -e "${SCFUZZBENCH_WORKDIR}/target")
+  SCFUZZBENCH_TARGET_ROOT_IDENTITY=$(stat -Lc '%d:%i' "${SCFUZZBENCH_WORKDIR}/target")
+}
+read_strict_descendant_file() { cat -- "$1"; }
+write_strict_descendant_file() {
+  local destination=$1
+  mkdir -p "$(dirname "${destination}")"
+  umask 077
+  local temporary="${destination}.test-tmp"
+  cat >"${temporary}"
+  mv -f -- "${temporary}" "${destination}"
+}
+remove_strict_descendant_file() { rm -f -- "$1"; }
 apply_benchmark_type() { :; }
 build_target() { :; }
 set_default_worker_env() { :; }

@@ -39,7 +39,9 @@ jobs:
 
       - name: Lint GitHub Actions workflows
         run: |
-          "$(go env GOPATH)/bin/actionlint" .github/workflows/*.yml
+          "$(go env GOPATH)/bin/actionlint" \
+            -ignore '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$' \
+            .github/workflows/*.yml
 
   terraform:
     runs-on: ubuntu-latest
@@ -73,6 +75,11 @@ jobs:
       - name: Terraform validate
         run: terraform -chdir=infrastructure validate
 
+      - name: Test direct Terraform input boundaries
+        run: |
+          python3 infrastructure/tests/test_input_boundaries.py
+          python3 infrastructure/tests/test_bootstrap_bundle.py
+
   python:
     runs-on: ubuntu-latest
     steps:
@@ -96,8 +103,30 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install runner test dependencies
+        run: python -m pip install boto3==1.34.46
+
       - name: Python syntax check
-        run: python -m compileall analysis scripts
+        run: python -m compileall analysis scripts fuzzers/_shared infrastructure
+
+      - name: Run benchmark state isolation regression tests
+        run: |
+          python -m unittest \
+            analysis.tests.test_benchmark_run_state \
+            analysis.tests.test_workflow_safety_contracts \
+            analysis.tests.test_generate_docs_site
+
+      - name: Run runner filesystem and bootstrap regressions
+        run: |
+          python -m unittest \
+            analysis.tests.test_safe_path_ops \
+            analysis.tests.test_put_manifest_once \
+            analysis.tests.test_upload_pinned_file \
+            analysis.tests.test_runner_filesystem_safety \
+            analysis.tests.test_shared_seed_corpus \
+            analysis.tests.test_preliminary_snapshot \
+            analysis.tests.test_preliminary_runner_shell \
+            analysis.tests.test_medusa_run_config
 
       - name: Validate benchmark manifests
         run: |

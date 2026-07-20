@@ -4,8 +4,6 @@ set -euo pipefail
 source "${SCFUZZBENCH_COMMON_SH:-/opt/scfuzzbench/common.sh}"
 
 register_shutdown_trap
-
-prepare_workspace
 if [[ -z "${HOME:-}" ]]; then
   export HOME=/root
 fi
@@ -30,6 +28,7 @@ fi
 export SCFUZZBENCH_FUZZER_LABEL
 
 clone_target
+capture_target_workspace_anchor
 apply_benchmark_type
 
 if [[ "${SCFUZZBENCH_BENCHMARK_TYPE}" == "property" && -n "${ECHIDNA_CONFIG:-}" ]]; then
@@ -50,11 +49,7 @@ build_target
 repo_dir="${SCFUZZBENCH_WORKDIR}/target"
 log_file="${SCFUZZBENCH_LOG_DIR}/echidna.log"
 
-default_corpus_dir="${repo_dir}/corpus/echidna"
-corpus_dir="${ECHIDNA_CORPUS_DIR:-${default_corpus_dir}}"
-if [[ "${corpus_dir}" != /* ]]; then
-  corpus_dir="${repo_dir}/${corpus_dir}"
-fi
+corpus_dir=$(resolve_target_corpus_dir "${ECHIDNA_CORPUS_DIR:-}" "corpus/echidna")
 export SCFUZZBENCH_CORPUS_DIR="${corpus_dir}"
 prepare_shared_seed_corpus
 

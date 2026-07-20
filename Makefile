@@ -1,7 +1,8 @@
 TF_DIR := infrastructure
 TF_ARGS ?=
 BACKEND_CONFIG ?= backend.hcl
-BACKEND_INIT_FLAGS ?= -migrate-state -force-copy -input=false
+BACKEND_KEY ?=
+BACKEND_INIT_FLAGS ?= -reconfigure -input=false
 LOGS_DIR ?= logs
 OUT_DIR ?= analysis_out
 ANALYSIS_VENV ?= .venv-analysis
@@ -102,6 +103,10 @@ PROFILE_ARG :=
 ifneq ($(strip $(AWS_PROFILE)),)
 PROFILE_ARG := --profile $(AWS_PROFILE)
 endif
+BACKEND_KEY_ARG :=
+ifneq ($(strip $(BACKEND_KEY)),)
+BACKEND_KEY_ARG := -backend-config='key=$(BACKEND_KEY)'
+endif
 NO_UNZIP ?=
 NO_UNZIP_ARG :=
 ifneq ($(strip $(NO_UNZIP)),)
@@ -136,7 +141,7 @@ terraform-init:
 	terraform -chdir=$(TF_DIR) init
 
 terraform-init-backend:
-	terraform -chdir=$(TF_DIR) init -backend-config=$(BACKEND_CONFIG) $(BACKEND_INIT_FLAGS)
+	terraform -chdir=$(TF_DIR) init -backend-config=$(BACKEND_CONFIG) $(BACKEND_KEY_ARG) $(BACKEND_INIT_FLAGS)
 
 terraform-fmt:
 	terraform -chdir=$(TF_DIR) fmt -recursive
@@ -154,7 +159,7 @@ terraform-destroy:
 	terraform -chdir=$(TF_DIR) destroy $(TF_ARGS) $(SCFUZZBENCH_COMMIT_ARG) $(EXISTING_BUCKET_ARG)
 
 terraform-destroy-infra:
-	terraform -chdir=$(TF_DIR) destroy $(TF_ARGS) -target=aws_instance.fuzzer -target=aws_iam_instance_profile.fuzzer -target=aws_iam_role_policy.s3_access -target=aws_iam_role.fuzzer -target=aws_key_pair.ssh -target=local_sensitive_file.ssh_private_key -target=tls_private_key.ssh -target=aws_security_group.ssh -target=aws_route_table_association.public -target=aws_route_table.public -target=aws_subnet.public -target=aws_internet_gateway.main -target=aws_vpc.main $(SCFUZZBENCH_COMMIT_ARG) $(EXISTING_BUCKET_ARG)
+	terraform -chdir=$(TF_DIR) destroy $(TF_ARGS) -target=aws_instance.fuzzer -target=aws_iam_instance_profile.echidna_ci -target=aws_iam_role_policy.echidna_ci_access -target=aws_iam_role.echidna_ci -target=aws_iam_instance_profile.fuzzer -target=aws_iam_role_policy.s3_access -target=aws_iam_role.fuzzer -target=aws_key_pair.ssh -target=local_sensitive_file.ssh_private_key -target=tls_private_key.ssh -target=aws_security_group.ssh -target=aws_route_table_association.public -target=aws_route_table.public -target=aws_subnet.public -target=aws_internet_gateway.main -target=aws_vpc.main $(SCFUZZBENCH_COMMIT_ARG) $(EXISTING_BUCKET_ARG)
 
 targets-validate:
 	python3 scripts/validate_target_manifest.py

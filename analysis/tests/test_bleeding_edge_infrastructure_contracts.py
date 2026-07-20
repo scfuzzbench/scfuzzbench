@@ -28,10 +28,23 @@ class BleedingEdgeInfrastructureContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn('each.value.fuzzer.key == "echidna" ? var.echidna_ci_repo : ""', main)
-        self.assertIn('each.value.fuzzer.key == "medusa" ? var.medusa_git_repo : ""', main)
-        self.assertIn("%{ if echidna_ci_enabled ~}", template)
-        self.assertIn("%{ if medusa_source_enabled ~}", template)
+        self.assertIn(
+            'base64encode(instance.fuzzer.key == "echidna" ? '
+            'var.echidna_ci_repo : "")',
+            main,
+        )
+        self.assertIn(
+            'instance.fuzzer.key == "medusa" ? var.medusa_git_repo : ""',
+            main,
+        )
+        self.assertIn(
+            "decode_b64_env ECHIDNA_CI_REPO '${echidna_ci_repo_b64}'",
+            template,
+        )
+        self.assertIn(
+            "decode_b64_env MEDUSA_GIT_REPO '${medusa_git_repo_b64}'",
+            template,
+        )
 
     def test_stable_defaults_are_blank_and_add_no_kms_permission(self):
         variables = (REPO_ROOT / "infrastructure" / "variables.tf").read_text(

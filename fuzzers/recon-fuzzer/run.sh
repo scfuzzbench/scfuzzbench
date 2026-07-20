@@ -4,8 +4,6 @@ set -euo pipefail
 source /opt/scfuzzbench/common.sh
 
 register_shutdown_trap
-
-prepare_workspace
 export PATH="/root/.foundry/bin:${PATH}"
 
 require_env RECON_VERSION
@@ -14,6 +12,7 @@ SCFUZZBENCH_FUZZER_LABEL="recon-v${recon_version}"
 export SCFUZZBENCH_FUZZER_LABEL
 
 clone_target
+capture_target_workspace_anchor
 apply_benchmark_type
 
 if [[ "${SCFUZZBENCH_BENCHMARK_TYPE}" == "property" && -n "${ECHIDNA_CONFIG:-}" ]]; then
@@ -33,11 +32,9 @@ build_target
 
 repo_dir="${SCFUZZBENCH_WORKDIR}/target"
 log_file="${SCFUZZBENCH_LOG_DIR}/recon-fuzzer.log"
-default_corpus_dir="${repo_dir}/corpus/recon-fuzzer"
-corpus_dir="${RECON_CORPUS_DIR:-${ECHIDNA_CORPUS_DIR:-${default_corpus_dir}}}"
-if [[ "${corpus_dir}" != /* ]]; then
-  corpus_dir="${repo_dir}/${corpus_dir}"
-fi
+corpus_dir=$(resolve_target_corpus_dir \
+  "${RECON_CORPUS_DIR:-${ECHIDNA_CORPUS_DIR:-}}" \
+  "corpus/recon-fuzzer")
 export SCFUZZBENCH_CORPUS_DIR="${corpus_dir}"
 prepare_shared_seed_corpus
 

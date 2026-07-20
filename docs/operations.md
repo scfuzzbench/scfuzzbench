@@ -13,10 +13,13 @@ Set inputs via `-var`/`tfvars` (`TF_VAR_*` also works):
 - fuzzer versions (`foundry_git_repo`/`foundry_git_ref`, `echidna_version`, `medusa_version`, `recon_version`)
 - opt-in tool builds (`echidna_ci_*`, `medusa_git_*`, `medusa_go_*`; see below)
 - `git_token_ssm_parameter_name` (for private repos)
+- `properties_path` (optional repo-relative properties contract path)
 - `shared_seed_corpus_source` (optional directory or `s3://bucket/prefix`; empty by default)
-- `fuzzer_env` values such as `SCFUZZBENCH_PROPERTIES_PATH`
+- `fuzzer_env` (optional extra fuzzer settings; framework-owned, AWS, credential, path, and identity keys are rejected)
 
 Per-fuzzer environment variables are documented in `fuzzers/README.md`.
+The combined UTF-8 byte length of caller-supplied `fuzzer_env` keys and values
+is limited to 4096 bytes so EC2 bootstrap data stays within the API limit.
 
 ## Quick Start
 
@@ -24,6 +27,24 @@ Per-fuzzer environment variables are documented in `fuzzers/README.md`.
 make terraform-init
 make terraform-deploy TF_ARGS="-var 'ssh_cidr=YOUR_IP/32' -var 'target_repo_url=REPO_URL' -var 'target_commit=COMMIT'"
 ```
+
+## Cloud Bootstrap Provenance
+
+Cloud instances download runtime scripts only from the canonical public
+`scfuzzbench/scfuzzbench` repository at the full `scfuzzbench_commit`. Terraform
+records and passes a SHA-256 manifest for every required regular file; the
+instance rejects unsafe archive entries and verifies every file before
+installing or executing any repository content. Direct Terraform deployments
+therefore require every bundled bootstrap file (including the rendered
+user-data template and verifier) to match content already published at that
+commit. This check also works in the tarball-based CI checkout, where no
+`.git` directory exists.
+
+`custom_fuzzer_definitions` are intentionally rejected by the cloud Terraform
+module. Local-only scripts cannot be proven to exist in the immutable public
+archive. Use `scripts/local-run.sh` for local customizations; add a new
+committed built-in definition when a fuzzer should be deployable in cloud
+benchmarks.
 
 ## Local `.env` (Recommended)
 
@@ -193,19 +214,88 @@ same fields into `echidna_ci_json` and `medusa_source_json`, for example:
 {"medusa_git_repo":"https://github.com/crytic/medusa","medusa_git_ref":"v1.4.1","medusa_git_commit":"3857153837ab90ed73adc484414b4b43703a54fb","medusa_go_version":"1.24.0","medusa_go_sha256":"dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858"}
 ```
 
-## One Run At A Time
+## Isolated Runs And Admission
 
-All benchmark dispatches share a single Terraform state and the same
-`aws_instance.fuzzer["<fuzzer>-<index>"]` resource addresses with
-`user_data_replace_on_change = true`. Applying a new run while a previous run's
-instances are still fuzzing plans a destroy/recreate of those instances and
-kills the in-flight run. **Dispatch runs strictly sequentially**: wait until a
-run's instances have self-terminated (timeout + upload, plus the Foundry source
-build before the fuzz window) before approving or dispatching the next one.
+Each approved [benchmark request](start.md) remains one target and one short
+dispatch workflow. Before Terraform initializes, the workflow creates an
+immutable ID such as `gh-123456789-1` and forces the backend key to
+`runs/<run_id>/terraform.tfstate`. `terraform init` uses `-reconfigure`; it
+never migrates or copies the legacy `scfuzzbench/terraform.tfstate`.
 
-Create one [benchmark request](start.md) per target and apply
-`benchmark/03-approved` to only one request at a time. The shared-state CI guard
-rejects a new apply while benchmark instances remain active.
+The artifact bucket and state backend are pre-existing shared infrastructure.
+Cloud dispatch hard-requires `SCFUZZBENCH_BUCKET` and `TF_BACKEND_CONFIG`.
+Because `existing_bucket_name` is always set, a run plan owns no S3 bucket,
+bucket policy, or public-access configuration. A plan guard rejects shared S3
+resources before apply or cleanup.
+
+Admission is intentionally conservative:
+
+- Repository variable `SCFUZZBENCH_MAX_CONCURRENT_RUNS` sets the limit; unset
+  means `1`, and supported values are `1` through `20`.
+- A short job-level concurrency group serializes only the capacity decision.
+  Inside it, the workflow counts active S3 reservations and active
+  `Project=scfuzzbench` EC2 instances, then writes one reservation object.
+- The admission job releases its Actions lock immediately. It does not wait for
+  provisioning or fuzzing.
+- Active legacy instances without `RunId` are each counted conservatively.
+
+Keep the default at `1` until AWS vCPU quota and the full per-run EC2 cost have
+been reviewed. Increasing the variable is the explicit parallel-run opt-in.
+Run-owned AWS resources use run-scoped names and carry `Project`, `RunId`,
+`BenchmarkUuid`, `TargetRepo`, and `TargetCommit` tags where AWS supports tags.
+
+### Asynchronous cleanup and recovery
+
+`Benchmark Run Cleanup` runs hourly and can be dispatched manually. It cleans a
+run when all expected final log archives exist and its instances are terminal.
+Runners also overwrite a small, run-scoped heartbeat object every five minutes,
+starting before expensive tool builds. After timeout plus a three-hour recovery
+margin, the workflow treats an unfinished reservation as an orphan only when
+its heartbeat is stale for at least 30 minutes **and** no active EC2 instance
+with that `RunId` remains. A failed heartbeat upload never authorizes destroying
+an active instance.
+
+Cleanup initializes only the backend key recorded for that run. The saved
+cleanup variables, active reservation, and cleanup matrix must agree on the
+exact `run_id`, backend key, shared bucket, and full lowercase
+`scfuzzbench_commit`. That provisioning commit must be current `main` or an
+ancestor of current `main`. Terraform init, inspection, planning, and apply use
+the repository tree downloaded at that exact provisioning commit, so cleanup
+continues to match the configuration that created the state. The workflow
+orchestration and every state/plan validator always run from the separately
+checked-out current `main` tree.
+
+Normal cleanup requires exact `run_id`, backend-key, and benchmark outputs.
+An explicitly forced or recorded provisioning-failure cleanup may recover a
+partially applied state whose outputs were never created, but every output that
+does exist must still match. All paths reject create/update or shared-S3
+changes and require every taggable plan resource to carry the same `RunId`.
+Only the saved, verified delete-only plan is applied. Capacity is released only
+after no same-run EC2 instance remains.
+
+Recovery metadata is retained at:
+
+```text
+run-state/runs/<run_id>/metadata.json
+run-state/runs/<run_id>/cleanup.auto.tfvars.json
+```
+
+The empty post-destroy state remains at its versioned backend key. Failed
+provisioning keeps its active reservation and recovery inputs, so a maintainer
+can use `Benchmark Run Cleanup` (force orphan cleanup when justified) or
+`Terraform Run Recovery`. Neither workflow targets another run's key.
+Forced cleanup requires one explicit, valid `run_id`; it never advances the
+deadline or selects every reservation. It may terminate active resources for
+that one run, so use it only after confirming the run should stop.
+Recovery accepts no arbitrary Terraform arguments or bucket override. Its
+read-only plan must be a no-op; destroy must be delete-only. Potentially
+sensitive `fuzzer_env` values are never written to recovery objects, because a
+destroy plan does not need user-data inputs.
+
+All workflows that consume AWS credentials or publish GitHub/Pages state first
+authorize `refs/heads/main`. Their concurrency groups are ref-scoped or
+run-scoped so an untrusted branch dispatch cannot cancel, replace, or overlap a
+privileged main run.
 
 ## Foundry Log Visibility
 
@@ -227,13 +317,10 @@ the `worker` field identifies the worker that won the reporting interval.
 
 ## Re-run A Benchmark
 
-Runners are one-shot. To execute again with a fresh run prefix:
-
-```bash
-export TF_VAR_run_id="$(date +%s)"
-make terraform-destroy-infra TF_ARGS="-auto-approve -input=false"
-make terraform-deploy TF_ARGS="-auto-approve -input=false"
-```
+Runners are one-shot. In CI, approve a new benchmark-request issue (or retry as
+a new Actions attempt); it receives a new immutable run ID and state key.
+For local-only Terraform use, set a distinct `TF_VAR_run_id` and
+`TF_VAR_run_started_at_epoch` before initializing its dedicated backend key.
 
 ## Remote State Backend
 
@@ -255,15 +342,21 @@ aws dynamodb create-table \
 cp infrastructure/backend.hcl.template infrastructure/backend.hcl
 ```
 
-3. Initialize and migrate:
+3. Initialize a dedicated run key:
 
 ```bash
-make terraform-init-backend
+RUN_ID="local-$(date +%s)"
+make terraform-init-backend BACKEND_KEY="runs/${RUN_ID}/terraform.tfstate"
 ```
+
+The default init flags are `-reconfigure -input=false`. State migration is
+never implicit. If the legacy key exists, leave it and its shared resources
+untouched; do not pass `-migrate-state` for a new run key.
 
 ## Bucket Reuse
 
-To reuse a long-lived logs bucket, set `EXISTING_BUCKET=<bucket-name>`.
+Cloud runs always reuse a long-lived logs bucket. For local runs, set
+`EXISTING_BUCKET=<bucket-name>` so the run state cannot own that bucket.
 
 If state still tracks bucket resources from an older deployment, remove them before switching:
 
@@ -383,8 +476,8 @@ Peer-heuristic gaps are informational diagnostics rather than ground-truth failu
 Quick readiness checks:
 
 ```bash
-aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "logs/$BENCHMARK_UUID/$RUN_ID/" --max-keys 1000 --query 'KeyCount' --output text
-aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "corpus/$BENCHMARK_UUID/$RUN_ID/" --max-keys 1000 --query 'KeyCount' --output text
+aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "logs/$RUN_ID/$BENCHMARK_UUID/" --max-keys 1000 --query 'KeyCount' --output text
+aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "corpus/$RUN_ID/$BENCHMARK_UUID/" --max-keys 1000 --query 'KeyCount' --output text
 ```
 
 Download with explicit benchmark UUID when needed:

@@ -78,8 +78,24 @@ variable "target_commit" {
 
 variable "scfuzzbench_commit" {
   type        = string
-  description = "Commit hash for the scfuzzbench repo (used in benchmark UUID)."
+  description = "Full lowercase immutable commit SHA for the canonical scfuzzbench repository."
   default     = ""
+
+  validation {
+    condition     = var.scfuzzbench_commit == "" || can(regex("^[0-9a-f]{40}$", var.scfuzzbench_commit))
+    error_message = "scfuzzbench_commit must be blank during static validation or a full lowercase 40-character commit SHA."
+  }
+}
+
+variable "scfuzzbench_repository" {
+  type        = string
+  description = "Canonical public scfuzzbench repository used for the immutable EC2 bootstrap."
+  default     = "https://github.com/scfuzzbench/scfuzzbench"
+
+  validation {
+    condition     = var.scfuzzbench_repository == "https://github.com/scfuzzbench/scfuzzbench"
+    error_message = "scfuzzbench_repository must be https://github.com/scfuzzbench/scfuzzbench."
+  }
 }
 
 variable "benchmark_type" {
@@ -301,24 +317,34 @@ variable "bucket_public_read" {
 
 variable "run_id" {
   type        = string
-  description = "Run identifier (defaults to unix timestamp at apply time)."
-  default     = ""
-}
-
-variable "run_started_at_epoch" {
-  type        = string
-  description = "Unix epoch when the run started. Kept separate from the opaque run identifier."
+  description = "Immutable run identifier. CI sets this before backend initialization."
   default     = ""
 
   validation {
-    condition = (
-      var.run_started_at_epoch == "" ||
-      (
-        can(regex("^[0-9]+$", var.run_started_at_epoch)) &&
-        try(tonumber(var.run_started_at_epoch), 0) > 0
-      )
-    )
-    error_message = "run_started_at_epoch must be empty or a positive Unix timestamp."
+    condition     = var.run_id == "" || can(regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$", var.run_id))
+    error_message = "run_id must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$."
+  }
+}
+
+variable "run_started_at_epoch" {
+  type        = number
+  description = "Unix timestamp generated with the immutable run identity before Terraform initialization."
+  default     = 0
+
+  validation {
+    condition     = var.run_started_at_epoch >= 0 && floor(var.run_started_at_epoch) == var.run_started_at_epoch
+    error_message = "run_started_at_epoch must be a non-negative integer."
+  }
+}
+
+variable "terraform_backend_key" {
+  type        = string
+  description = "Run-scoped remote-state key recorded in benchmark provenance."
+  default     = ""
+
+  validation {
+    condition     = var.terraform_backend_key == "" || can(regex("^runs/[A-Za-z0-9][A-Za-z0-9._-]{0,79}/terraform\\.tfstate$", var.terraform_backend_key))
+    error_message = "terraform_backend_key must use runs/<run_id>/terraform.tfstate."
   }
 }
 
@@ -338,6 +364,34 @@ variable "custom_fuzzer_definitions" {
   }))
   description = "Additional fuzzer definitions to include (local only)."
   default     = []
+
+  validation {
+    condition     = length(var.custom_fuzzer_definitions) == 0
+    error_message = "custom_fuzzer_definitions are local-only and cannot be deployed through the cloud Terraform module."
+  }
+
+  validation {
+    condition = (
+      length(var.custom_fuzzer_definitions) ==
+      length(distinct([for fuzzer in var.custom_fuzzer_definitions : fuzzer.key]))
+      ) && alltrue([
+        for fuzzer in var.custom_fuzzer_definitions :
+        can(regex("^[a-z0-9][a-z0-9-]{0,63}$", fuzzer.key)) &&
+        !contains(["echidna", "foundry", "medusa", "recon-fuzzer"], fuzzer.key)
+    ])
+    error_message = "Custom fuzzer keys must be unique, must match ^[a-z0-9][a-z0-9-]{0,63}$, and must not shadow built-in fuzzers."
+  }
+
+  validation {
+    condition = alltrue([
+      for fuzzer in var.custom_fuzzer_definitions :
+      can(regex("^fuzzers/[A-Za-z0-9_.+-]+(/[A-Za-z0-9_.+-]+)*/install\\.sh$", fuzzer.install_path)) &&
+      can(regex("^fuzzers/[A-Za-z0-9_.+-]+(/[A-Za-z0-9_.+-]+)*/run\\.sh$", fuzzer.run_path)) &&
+      length(regexall("(^|/)\\.\\.?(/|$)", fuzzer.install_path)) == 0 &&
+      length(regexall("(^|/)\\.\\.?(/|$)", fuzzer.run_path)) == 0
+    ])
+    error_message = "Custom fuzzer scripts must be safe repo-relative fuzzers/.../install.sh and fuzzers/.../run.sh paths."
+  }
 }
 
 variable "fuzzers" {
@@ -352,6 +406,14 @@ variable "fuzzers" {
     ])
     error_message = "fuzzers must contain unique fuzzer keys matching ^[a-z0-9][a-z0-9-]{0,63}$."
   }
+
+  validation {
+    condition = alltrue([
+      for fuzzer in var.fuzzers :
+      contains(["echidna", "foundry", "medusa", "recon-fuzzer"], fuzzer)
+    ])
+    error_message = "fuzzers may contain only the built-in cloud fuzzers: echidna, foundry, medusa, and recon-fuzzer."
+  }
 }
 
 variable "fuzzer_env" {
@@ -360,7 +422,44 @@ variable "fuzzer_env" {
   default     = {}
 
   validation {
+    condition     = length(var.fuzzer_env) <= 64
+    error_message = "fuzzer_env must contain at most 64 entries."
+  }
+
+  validation {
+    condition = sum(concat(
+      [0],
+      [
+        for key, value in var.fuzzer_env :
+        (length(base64encode(key)) * 3 / 4) -
+        length(regexall("=", base64encode(key))) +
+        (length(base64encode(value)) * 3 / 4) -
+        length(regexall("=", base64encode(value)))
+      ]
+    )) <= 4096
+    error_message = "fuzzer_env keys and values must contain at most 4096 aggregate UTF-8 bytes."
+  }
+
+  validation {
+    condition = alltrue([
+      for key in keys(var.fuzzer_env) :
+      can(regex("^[A-Z][A-Z0-9_]{0,63}$", key))
+    ])
+    error_message = "fuzzer_env keys must match ^[A-Z][A-Z0-9_]{0,63}$."
+  }
+
+  validation {
+    condition = alltrue([
+      for value in values(var.fuzzer_env) :
+      length(value) <= 2000 &&
+      length(regexall("[\\r\\n\"`$\\\\]", value)) == 0
+    ])
+    error_message = "fuzzer_env values must be at most 2000 characters and cannot contain CR, LF, double quotes, backticks, dollar signs, or backslashes."
+  }
+
+  validation {
     condition = length(setintersection(toset(keys(var.fuzzer_env)), toset([
+      "ECHIDNA_VERSION",
       "ECHIDNA_CI_TOKEN",
       "ECHIDNA_CI_TOKEN_SSM_PARAMETER",
       "ECHIDNA_CI_REPO",
@@ -369,13 +468,19 @@ variable "fuzzer_env" {
       "ECHIDNA_CI_ARTIFACT_SHA256",
       "ECHIDNA_CI_COMMIT",
       "ECHIDNA_CI_TOKEN_KMS_KEY_ARN",
+      "FOUNDRY_GIT_REF",
+      "FOUNDRY_GIT_REPO",
+      "FOUNDRY_VERSION",
+      "SCFUZZBENCH_FOUNDRY_SOURCE_PATCH",
+      "MEDUSA_VERSION",
       "MEDUSA_GIT_REPO",
       "MEDUSA_GIT_REF",
       "MEDUSA_GIT_COMMIT",
       "MEDUSA_GO_VERSION",
       "MEDUSA_GO_SHA256",
+      "RECON_VERSION",
     ]))) == 0
-    error_message = "Bleeding-edge tool settings must use their dedicated variables, not fuzzer_env."
+    error_message = "Tool settings must use their dedicated variables, not fuzzer_env."
   }
 
   validation {
@@ -385,10 +490,160 @@ variable "fuzzer_env" {
         "SCFUZZBENCH_SEED_CORPUS_SOURCE",
         "SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE",
         "SCFUZZBENCH_SEED_CORPUS_HELPER",
+        "SCFUZZBENCH_SEED_CORPUS_MAX_BYTES",
+        "SCFUZZBENCH_SEED_CORPUS_MAX_FILES",
         "SCFUZZBENCH_SEED_CORPUS_METADATA_PATH",
+        "SCFUZZBENCH_PROPERTIES_PATH",
       ], key)
     ])
-    error_message = "fuzzer_env cannot override framework-owned shared seed corpus variables."
+    error_message = "fuzzer_env cannot override framework-owned benchmark variables."
+  }
+
+  validation {
+    condition = length(setintersection(toset(keys(var.fuzzer_env)), toset([
+      "AWS_ACCESS_KEY_ID",
+      "AWS_DEFAULT_REGION",
+      "AWS_REGION",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_SESSION_TOKEN",
+      "SCFUZZBENCH_AWS_CREDS_ENV_FILE",
+      "SCFUZZBENCH_AWS_CREDS_REFRESH_PID",
+      "SCFUZZBENCH_AWS_CREDS_REFRESH_PID_START_TICKS",
+      "SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS",
+      "SCFUZZBENCH_BENCHMARK_MANIFEST_B64",
+      "SCFUZZBENCH_BENCHMARK_TYPE",
+      "SCFUZZBENCH_BENCHMARK_UUID",
+      "SCFUZZBENCH_BIN_DIR",
+      "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION",
+      "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH",
+      "SCFUZZBENCH_COMMIT",
+      "SCFUZZBENCH_COMMON_SH",
+      "SCFUZZBENCH_CORPUS_DIR",
+      "SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE",
+      "SCFUZZBENCH_FUZZER_KEY",
+      "SCFUZZBENCH_FUZZER_LABEL",
+      "SCFUZZBENCH_GIT_TOKEN",
+      "SCFUZZBENCH_GIT_TOKEN_SSM_PARAMETER",
+      "SCFUZZBENCH_INSTANCE_ID",
+      "SCFUZZBENCH_LOCAL_MODE",
+      "SCFUZZBENCH_LOG_DIR",
+      "SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS",
+      "SCFUZZBENCH_PRELIMINARY_PID",
+      "SCFUZZBENCH_PRELIMINARY_PID_START_TICKS",
+      "SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT",
+      "SCFUZZBENCH_REPO_URL",
+      "SCFUZZBENCH_ROOT",
+      "SCFUZZBENCH_RUNNER_METRICS_PID",
+      "SCFUZZBENCH_RUNNER_METRICS_PID_START_TICKS",
+      "SCFUZZBENCH_RUN_HEARTBEAT_SECONDS",
+      "SCFUZZBENCH_RUN_ID",
+      "SCFUZZBENCH_RUN_INDEX",
+      "SCFUZZBENCH_RUN_STARTED_AT_EPOCH",
+      "SCFUZZBENCH_S3_BUCKET",
+      "SCFUZZBENCH_SHUTDOWN_GRACE_SECONDS",
+      "SCFUZZBENCH_TIMEOUT_GRACE_SECONDS",
+      "SCFUZZBENCH_TIMEOUT_SECONDS",
+      "SCFUZZBENCH_UPLOAD_DONE",
+      "SCFUZZBENCH_WORKDIR",
+      "SCFUZZBENCH_WORKERS_RESOLVED",
+    ]))) == 0
+    error_message = "fuzzer_env cannot override immutable runner identity, credentials, paths, or timing."
+  }
+
+  validation {
+    condition = alltrue([
+      for key in keys(var.fuzzer_env) : !startswith(key, "AWS_")
+    ])
+    error_message = "fuzzer_env cannot set AWS SDK credential, endpoint, or configuration variables."
+  }
+
+  validation {
+    condition = alltrue([
+      for key in keys(var.fuzzer_env) :
+      !startswith(key, "SCFUZZBENCH_") || contains([
+        "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS",
+        "SCFUZZBENCH_FOUNDRY_SHOWMAP",
+        "SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS",
+        "SCFUZZBENCH_RUNNER_METRICS",
+        "SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS",
+        "SCFUZZBENCH_WORKERS",
+      ], key)
+    ])
+    error_message = "fuzzer_env may set only the documented safe SCFUZZBENCH_* tuning variables."
+  }
+
+  validation {
+    condition = alltrue([
+      for key, value in var.fuzzer_env :
+      !contains([
+        "SCFUZZBENCH_FOUNDRY_SHOWMAP",
+        "SCFUZZBENCH_RUNNER_METRICS",
+        ], key) || contains(
+        ["0", "1", "false", "no", "off", "on", "true", "yes"],
+        lower(value),
+      )
+    ])
+    error_message = "SCFUZZBENCH_FOUNDRY_SHOWMAP and SCFUZZBENCH_RUNNER_METRICS must be boolean values."
+  }
+
+  validation {
+    condition = alltrue([
+      for key, value in var.fuzzer_env :
+      key != "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS" || contains(["0", "1"], value)
+    ])
+    error_message = "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS must be 0 or 1."
+  }
+
+  validation {
+    condition = alltrue([
+      for key, value in var.fuzzer_env :
+      !contains([
+        "SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS",
+        "SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS",
+        "SCFUZZBENCH_WORKERS",
+        ], key) || (
+        can(regex("^[0-9]+$", value)) &&
+        try(tonumber(value) >= 1, false) &&
+        try(tonumber(value) <= (
+          key == "SCFUZZBENCH_WORKERS" ? 256 :
+          key == "SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS" ? 300 :
+          3600
+        ), false)
+      )
+    ])
+    error_message = "Safe SCFUZZBENCH integer tunings are outside their allowed bounds."
+  }
+
+  validation {
+    condition = alltrue([
+      for key, value in var.fuzzer_env :
+      !contains([
+        "ECHIDNA_CORPUS_DIR",
+        "FOUNDRY_CORPUS_DIR",
+        "MEDUSA_CORPUS_DIR",
+        "RECON_CORPUS_DIR",
+        ], key) || value == "" || (
+        !startswith(value, "/") &&
+        can(regex("^[A-Za-z0-9_.+/-]+$", value)) &&
+        length(regexall("(^|/)\\.\\.?(/|$)", value)) == 0
+      )
+    ])
+    error_message = "Fuzzer corpus directory overrides must be safe repo-relative paths without '.' or '..' segments."
+  }
+}
+
+variable "properties_path" {
+  type        = string
+  description = "Optional repo-relative properties path for benchmark mode switching."
+  default     = ""
+
+  validation {
+    condition = var.properties_path == "" || (
+      !startswith(var.properties_path, "/") &&
+      can(regex("^[A-Za-z0-9_./-]+$", var.properties_path)) &&
+      length(regexall("(^|/)\\.\\.?(/|$)", var.properties_path)) == 0
+    )
+    error_message = "properties_path must be empty or a safe repo-relative path without '.' or '..' segments."
   }
 }
 

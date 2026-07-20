@@ -1,14 +1,7 @@
 locals {
-  name_prefix = "scfuzzbench"
-  tags        = merge({ Project = "scfuzzbench" }, var.tags)
-
-  timeout_seconds = var.timeout_hours * 3600
-  run_id          = var.run_id != "" ? var.run_id : time_static.run.unix
-  run_started_at_epoch = (
-    var.run_started_at_epoch != "" ? var.run_started_at_epoch :
-    can(regex("^[0-9]+$", local.run_id)) ? local.run_id :
-    time_static.run.unix
-  )
+  timeout_seconds      = var.timeout_hours * 3600
+  run_id               = var.run_id != "" ? var.run_id : time_static.run.unix
+  run_started_at_epoch = var.run_started_at_epoch != 0 ? var.run_started_at_epoch : time_static.run.unix
 
   echidna_ci_inputs = [
     var.echidna_ci_repo,
@@ -36,6 +29,51 @@ locals {
     "scfuzzbench-throughput-progress-v1@sha256:${local.foundry_throughput_patch_sha256}"
   ) : ""
 
+  bootstrap_file_destinations = {
+    "fuzzers/_shared/common.sh"                 = "common.sh"
+    "fuzzers/_shared/prepare_seed_corpus.py"    = "prepare_seed_corpus.py"
+    "fuzzers/_shared/safe_path_ops.py"          = "safe_path_ops.py"
+    "fuzzers/_shared/put_manifest_once.py"      = "put_manifest_once.py"
+    "fuzzers/_shared/upload_pinned_file.py"     = "upload_pinned_file.py"
+    "infrastructure/bootstrap_bundle.py"        = "bootstrap_bundle.py"
+    "infrastructure/bootstrap_source_guard.py"  = "provenance/bootstrap_source_guard.py"
+    "infrastructure/user_data.sh.tftpl"         = "provenance/user_data.sh.tftpl"
+    "scripts/preliminary_snapshot.py"           = "preliminary_snapshot.py"
+    "fuzzers/echidna/install.sh"                = "fuzzers/echidna/install.sh"
+    "fuzzers/echidna/run.sh"                    = "fuzzers/echidna/run.sh"
+    "fuzzers/echidna/extract_ci_artifact.py"    = "extract_echidna_ci_artifact.py"
+    "fuzzers/medusa/install.sh"                 = "fuzzers/medusa/install.sh"
+    "fuzzers/medusa/run.sh"                     = "fuzzers/medusa/run.sh"
+    "fuzzers/medusa/extract_go_toolchain.py"    = "extract_go_toolchain.py"
+    "fuzzers/foundry/install.sh"                = "fuzzers/foundry/install.sh"
+    "fuzzers/foundry/run.sh"                    = "fuzzers/foundry/run.sh"
+    "fuzzers/foundry/throughput-progress.patch" = "foundry-throughput-progress.patch"
+    "fuzzers/recon-fuzzer/install.sh"           = "fuzzers/recon-fuzzer/install.sh"
+    "fuzzers/recon-fuzzer/run.sh"               = "fuzzers/recon-fuzzer/run.sh"
+  }
+  bootstrap_files = {
+    for source, destination in local.bootstrap_file_destinations : source => {
+      destination = destination
+      executable  = endswith(source, ".sh") || endswith(source, ".py")
+      sha256      = filesha256("${path.module}/../${source}")
+    }
+  }
+  bootstrap_manifest = {
+    schema_version = 1
+    repository     = var.scfuzzbench_repository
+    commit         = lower(var.scfuzzbench_commit)
+    files          = local.bootstrap_files
+  }
+  bootstrap_manifest_json   = jsonencode(local.bootstrap_manifest)
+  bootstrap_manifest_b64    = base64encode(local.bootstrap_manifest_json)
+  bootstrap_manifest_sha256 = sha256(local.bootstrap_manifest_json)
+  bootstrap_installer_sha256 = local.bootstrap_files[
+    "infrastructure/bootstrap_bundle.py"
+  ].sha256
+  user_data_template_sha256 = local.bootstrap_files[
+    "infrastructure/user_data.sh.tftpl"
+  ].sha256
+
   seed_corpus_s3_match  = regexall("^s3://([^/]+)/(.+?)/?$", var.shared_seed_corpus_source)
   seed_corpus_s3_parts  = length(local.seed_corpus_s3_match) == 1 ? local.seed_corpus_s3_match[0] : ["", ""]
   seed_corpus_s3_bucket = local.seed_corpus_s3_parts[0]
@@ -60,8 +98,12 @@ locals {
   # when AWS auto-selects an AZ where the type isn't offered.
   subnet_availability_zone = var.availability_zone != "" ? var.availability_zone : sort(data.aws_ec2_instance_type_offerings.fuzzer.locations)[0]
 
-  benchmark_manifest = merge({
+  benchmark_definition = merge({
     scfuzzbench_commit           = var.scfuzzbench_commit
+    scfuzzbench_repository       = var.scfuzzbench_repository
+    bootstrap_manifest_sha256    = local.bootstrap_manifest_sha256
+    bootstrap_installer_sha256   = local.bootstrap_installer_sha256
+    user_data_template_sha256    = local.user_data_template_sha256
     target_repo_url              = var.target_repo_url
     target_commit                = var.target_commit
     benchmark_type               = var.benchmark_type
@@ -89,6 +131,7 @@ locals {
     medusa_go_version            = local.medusa_source_enabled ? var.medusa_go_version : ""
     medusa_go_sha256             = local.medusa_source_enabled ? lower(var.medusa_go_sha256) : ""
     recon_version                = var.recon_version
+    properties_path              = var.properties_path
     fuzzer_keys                  = sort([for fuzzer in local.fuzzer_definitions : fuzzer.key])
     }, var.shared_seed_corpus_source != "" ? {
     seed_corpus = {
@@ -98,9 +141,30 @@ locals {
     }
   } : {})
 
+  benchmark_definition_json = jsonencode(local.benchmark_definition)
+  benchmark_uuid            = md5(local.benchmark_definition_json)
+  benchmark_manifest = merge(local.benchmark_definition, {
+    run_id                 = local.run_id
+    run_started_at_epoch   = local.run_started_at_epoch
+    terraform_backend_key  = var.terraform_backend_key
+    artifact_prefix        = "logs/${local.run_id}/${local.benchmark_uuid}"
+    run_state_metadata_key = "run-state/runs/${local.run_id}/metadata.json"
+  })
   benchmark_manifest_json = jsonencode(local.benchmark_manifest)
   benchmark_manifest_b64  = base64encode(local.benchmark_manifest_json)
-  benchmark_uuid          = md5(local.benchmark_manifest_json)
+
+  # Keep names below IAM's 64-character role limit while retaining a digest of
+  # the complete run ID so truncated identities cannot collide.
+  run_name_token = substr(replace(lower(tostring(local.run_id)), "/[^a-z0-9-]/", "-"), 0, 18)
+  run_name_hash  = substr(sha256(tostring(local.run_id)), 0, 8)
+  name_prefix    = "scfuzzbench-${local.run_name_token}-${local.run_name_hash}"
+  tags = merge(var.tags, {
+    Project       = "scfuzzbench"
+    RunId         = tostring(local.run_id)
+    BenchmarkUuid = local.benchmark_uuid
+    TargetRepo    = substr(var.target_repo_url, 0, 256)
+    TargetCommit  = substr(var.target_commit, 0, 256)
+  })
 
   default_fuzzer_env = {
     ECHIDNA_CONFIG     = "echidna.yaml"
@@ -108,28 +172,35 @@ locals {
     ECHIDNA_CONTRACT   = "CryticTester"
     ECHIDNA_EXTRA_ARGS = "--test-limit 1000000000"
   }
-  merged_fuzzer_env = merge(local.default_fuzzer_env, var.fuzzer_env)
+  properties_path_env = var.properties_path != "" ? {
+    SCFUZZBENCH_PROPERTIES_PATH = var.properties_path
+  } : {}
+  merged_fuzzer_env = merge(
+    local.default_fuzzer_env,
+    var.fuzzer_env,
+    local.properties_path_env,
+  )
 
   base_fuzzer_definitions = [
     {
       key          = "echidna"
-      install_path = "${path.module}/../fuzzers/echidna/install.sh"
-      run_path     = "${path.module}/../fuzzers/echidna/run.sh"
+      install_path = "fuzzers/echidna/install.sh"
+      run_path     = "fuzzers/echidna/run.sh"
     },
     {
       key          = "medusa"
-      install_path = "${path.module}/../fuzzers/medusa/install.sh"
-      run_path     = "${path.module}/../fuzzers/medusa/run.sh"
+      install_path = "fuzzers/medusa/install.sh"
+      run_path     = "fuzzers/medusa/run.sh"
     },
     {
       key          = "foundry"
-      install_path = "${path.module}/../fuzzers/foundry/install.sh"
-      run_path     = "${path.module}/../fuzzers/foundry/run.sh"
+      install_path = "fuzzers/foundry/install.sh"
+      run_path     = "fuzzers/foundry/run.sh"
     },
     {
       key          = "recon-fuzzer"
-      install_path = "${path.module}/../fuzzers/recon-fuzzer/install.sh"
-      run_path     = "${path.module}/../fuzzers/recon-fuzzer/run.sh"
+      install_path = "fuzzers/recon-fuzzer/install.sh"
+      run_path     = "fuzzers/recon-fuzzer/run.sh"
     },
   ]
   available_fuzzer_keys = [
@@ -159,6 +230,75 @@ locals {
   ])
 
   instance_map = { for instance in local.instances : instance.key => instance }
+
+  instance_user_data_rendered = {
+    for instance_key, instance in local.instance_map : instance_key => templatefile(
+      "${path.module}/user_data.sh.tftpl",
+      {
+        bootstrap_installer_sha256_b64   = base64encode(local.bootstrap_installer_sha256)
+        bootstrap_manifest_b64           = local.bootstrap_manifest_b64
+        bootstrap_manifest_sha256_b64    = base64encode(local.bootstrap_manifest_sha256)
+        scfuzzbench_repository_b64       = base64encode(var.scfuzzbench_repository)
+        scfuzzbench_commit_b64           = base64encode(lower(var.scfuzzbench_commit))
+        fuzzer_key_b64                   = base64encode(instance.fuzzer.key)
+        aws_region_b64                   = base64encode(var.aws_region)
+        s3_bucket_b64                    = base64encode(local.bucket_name)
+        run_id_b64                       = base64encode(tostring(local.run_id))
+        run_started_at_epoch_b64         = base64encode(tostring(local.run_started_at_epoch))
+        benchmark_uuid_b64               = base64encode(local.benchmark_uuid)
+        benchmark_manifest_b64_b64       = base64encode(local.benchmark_manifest_b64)
+        timeout_seconds_b64              = base64encode(tostring(local.timeout_seconds))
+        repo_url_b64                     = base64encode(var.target_repo_url)
+        repo_commit_b64                  = base64encode(var.target_commit)
+        benchmark_type_b64               = base64encode(var.benchmark_type)
+        preliminary_interval_seconds_b64 = base64encode(tostring(var.preliminary_interval_seconds))
+        run_index_b64                    = base64encode(tostring(instance.run_index))
+        foundry_version_b64              = base64encode(local.foundry_release_version)
+        foundry_git_repo_b64             = base64encode(var.foundry_git_repo)
+        foundry_git_ref_b64              = base64encode(var.foundry_git_ref)
+        echidna_version_b64              = base64encode(var.echidna_version)
+        echidna_ci_repo_b64              = base64encode(instance.fuzzer.key == "echidna" ? var.echidna_ci_repo : "")
+        echidna_ci_run_id_b64            = base64encode(instance.fuzzer.key == "echidna" ? var.echidna_ci_run_id : "")
+        echidna_ci_artifact_name_b64     = base64encode(instance.fuzzer.key == "echidna" ? var.echidna_ci_artifact_name : "")
+        echidna_ci_artifact_sha256_b64   = base64encode(instance.fuzzer.key == "echidna" ? var.echidna_ci_artifact_sha256 : "")
+        echidna_ci_commit_b64            = base64encode(instance.fuzzer.key == "echidna" ? var.echidna_ci_commit : "")
+        echidna_ci_token_ssm_parameter_name_b64 = base64encode(
+          instance.fuzzer.key == "echidna" ? var.echidna_ci_token_ssm_parameter_name : ""
+        )
+        medusa_version_b64 = base64encode(var.medusa_version)
+        medusa_git_repo_b64 = base64encode(
+          instance.fuzzer.key == "medusa" ? var.medusa_git_repo : ""
+        )
+        medusa_git_ref_b64 = base64encode(
+          instance.fuzzer.key == "medusa" ? var.medusa_git_ref : ""
+        )
+        medusa_git_commit_b64 = base64encode(
+          instance.fuzzer.key == "medusa" ? var.medusa_git_commit : ""
+        )
+        medusa_go_version_b64 = base64encode(
+          instance.fuzzer.key == "medusa" && local.medusa_source_enabled ? var.medusa_go_version : ""
+        )
+        medusa_go_sha256_b64 = base64encode(
+          instance.fuzzer.key == "medusa" && local.medusa_source_enabled ? var.medusa_go_sha256 : ""
+        )
+        recon_version_b64                 = base64encode(var.recon_version)
+        git_token_ssm_parameter_name_b64  = base64encode(var.git_token_ssm_parameter_name)
+        seed_corpus_source_b64            = base64encode(var.shared_seed_corpus_source)
+        seed_corpus_provenance_source_b64 = base64encode(local.seed_corpus_provenance_source)
+        fuzzer_env_b64 = {
+          for key, value in local.merged_fuzzer_env : key => base64encode(value)
+        }
+      }
+    )
+  }
+  instance_user_data_base64 = {
+    for instance_key, rendered in local.instance_user_data_rendered :
+    instance_key => base64gzip(rendered)
+  }
+  instance_user_data_gzip_bytes = {
+    for instance_key, encoded in local.instance_user_data_base64 :
+    instance_key => (length(encoded) * 3 / 4) - length(regexall("=", encoded))
+  }
 }
 
 resource "random_id" "suffix" {
@@ -195,6 +335,16 @@ resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
+
+  lifecycle {
+    precondition {
+      condition = (
+        var.terraform_backend_key == "" ||
+        var.terraform_backend_key == "runs/${local.run_id}/terraform.tfstate"
+      )
+      error_message = "terraform_backend_key must be derived from the same run_id."
+    }
+  }
 
   tags = merge(local.tags, {
     Name = "${local.name_prefix}-vpc"
@@ -273,9 +423,9 @@ resource "aws_s3_bucket" "logs" {
 }
 
 resource "aws_s3_bucket_public_access_block" "logs" {
-  count = local.bucket_name != "" ? 1 : 0
+  count = length(aws_s3_bucket.logs)
 
-  bucket                  = local.bucket_name
+  bucket                  = aws_s3_bucket.logs[count.index].id
   block_public_acls       = !var.bucket_public_read
   block_public_policy     = !var.bucket_public_read
   ignore_public_acls      = !var.bucket_public_read
@@ -367,6 +517,7 @@ data "aws_iam_policy_document" "s3_access" {
       "arn:aws:s3:::${local.bucket_name}/corpus/${local.run_id}/${local.benchmark_uuid}/*",
       "arn:aws:s3:::${local.bucket_name}/runs/${local.run_id}/${local.benchmark_uuid}/manifest.json",
       "arn:aws:s3:::${local.bucket_name}/preliminary/${local.run_id}/${local.benchmark_uuid}/snapshots/*",
+      "arn:aws:s3:::${local.bucket_name}/run-state/heartbeats/${local.run_id}/${local.benchmark_uuid}/*",
     ]
   }
 
@@ -435,9 +586,9 @@ data "aws_iam_policy_document" "public_read" {
 }
 
 resource "aws_s3_bucket_policy" "public_read" {
-  count = var.bucket_public_read ? 1 : 0
+  count = var.bucket_public_read && length(aws_s3_bucket.logs) > 0 ? 1 : 0
 
-  bucket = local.bucket_name
+  bucket = aws_s3_bucket.logs[0].id
   policy = data.aws_iam_policy_document.public_read[0].json
 }
 
@@ -450,6 +601,7 @@ resource "aws_iam_role_policy" "s3_access" {
 resource "aws_iam_instance_profile" "fuzzer" {
   name = "${local.name_prefix}-profile-${random_id.suffix.hex}"
   role = aws_iam_role.fuzzer.name
+  tags = local.tags
 }
 
 resource "aws_iam_role" "echidna_ci" {
@@ -507,6 +659,32 @@ resource "aws_iam_instance_profile" "echidna_ci" {
 
   name = "${local.name_prefix}-echidna-ci-profile-${random_id.suffix.hex}"
   role = aws_iam_role.echidna_ci[0].name
+  tags = local.tags
+}
+
+resource "terraform_data" "bootstrap_source_guard" {
+  triggers_replace = [
+    lower(var.scfuzzbench_commit),
+    local.bootstrap_manifest_sha256,
+  ]
+
+  provisioner "local-exec" {
+    working_dir = path.module
+    command     = <<-EOT
+      python3 bootstrap_source_guard.py \
+        --repository-root .. \
+        --manifest-b64 "$SCFUZZBENCH_BOOTSTRAP_MANIFEST_B64" \
+        --manifest-sha256 "$SCFUZZBENCH_BOOTSTRAP_MANIFEST_SHA256" \
+        --repository "$SCFUZZBENCH_BOOTSTRAP_REPOSITORY" \
+        --commit "$SCFUZZBENCH_BOOTSTRAP_COMMIT"
+    EOT
+    environment = {
+      SCFUZZBENCH_BOOTSTRAP_MANIFEST_B64    = local.bootstrap_manifest_b64
+      SCFUZZBENCH_BOOTSTRAP_MANIFEST_SHA256 = local.bootstrap_manifest_sha256
+      SCFUZZBENCH_BOOTSTRAP_REPOSITORY      = var.scfuzzbench_repository
+      SCFUZZBENCH_BOOTSTRAP_COMMIT          = lower(var.scfuzzbench_commit)
+    }
+  }
 }
 
 resource "aws_instance" "fuzzer" {
@@ -526,56 +704,16 @@ resource "aws_instance" "fuzzer" {
   instance_initiated_shutdown_behavior = "terminate"
   user_data_replace_on_change          = true
 
-  user_data_base64 = base64gzip(templatefile("${path.module}/user_data.sh.tftpl", {
-    fuzzer_key                          = each.value.fuzzer.key
-    shared_sh                           = file("${path.module}/../fuzzers/_shared/common.sh")
-    seed_corpus_helper                  = file("${path.module}/../fuzzers/_shared/prepare_seed_corpus.py")
-    install_sh                          = file(each.value.fuzzer.install_path)
-    run_sh                              = file(each.value.fuzzer.run_path)
-    preliminary_snapshot_py             = file("${path.module}/../scripts/preliminary_snapshot.py")
-    echidna_ci_enabled                  = each.value.fuzzer.key == "echidna" && local.echidna_ci_enabled
-    echidna_ci_extractor                = each.value.fuzzer.key == "echidna" && local.echidna_ci_enabled ? file("${path.module}/../fuzzers/echidna/extract_ci_artifact.py") : ""
-    medusa_source_enabled               = each.value.fuzzer.key == "medusa" && local.medusa_source_enabled
-    medusa_go_extractor                 = each.value.fuzzer.key == "medusa" && local.medusa_source_enabled ? file("${path.module}/../fuzzers/medusa/extract_go_toolchain.py") : ""
-    aws_region                          = var.aws_region
-    s3_bucket                           = local.bucket_name
-    run_id                              = local.run_id
-    run_started_at_epoch                = local.run_started_at_epoch
-    benchmark_uuid                      = local.benchmark_uuid
-    benchmark_manifest_b64              = local.benchmark_manifest_b64
-    timeout_seconds                     = local.timeout_seconds
-    repo_url                            = var.target_repo_url
-    repo_commit                         = var.target_commit
-    benchmark_type                      = var.benchmark_type
-    preliminary_interval_seconds        = var.preliminary_interval_seconds
-    run_index                           = each.value.run_index
-    foundry_version                     = local.foundry_release_version
-    foundry_git_repo                    = var.foundry_git_repo
-    foundry_git_ref                     = var.foundry_git_ref
-    foundry_source_patch                = file(local.foundry_throughput_patch_path)
-    echidna_version                     = var.echidna_version
-    echidna_ci_repo                     = each.value.fuzzer.key == "echidna" ? var.echidna_ci_repo : ""
-    echidna_ci_run_id                   = each.value.fuzzer.key == "echidna" ? var.echidna_ci_run_id : ""
-    echidna_ci_artifact_name            = each.value.fuzzer.key == "echidna" ? var.echidna_ci_artifact_name : ""
-    echidna_ci_artifact_sha256          = each.value.fuzzer.key == "echidna" ? var.echidna_ci_artifact_sha256 : ""
-    echidna_ci_commit                   = each.value.fuzzer.key == "echidna" ? var.echidna_ci_commit : ""
-    echidna_ci_token_ssm_parameter_name = each.value.fuzzer.key == "echidna" ? var.echidna_ci_token_ssm_parameter_name : ""
-    medusa_version                      = var.medusa_version
-    medusa_git_repo                     = each.value.fuzzer.key == "medusa" ? var.medusa_git_repo : ""
-    medusa_git_ref                      = each.value.fuzzer.key == "medusa" ? var.medusa_git_ref : ""
-    medusa_git_commit                   = each.value.fuzzer.key == "medusa" ? var.medusa_git_commit : ""
-    medusa_go_version                   = each.value.fuzzer.key == "medusa" && local.medusa_source_enabled ? var.medusa_go_version : ""
-    medusa_go_sha256                    = each.value.fuzzer.key == "medusa" && local.medusa_source_enabled ? var.medusa_go_sha256 : ""
-    recon_version                       = var.recon_version
-    git_token_ssm_parameter_name        = var.git_token_ssm_parameter_name
-    seed_corpus_source                  = var.shared_seed_corpus_source
-    seed_corpus_provenance_source       = local.seed_corpus_provenance_source
-    fuzzer_env                          = local.merged_fuzzer_env
-  }))
+  user_data_base64 = local.instance_user_data_base64[each.key]
+
+  depends_on = [terraform_data.bootstrap_source_guard]
 
   root_block_device {
     volume_size = var.root_volume_size_gb
     volume_type = "gp3"
+    tags = merge(local.tags, {
+      Name = "${local.name_prefix}-${each.value.fuzzer.key}-${each.value.run_index}-root"
+    })
   }
 
   metadata_options {
@@ -583,6 +721,21 @@ resource "aws_instance" "fuzzer" {
   }
 
   lifecycle {
+    precondition {
+      condition     = can(regex("^[0-9a-f]{40}$", var.scfuzzbench_commit))
+      error_message = "scfuzzbench_commit must be a full lowercase immutable commit SHA."
+    }
+
+    precondition {
+      condition     = var.scfuzzbench_repository == "https://github.com/scfuzzbench/scfuzzbench"
+      error_message = "scfuzzbench_repository must be the canonical public repository."
+    }
+
+    precondition {
+      condition     = local.instance_user_data_gzip_bytes[each.key] <= 16384
+      error_message = "Rendered EC2 user data exceeds the 16,384-byte API limit for ${each.key}."
+    }
+
     precondition {
       condition     = local.echidna_ci_input_count == 0 || local.echidna_ci_input_count == length(local.echidna_ci_inputs)
       error_message = "Echidna CI artifact mode requires repo, run ID, artifact name, artifact SHA-256, full commit, and token SSM parameter together."

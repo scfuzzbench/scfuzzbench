@@ -32,6 +32,9 @@ SCFUZZBENCH_PROPERTIES_PATH=${SCFUZZBENCH_PROPERTIES_PATH:-}
 SCFUZZBENCH_SEED_CORPUS_SOURCE=${SCFUZZBENCH_SEED_CORPUS_SOURCE:-}
 SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE=${SCFUZZBENCH_SEED_CORPUS_PROVENANCE_SOURCE:-}
 SCFUZZBENCH_SEED_CORPUS_HELPER=${SCFUZZBENCH_SEED_CORPUS_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/prepare_seed_corpus.py}
+SCFUZZBENCH_SAFE_PATH_OPS=${SCFUZZBENCH_SAFE_PATH_OPS:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/safe_path_ops.py}
+SCFUZZBENCH_MANIFEST_OBJECT_HELPER=${SCFUZZBENCH_MANIFEST_OBJECT_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/put_manifest_once.py}
+SCFUZZBENCH_PINNED_UPLOAD_HELPER=${SCFUZZBENCH_PINNED_UPLOAD_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/upload_pinned_file.py}
 SCFUZZBENCH_RUNNER_METRICS=${SCFUZZBENCH_RUNNER_METRICS:-1}
 SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS=${SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS:-5}
 SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS=${SCFUZZBENCH_PRELIMINARY_INTERVAL_SECONDS:-3600}
@@ -41,10 +44,24 @@ SCFUZZBENCH_PRELIMINARY_MAX_LATENESS_SECONDS=${SCFUZZBENCH_PRELIMINARY_MAX_LATEN
 SCFUZZBENCH_PRELIMINARY_UPLOAD_ATTEMPTS=${SCFUZZBENCH_PRELIMINARY_UPLOAD_ATTEMPTS:-2}
 SCFUZZBENCH_PRELIMINARY_UPLOAD_RETRY_SECONDS=${SCFUZZBENCH_PRELIMINARY_UPLOAD_RETRY_SECONDS:-5}
 
-SCFUZZBENCH_AWS_CREDS_ENV_FILE=${SCFUZZBENCH_AWS_CREDS_ENV_FILE:-${SCFUZZBENCH_ROOT}/aws_creds.env}
+SCFUZZBENCH_AWS_CREDS_ENV_FILE=${SCFUZZBENCH_AWS_CREDS_ENV_FILE:-${SCFUZZBENCH_ROOT}/aws_creds.json}
 SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS=${SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS:-300}
 SCFUZZBENCH_SEED_CORPUS_MAX_FILES=10000
 SCFUZZBENCH_SEED_CORPUS_MAX_BYTES=1073741824
+
+SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR=""
+SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY=""
+SCFUZZBENCH_WORK_ROOT_ANCHOR=""
+SCFUZZBENCH_WORK_ROOT_IDENTITY=""
+SCFUZZBENCH_LOG_ROOT_ANCHOR=""
+SCFUZZBENCH_LOG_ROOT_IDENTITY=""
+SCFUZZBENCH_TARGET_ROOT_ANCHOR=""
+SCFUZZBENCH_TARGET_ROOT_IDENTITY=""
+SCFUZZBENCH_CORPUS_ROOT_ANCHOR=""
+SCFUZZBENCH_CORPUS_ROOT_IDENTITY=""
+SCFUZZBENCH_OUTPUT_ROOT_PATH=""
+SCFUZZBENCH_OUTPUT_ROOT_ANCHOR=""
+SCFUZZBENCH_OUTPUT_ROOT_IDENTITY=""
 
 # The pinned Foundry build defaults `dynamic_test_linking` to true, which injects
 # virtual `foundry-pp/DeployHelper*.sol` sources into build-info output.
@@ -259,7 +276,8 @@ append_runner_command_log() {
   if [[ -z "${SCFUZZBENCH_LOG_DIR:-}" ]]; then
     return 0
   fi
-  if ! mkdir -p "${SCFUZZBENCH_LOG_DIR}" >/dev/null 2>&1; then
+  if [[ -z "${SCFUZZBENCH_LOG_ROOT_ANCHOR:-}" ||
+        -z "${SCFUZZBENCH_LOG_ROOT_IDENTITY:-}" ]]; then
     return 0
   fi
 
@@ -273,25 +291,424 @@ append_runner_command_log() {
     "$(date -Is)" \
     "${timeout_seconds}" \
     "${grace_seconds}" \
-    "${rendered_cmd}" \
-    >> "${cmd_log_path}" 2>/dev/null || true
+    "${rendered_cmd}" |
+    safe_path_operation append-file \
+      --root-path "${SCFUZZBENCH_LOG_DIR}" \
+      --root-anchor "${SCFUZZBENCH_LOG_ROOT_ANCHOR}" \
+      --root-identity "${SCFUZZBENCH_LOG_ROOT_IDENTITY}" \
+      --path "${cmd_log_path}" \
+      --parents \
+      --max-bytes 1048576 \
+      >/dev/null 2>&1 || true
 }
 
 prepare_workspace() {
   mkdir -p "${SCFUZZBENCH_ROOT}" "${SCFUZZBENCH_WORKDIR}" "${SCFUZZBENCH_LOG_DIR}"
+  SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR=$(realpath -e -- "${SCFUZZBENCH_ROOT}") || return 1
+  SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY=$(stat -Lc '%d:%i' -- "${SCFUZZBENCH_ROOT}") || return 1
+  assert_strict_descendant_path \
+    "${SCFUZZBENCH_WORKDIR}" "${SCFUZZBENCH_ROOT}" "work directory" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" || return 1
+  SCFUZZBENCH_WORK_ROOT_ANCHOR=$(realpath -e -- "${SCFUZZBENCH_WORKDIR}") || return 1
+  SCFUZZBENCH_WORK_ROOT_IDENTITY=$(stat -Lc '%d:%i' -- "${SCFUZZBENCH_WORKDIR}") || return 1
+  assert_strict_descendant_path \
+    "${SCFUZZBENCH_LOG_DIR}" "${SCFUZZBENCH_ROOT}" "log directory" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" || return 1
+  SCFUZZBENCH_LOG_ROOT_ANCHOR=$(realpath -e -- "${SCFUZZBENCH_LOG_DIR}") || return 1
+  SCFUZZBENCH_LOG_ROOT_IDENTITY=$(stat -Lc '%d:%i' -- "${SCFUZZBENCH_LOG_DIR}") || return 1
+  SCFUZZBENCH_TARGET_ROOT_ANCHOR=""
+  SCFUZZBENCH_TARGET_ROOT_IDENTITY=""
+  SCFUZZBENCH_CORPUS_ROOT_ANCHOR=""
+  SCFUZZBENCH_CORPUS_ROOT_IDENTITY=""
+  SCFUZZBENCH_OUTPUT_ROOT_PATH=""
+  SCFUZZBENCH_OUTPUT_ROOT_ANCHOR=""
+  SCFUZZBENCH_OUTPUT_ROOT_IDENTITY=""
+  if is_local_mode; then
+    local configured_output_root="${SCFUZZBENCH_LOCAL_OUTPUT_DIR:-${SCFUZZBENCH_ROOT}/output}"
+    mkdir -p "${configured_output_root}" || return 1
+    SCFUZZBENCH_OUTPUT_ROOT_PATH=$(realpath -e -- "${configured_output_root}") || return 1
+    if [[ "${SCFUZZBENCH_OUTPUT_ROOT_PATH}" == "/" ]]; then
+      log "Refusing to use the filesystem root as the local output root."
+      return 1
+    fi
+    SCFUZZBENCH_OUTPUT_ROOT_ANCHOR="${SCFUZZBENCH_OUTPUT_ROOT_PATH}"
+    SCFUZZBENCH_OUTPUT_ROOT_IDENTITY=$(stat -Lc '%d:%i' -- "${SCFUZZBENCH_OUTPUT_ROOT_PATH}") || return 1
+    SCFUZZBENCH_LOCAL_OUTPUT_DIR="${SCFUZZBENCH_OUTPUT_ROOT_PATH}"
+    export SCFUZZBENCH_LOCAL_OUTPUT_DIR
+  fi
 }
+
+resolve_target_corpus_dir() {
+  local configured=${1:-}
+  local default_relative=$2
+  local target_root
+  local candidate
+  if [[ -z "${configured}" ]]; then
+    configured="${default_relative}"
+  fi
+  if [[ "${configured}" == /* ]] \
+    || [[ ! "${configured}" =~ ^[A-Za-z0-9_.+/-]+$ ]] \
+    || [[ "/${configured}/" == *"/./"* ]] \
+    || [[ "/${configured}/" == *"/../"* ]]; then
+    log "Refusing unsafe corpus directory override: ${configured}"
+    return 1
+  fi
+  target_root=$(realpath -e -- "${SCFUZZBENCH_WORKDIR}/target") || {
+    log "Target workspace is missing while resolving corpus directory."
+    return 1
+  }
+  candidate=$(realpath -m -- "${target_root}/${configured}") || return 1
+  case "${candidate}" in
+    "${target_root}"/*)
+      printf '%s\n' "${candidate}"
+      ;;
+    *)
+      log "Refusing corpus directory outside target workspace: ${candidate}"
+      return 1
+      ;;
+  esac
+}
+
+assert_strict_descendant_path() {
+  local candidate=${1:-}
+  local allowed_root=${2:-}
+  local label=${3:-path}
+  local expected_root=${4:-}
+  local expected_root_identity=${5:-}
+  local canonical_root
+  local canonical_candidate
+  local current_root_identity
+  if [[ -z "${candidate}" || "${candidate}" != /* || "${candidate}" == "/" ]]; then
+    log "Refusing unsafe ${label}: ${candidate:-<empty>}"
+    return 1
+  fi
+  canonical_root=$(realpath -e -- "${allowed_root}") || {
+    log "Refusing ${label} because its allowed root is missing: ${allowed_root}"
+    return 1
+  }
+  current_root_identity=$(stat -Lc '%d:%i' -- "${allowed_root}") || {
+    log "Refusing ${label} because its allowed root identity is unavailable: ${allowed_root}"
+    return 1
+  }
+  if [[ -n "${expected_root}" && "${canonical_root}" != "${expected_root}" ]]; then
+    log "Refusing ${label} because its allowed root path changed: ${canonical_root}"
+    return 1
+  fi
+  if [[ -n "${expected_root_identity}" && "${current_root_identity}" != "${expected_root_identity}" ]]; then
+    log "Refusing ${label} because its allowed root identity changed: ${allowed_root}"
+    return 1
+  fi
+  canonical_candidate=$(realpath -m -- "${candidate}") || {
+    log "Refusing ${label} because it cannot be canonicalized: ${candidate}"
+    return 1
+  }
+  case "${canonical_candidate}" in
+    "${canonical_root}"/*) ;;
+    *)
+      log "Refusing ${label} outside allowed workspace: ${canonical_candidate}"
+      return 1
+      ;;
+  esac
+}
+
+assert_path_anchor() {
+  local candidate=${1:-}
+  local expected_path=${2:-}
+  local expected_identity=${3:-}
+  local label=${4:-path}
+  local current_path
+  local current_identity
+  current_path=$(realpath -e -- "${candidate}") || {
+    log "Refusing ${label} because its anchor is missing: ${candidate}"
+    return 1
+  }
+  current_identity=$(stat -Lc '%d:%i' -- "${candidate}") || return 1
+  if [[ "${current_path}" != "${expected_path}" || "${current_identity}" != "${expected_identity}" ]]; then
+    log "Refusing ${label} because its anchor changed: ${candidate}"
+    return 1
+  fi
+}
+
+capture_target_workspace_anchor() {
+  if [[ -z "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" ||
+        -z "${SCFUZZBENCH_WORK_ROOT_ANCHOR}" ]]; then
+    log "Refusing to anchor target before prepare_workspace captured trusted roots."
+    return 1
+  fi
+  assert_path_anchor \
+    "${SCFUZZBENCH_ROOT}" "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" "framework root" || return 1
+  assert_strict_descendant_path \
+    "${SCFUZZBENCH_WORKDIR}" "${SCFUZZBENCH_ROOT}" "work directory" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" || return 1
+  assert_path_anchor \
+    "${SCFUZZBENCH_WORKDIR}" "${SCFUZZBENCH_WORK_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_WORK_ROOT_IDENTITY}" "work directory" || return 1
+  assert_strict_descendant_path \
+    "${SCFUZZBENCH_WORKDIR}/target" "${SCFUZZBENCH_WORKDIR}" \
+    "target workspace" "${SCFUZZBENCH_WORK_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_WORK_ROOT_IDENTITY}" || return 1
+  SCFUZZBENCH_TARGET_ROOT_ANCHOR=$(realpath -e -- "${SCFUZZBENCH_WORKDIR}/target") || return 1
+  SCFUZZBENCH_TARGET_ROOT_IDENTITY=$(stat -Lc '%d:%i' -- "${SCFUZZBENCH_WORKDIR}/target") || return 1
+}
+
+capture_corpus_workspace_anchor() {
+  if [[ -z "${SCFUZZBENCH_CORPUS_DIR:-}" ||
+        -z "${SCFUZZBENCH_TARGET_ROOT_ANCHOR:-}" ]]; then
+    log "Refusing to anchor corpus before the target workspace is ready."
+    return 1
+  fi
+  assert_strict_descendant_path \
+    "${SCFUZZBENCH_CORPUS_DIR}" "${SCFUZZBENCH_WORKDIR}/target" \
+    "corpus directory" "${SCFUZZBENCH_TARGET_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_TARGET_ROOT_IDENTITY}" || return 1
+  SCFUZZBENCH_CORPUS_ROOT_ANCHOR=$(realpath -e -- "${SCFUZZBENCH_CORPUS_DIR}") || return 1
+  SCFUZZBENCH_CORPUS_ROOT_IDENTITY=$(stat -Lc '%d:%i' -- "${SCFUZZBENCH_CORPUS_DIR}") || return 1
+}
+
+safe_path_operation() {
+  if [[ ! -f "${SCFUZZBENCH_SAFE_PATH_OPS}" ]]; then
+    log "Safe path operation helper not found: ${SCFUZZBENCH_SAFE_PATH_OPS}"
+    return 1
+  fi
+  python3 "${SCFUZZBENCH_SAFE_PATH_OPS}" "$@"
+}
+
+remove_strict_descendant_file() {
+  local candidate=$1
+  local allowed_root=$2
+  local label=${3:-file}
+  local expected_root=${4:-}
+  local expected_root_identity=${5:-}
+  if [[ -z "${expected_root}" || -z "${expected_root_identity}" ]]; then
+    log "Refusing ${label} removal without a captured root identity."
+    return 1
+  fi
+  safe_path_operation remove-file \
+    --root-path "${allowed_root}" \
+    --root-anchor "${expected_root}" \
+    --root-identity "${expected_root_identity}" \
+    --path "${candidate}"
+}
+
+remove_strict_descendant_tree() {
+  local candidate=$1
+  local allowed_root=$2
+  local label=${3:-directory}
+  local expected_root=${4:-}
+  local expected_root_identity=${5:-}
+  if [[ -z "${expected_root}" || -z "${expected_root_identity}" ]]; then
+    log "Refusing ${label} removal without a captured root identity."
+    return 1
+  fi
+  safe_path_operation remove-tree \
+    --root-path "${allowed_root}" \
+    --root-anchor "${expected_root}" \
+    --root-identity "${expected_root_identity}" \
+    --path "${candidate}"
+}
+
+move_strict_descendant_path() {
+  local source=$1
+  local source_root=$2
+  local destination=$3
+  local destination_root=$4
+  local label=${5:-path}
+  local source_expected_root=${6:-}
+  local source_expected_root_identity=${7:-}
+  local destination_expected_root=${8:-}
+  local destination_expected_root_identity=${9:-}
+  local source_type=${10:-directory}
+  local source_identity=${11:-}
+  local -a source_identity_arg=()
+  if [[ -z "${source_expected_root}" ||
+        -z "${source_expected_root_identity}" ||
+        -z "${destination_expected_root}" ||
+        -z "${destination_expected_root_identity}" ]]; then
+    log "Refusing ${label} move without captured root identities."
+    return 1
+  fi
+  if [[ -n "${source_identity}" ]]; then
+    source_identity_arg=(--source-identity "${source_identity}")
+  fi
+  safe_path_operation move \
+    --source-root-path "${source_root}" \
+    --source-root-anchor "${source_expected_root}" \
+    --source-root-identity "${source_expected_root_identity}" \
+    --destination-root-path "${destination_root}" \
+    --destination-root-anchor "${destination_expected_root}" \
+    --destination-root-identity "${destination_expected_root_identity}" \
+    --source "${source}" \
+    --destination "${destination}" \
+    --source-type "${source_type}" \
+    "${source_identity_arg[@]}"
+}
+
+mkdir_strict_descendant() {
+  local candidate=$1
+  local allowed_root=$2
+  local expected_root=$3
+  local expected_root_identity=$4
+  local mode=${5:-0700}
+  safe_path_operation mkdir \
+    --root-path "${allowed_root}" \
+    --root-anchor "${expected_root}" \
+    --root-identity "${expected_root_identity}" \
+    --path "${candidate}" \
+    --mode "${mode}" \
+    --parents \
+    --exist-ok
+}
+
+read_strict_descendant_file() {
+  local candidate=$1
+  local allowed_root=$2
+  local expected_root=$3
+  local expected_root_identity=$4
+  local max_bytes=${5:-67108864}
+  safe_path_operation read-file \
+    --root-path "${allowed_root}" \
+    --root-anchor "${expected_root}" \
+    --root-identity "${expected_root_identity}" \
+    --path "${candidate}" \
+    --max-bytes "${max_bytes}"
+}
+
+write_strict_descendant_file() {
+  local candidate=$1
+  local allowed_root=$2
+  local expected_root=$3
+  local expected_root_identity=$4
+  local replace=${5:-0}
+  local -a replace_arg=()
+  if [[ "${replace}" == "1" ]]; then
+    replace_arg=(--replace)
+  fi
+  safe_path_operation write-file \
+    --root-path "${allowed_root}" \
+    --root-anchor "${expected_root}" \
+    --root-identity "${expected_root_identity}" \
+    --path "${candidate}" \
+    --parents \
+    "${replace_arg[@]}"
+}
+
+archive_pinned_directory() {
+  local source=$1
+  local source_root=$2
+  local source_anchor=$3
+  local source_root_identity=$4
+  local source_identity=$5
+  local destination=$6
+  local destination_root=$7
+  local destination_anchor=$8
+  local destination_root_identity=$9
+  safe_path_operation archive \
+    --source-root-path "${source_root}" \
+    --source-root-anchor "${source_anchor}" \
+    --source-root-identity "${source_root_identity}" \
+    --source "${source}" \
+    --source-identity "${source_identity}" \
+    --destination-root-path "${destination_root}" \
+    --destination-root-anchor "${destination_anchor}" \
+    --destination-root-identity "${destination_root_identity}" \
+    --destination "${destination}" \
+    --parents
+}
+
+upload_pinned_s3_file() (
+  local source=$1
+  local source_root=$2
+  local source_anchor=$3
+  local source_root_identity=$4
+  local bucket=$5
+  local key=$6
+  local content_type=${7:-application/octet-stream}
+  local immutable=${8:-0}
+  local max_bytes=${9:-8589934592}
+  local attempts=${10:-5}
+  local retry_base_seconds=${11:-2}
+  local -a immutable_arg=()
+  if [[ "${immutable}" == "1" ]]; then
+    immutable_arg=(--immutable)
+  fi
+  if [[ ! -f "${SCFUZZBENCH_PINNED_UPLOAD_HELPER}" ]]; then
+    log "Pinned upload helper not found: ${SCFUZZBENCH_PINNED_UPLOAD_HELPER}"
+    return 1
+  fi
+  local -a upload_command=(
+    python3 "${SCFUZZBENCH_PINNED_UPLOAD_HELPER}"
+    --root-path "${source_root}"
+    --root-anchor "${source_anchor}"
+    --root-identity "${source_root_identity}"
+    --path "${source}"
+    --max-bytes "${max_bytes}"
+    --bucket "${bucket}"
+    --key "${key}"
+    --content-type "${content_type}"
+    --attempts "${attempts}"
+    --retry-base-seconds "${retry_base_seconds}"
+    "${immutable_arg[@]}"
+  )
+  if [[ -z "${SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE:-}" ]] &&
+      load_cached_aws_creds >/dev/null 2>&1; then
+    AWS_EC2_METADATA_DISABLED=true "${upload_command[@]}"
+  else
+    "${upload_command[@]}"
+  fi
+)
 
 prepare_shared_seed_corpus() {
   local corpus_dir="${SCFUZZBENCH_CORPUS_DIR:-}"
+  local framework_root="${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}"
+  local framework_root_identity="${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}"
+  local work_root="${SCFUZZBENCH_WORK_ROOT_ANCHOR}"
+  local work_root_identity="${SCFUZZBENCH_WORK_ROOT_IDENTITY}"
+  local target_root="${SCFUZZBENCH_TARGET_ROOT_ANCHOR}"
+  local target_root_identity="${SCFUZZBENCH_TARGET_ROOT_IDENTITY}"
+  local log_root="${SCFUZZBENCH_LOG_ROOT_ANCHOR}"
+  local log_root_identity="${SCFUZZBENCH_LOG_ROOT_IDENTITY}"
   if [[ -z "${corpus_dir}" || "${corpus_dir}" != /* || "${corpus_dir}" == "/" ]]; then
     log "Refusing to reset unsafe corpus directory: ${corpus_dir:-<empty>}"
     return 1
   fi
-  corpus_dir=$(realpath -m -- "${corpus_dir}")
-  if [[ ! "${corpus_dir}" =~ ^/[^/]+/[^/]+ ]]; then
-    log "Refusing to reset unsafe corpus directory: ${corpus_dir}"
+  if [[ -z "${framework_root}" || -z "${work_root}" ||
+        -z "${target_root}" || -z "${log_root}" ]]; then
+    log "Refusing corpus reset because trusted workspace anchors are missing."
     return 1
   fi
+  assert_path_anchor \
+    "${SCFUZZBENCH_ROOT}" "${framework_root}" "${framework_root_identity}" \
+    "framework root" || return 1
+  assert_strict_descendant_path \
+    "${SCFUZZBENCH_WORKDIR}" "${SCFUZZBENCH_ROOT}" "work directory" \
+    "${framework_root}" "${framework_root_identity}" || return 1
+  assert_path_anchor \
+    "${SCFUZZBENCH_WORKDIR}" "${work_root}" "${work_root_identity}" \
+    "work directory" || return 1
+  assert_strict_descendant_path \
+    "${SCFUZZBENCH_WORKDIR}/target" "${SCFUZZBENCH_WORKDIR}" "target workspace" \
+    "${work_root}" "${work_root_identity}" || return 1
+  assert_path_anchor \
+    "${SCFUZZBENCH_WORKDIR}/target" "${target_root}" "${target_root_identity}" \
+    "target workspace" || return 1
+  assert_strict_descendant_path \
+    "${SCFUZZBENCH_LOG_DIR}" "${SCFUZZBENCH_ROOT}" "log directory" \
+    "${framework_root}" "${framework_root_identity}" || return 1
+  assert_path_anchor \
+    "${SCFUZZBENCH_LOG_DIR}" "${log_root}" "${log_root_identity}" \
+    "log directory" || return 1
+  corpus_dir=$(realpath -m -- "${corpus_dir}")
+  case "${corpus_dir}" in
+    "${target_root}"/*) ;;
+    *)
+      log "Refusing corpus reset outside target workspace: ${corpus_dir}"
+      return 1
+      ;;
+  esac
   export SCFUZZBENCH_CORPUS_DIR="${corpus_dir}"
 
   local source="${SCFUZZBENCH_SEED_CORPUS_SOURCE:-}"
@@ -317,21 +734,58 @@ prepare_shared_seed_corpus() {
     log "Shared seed corpus helper not found: ${SCFUZZBENCH_SEED_CORPUS_HELPER}"
     return 1
   fi
-  rm -f -- "${metadata_path}" "${metadata_tmp}" "${installed_metadata}"
-  rm -rf -- "${staging_dir}" "${corpus_tmp}" "${corpus_backup}"
+  remove_strict_descendant_file \
+    "${metadata_path}" "${SCFUZZBENCH_LOG_DIR}" "seed corpus metadata" \
+    "${log_root}" "${log_root_identity}"
+  remove_strict_descendant_file \
+    "${metadata_tmp}" "${SCFUZZBENCH_LOG_DIR}" "temporary seed corpus metadata" \
+    "${log_root}" "${log_root_identity}"
+  remove_strict_descendant_file \
+    "${installed_metadata}" "${SCFUZZBENCH_ROOT}" "installed seed corpus metadata" \
+    "${framework_root}" "${framework_root_identity}"
+  remove_strict_descendant_tree \
+    "${staging_dir}" "${SCFUZZBENCH_ROOT}" "seed corpus staging directory" \
+    "${framework_root}" "${framework_root_identity}"
+  remove_strict_descendant_tree \
+    "${corpus_tmp}" "${SCFUZZBENCH_WORKDIR}/target" "temporary corpus directory" \
+    "${target_root}" "${target_root_identity}"
+  remove_strict_descendant_tree \
+    "${corpus_backup}" "${SCFUZZBENCH_WORKDIR}/target" "backup corpus directory" \
+    "${target_root}" "${target_root_identity}"
   unset SCFUZZBENCH_SEED_CORPUS_METADATA_PATH
 
   if [[ -z "${source}" ]]; then
-    mkdir -p "$(dirname "${corpus_tmp}")"
-    mkdir -m 0700 "${corpus_tmp}"
+    mkdir_strict_descendant \
+      "${corpus_tmp}" "${SCFUZZBENCH_WORKDIR}/target" \
+      "${target_root}" "${target_root_identity}" 0700
     if [[ -e "${corpus_dir}" || -L "${corpus_dir}" ]]; then
-      mv -- "${corpus_dir}" "${corpus_backup}"
+      move_strict_descendant_path \
+        "${corpus_dir}" "${SCFUZZBENCH_WORKDIR}/target" \
+        "${corpus_backup}" "${SCFUZZBENCH_WORKDIR}/target" \
+        "live corpus" \
+        "${target_root}" "${target_root_identity}" \
+        "${target_root}" "${target_root_identity}"
     fi
-    if ! mv -- "${corpus_tmp}" "${corpus_dir}"; then
-      [[ ! -e "${corpus_backup}" ]] || mv -- "${corpus_backup}" "${corpus_dir}"
+    if ! move_strict_descendant_path \
+      "${corpus_tmp}" "${SCFUZZBENCH_WORKDIR}/target" \
+      "${corpus_dir}" "${SCFUZZBENCH_WORKDIR}/target" \
+      "new corpus" \
+      "${target_root}" "${target_root_identity}" \
+      "${target_root}" "${target_root_identity}"; then
+      if [[ -e "${corpus_backup}" || -L "${corpus_backup}" ]]; then
+        move_strict_descendant_path \
+          "${corpus_backup}" "${SCFUZZBENCH_WORKDIR}/target" \
+          "${corpus_dir}" "${SCFUZZBENCH_WORKDIR}/target" \
+          "restored corpus" \
+          "${target_root}" "${target_root_identity}" \
+          "${target_root}" "${target_root_identity}"
+      fi
       return 1
     fi
-    rm -rf -- "${corpus_backup}"
+    remove_strict_descendant_tree \
+      "${corpus_backup}" "${SCFUZZBENCH_WORKDIR}/target" "backup corpus directory" \
+      "${target_root}" "${target_root_identity}"
+    capture_corpus_workspace_anchor || return 1
     log "Starting with an empty corpus"
     return 0
   fi
@@ -391,65 +845,174 @@ prepare_shared_seed_corpus() {
       ;;
   esac
 
+  assert_strict_descendant_path \
+    "${staging_dir}" "${SCFUZZBENCH_ROOT}" "seed corpus staging directory" \
+    "${framework_root}" "${framework_root_identity}"
+  assert_strict_descendant_path \
+    "${metadata_tmp}" "${SCFUZZBENCH_LOG_DIR}" "temporary seed corpus metadata" \
+    "${log_root}" "${log_root_identity}"
+  mkdir_strict_descendant \
+    "${staging_dir}" "${SCFUZZBENCH_ROOT}" \
+    "${framework_root}" "${framework_root_identity}" 0700
   if ! python3 "${SCFUZZBENCH_SEED_CORPUS_HELPER}" \
     --mode "${source_type}" \
     --source "${helper_source}" \
     --source-label "${provenance_source}" \
     --destination "${staging_dir}" \
-    --metadata "${metadata_tmp}" \
+    --destination-root-path "${SCFUZZBENCH_ROOT}" \
+    --destination-root-anchor "${framework_root}" \
+    --destination-root-identity "${framework_root_identity}" \
     --max-files "${SCFUZZBENCH_SEED_CORPUS_MAX_FILES}" \
-    --max-bytes "${SCFUZZBENCH_SEED_CORPUS_MAX_BYTES}"; then
-    rm -rf -- "${staging_dir}" "${corpus_tmp}"
-    rm -f -- "${metadata_tmp}" "${installed_metadata}"
+    --max-bytes "${SCFUZZBENCH_SEED_CORPUS_MAX_BYTES}" |
+    write_strict_descendant_file \
+      "${metadata_tmp}" "${SCFUZZBENCH_LOG_DIR}" \
+      "${log_root}" "${log_root_identity}"; then
+    remove_strict_descendant_tree \
+      "${staging_dir}" "${SCFUZZBENCH_ROOT}" "seed corpus staging directory" \
+      "${framework_root}" "${framework_root_identity}"
+    remove_strict_descendant_tree \
+      "${corpus_tmp}" "${SCFUZZBENCH_WORKDIR}/target" "temporary corpus directory" \
+      "${target_root}" "${target_root_identity}"
+    remove_strict_descendant_file \
+      "${metadata_tmp}" "${SCFUZZBENCH_LOG_DIR}" "temporary seed corpus metadata" \
+      "${log_root}" "${log_root_identity}"
+    remove_strict_descendant_file \
+      "${installed_metadata}" "${SCFUZZBENCH_ROOT}" "installed seed corpus metadata" \
+      "${framework_root}" "${framework_root_identity}"
     return 1
   fi
 
   # Copy the trusted snapshot into a sibling temporary directory and verify its
   # byte/path digest before replacing the live corpus.
+  assert_strict_descendant_path \
+    "${staging_dir}" "${SCFUZZBENCH_ROOT}" "seed corpus staging directory" \
+    "${framework_root}" "${framework_root_identity}"
+  assert_strict_descendant_path \
+    "${corpus_tmp}" "${SCFUZZBENCH_WORKDIR}/target" "temporary corpus directory" \
+    "${target_root}" "${target_root_identity}"
+  assert_strict_descendant_path \
+    "${installed_metadata}" "${SCFUZZBENCH_ROOT}" "installed seed corpus metadata" \
+    "${framework_root}" "${framework_root_identity}"
+  mkdir_strict_descendant \
+    "${corpus_tmp}" "${SCFUZZBENCH_WORKDIR}/target" \
+    "${target_root}" "${target_root_identity}" 0700
   if ! python3 "${SCFUZZBENCH_SEED_CORPUS_HELPER}" \
     --mode local \
     --source "${staging_dir}" \
     --source-label "${provenance_source}" \
     --destination "${corpus_tmp}" \
-    --metadata "${installed_metadata}" \
+    --destination-root-path "${SCFUZZBENCH_WORKDIR}/target" \
+    --destination-root-anchor "${target_root}" \
+    --destination-root-identity "${target_root_identity}" \
     --max-files "${SCFUZZBENCH_SEED_CORPUS_MAX_FILES}" \
-    --max-bytes "${SCFUZZBENCH_SEED_CORPUS_MAX_BYTES}"; then
-    rm -rf -- "${staging_dir}" "${corpus_tmp}"
-    rm -f -- "${metadata_tmp}" "${installed_metadata}"
+    --max-bytes "${SCFUZZBENCH_SEED_CORPUS_MAX_BYTES}" |
+    write_strict_descendant_file \
+      "${installed_metadata}" "${SCFUZZBENCH_ROOT}" \
+      "${framework_root}" "${framework_root_identity}"; then
+    remove_strict_descendant_tree \
+      "${staging_dir}" "${SCFUZZBENCH_ROOT}" "seed corpus staging directory" \
+      "${framework_root}" "${framework_root_identity}"
+    remove_strict_descendant_tree \
+      "${corpus_tmp}" "${SCFUZZBENCH_WORKDIR}/target" "temporary corpus directory" \
+      "${target_root}" "${target_root_identity}"
+    remove_strict_descendant_file \
+      "${metadata_tmp}" "${SCFUZZBENCH_LOG_DIR}" "temporary seed corpus metadata" \
+      "${log_root}" "${log_root_identity}"
+    remove_strict_descendant_file \
+      "${installed_metadata}" "${SCFUZZBENCH_ROOT}" "installed seed corpus metadata" \
+      "${framework_root}" "${framework_root_identity}"
     return 1
   fi
-  if ! python3 - "${metadata_tmp}" "${installed_metadata}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-source = json.loads(Path(sys.argv[1]).read_text())
-installed = json.loads(Path(sys.argv[2]).read_text())
-fields = ("file_count", "size_bytes", "sha256", "files")
-if any(source.get(field) != installed.get(field) for field in fields):
-    raise SystemExit("installed seed corpus does not match the staged snapshot")
-PY
+  if ! safe_path_operation compare-json-fields \
+    --left-root-path "${SCFUZZBENCH_LOG_DIR}" \
+    --left-root-anchor "${log_root}" \
+    --left-root-identity "${log_root_identity}" \
+    --left "${metadata_tmp}" \
+    --right-root-path "${SCFUZZBENCH_ROOT}" \
+    --right-root-anchor "${framework_root}" \
+    --right-root-identity "${framework_root_identity}" \
+    --right "${installed_metadata}" \
+    --field file_count \
+    --field size_bytes \
+    --field sha256 \
+    --field files
   then
-    rm -rf -- "${staging_dir}" "${corpus_tmp}"
-    rm -f -- "${metadata_tmp}" "${installed_metadata}"
+    remove_strict_descendant_tree \
+      "${staging_dir}" "${SCFUZZBENCH_ROOT}" "seed corpus staging directory" \
+      "${framework_root}" "${framework_root_identity}"
+    remove_strict_descendant_tree \
+      "${corpus_tmp}" "${SCFUZZBENCH_WORKDIR}/target" "temporary corpus directory" \
+      "${target_root}" "${target_root_identity}"
+    remove_strict_descendant_file \
+      "${metadata_tmp}" "${SCFUZZBENCH_LOG_DIR}" "temporary seed corpus metadata" \
+      "${log_root}" "${log_root_identity}"
+    remove_strict_descendant_file \
+      "${installed_metadata}" "${SCFUZZBENCH_ROOT}" "installed seed corpus metadata" \
+      "${framework_root}" "${framework_root_identity}"
     return 1
   fi
 
   if [[ -e "${corpus_dir}" || -L "${corpus_dir}" ]]; then
-    mv -- "${corpus_dir}" "${corpus_backup}"
+    move_strict_descendant_path \
+      "${corpus_dir}" "${SCFUZZBENCH_WORKDIR}/target" \
+      "${corpus_backup}" "${SCFUZZBENCH_WORKDIR}/target" \
+      "live corpus" \
+      "${target_root}" "${target_root_identity}" \
+      "${target_root}" "${target_root_identity}"
   fi
-  if ! mv -- "${corpus_tmp}" "${corpus_dir}"; then
-    [[ ! -e "${corpus_backup}" ]] || mv -- "${corpus_backup}" "${corpus_dir}"
-    rm -rf -- "${staging_dir}" "${corpus_tmp}"
-    rm -f -- "${metadata_tmp}" "${installed_metadata}"
+  if ! move_strict_descendant_path \
+    "${corpus_tmp}" "${SCFUZZBENCH_WORKDIR}/target" \
+    "${corpus_dir}" "${SCFUZZBENCH_WORKDIR}/target" \
+    "new corpus" \
+    "${target_root}" "${target_root_identity}" \
+    "${target_root}" "${target_root_identity}"; then
+    if [[ -e "${corpus_backup}" || -L "${corpus_backup}" ]]; then
+      move_strict_descendant_path \
+        "${corpus_backup}" "${SCFUZZBENCH_WORKDIR}/target" \
+        "${corpus_dir}" "${SCFUZZBENCH_WORKDIR}/target" \
+        "restored corpus" \
+        "${target_root}" "${target_root_identity}" \
+        "${target_root}" "${target_root_identity}"
+    fi
+    remove_strict_descendant_tree \
+      "${staging_dir}" "${SCFUZZBENCH_ROOT}" "seed corpus staging directory" \
+      "${framework_root}" "${framework_root_identity}"
+    remove_strict_descendant_tree \
+      "${corpus_tmp}" "${SCFUZZBENCH_WORKDIR}/target" "temporary corpus directory" \
+      "${target_root}" "${target_root_identity}"
+    remove_strict_descendant_file \
+      "${metadata_tmp}" "${SCFUZZBENCH_LOG_DIR}" "temporary seed corpus metadata" \
+      "${log_root}" "${log_root_identity}"
+    remove_strict_descendant_file \
+      "${installed_metadata}" "${SCFUZZBENCH_ROOT}" "installed seed corpus metadata" \
+      "${framework_root}" "${framework_root_identity}"
     return 1
   fi
-  rm -rf -- "${corpus_backup}" "${staging_dir}"
-  rm -f -- "${installed_metadata}"
-  mv -- "${metadata_tmp}" "${metadata_path}"
+  remove_strict_descendant_tree \
+    "${corpus_backup}" "${SCFUZZBENCH_WORKDIR}/target" "backup corpus directory" \
+    "${target_root}" "${target_root_identity}"
+  remove_strict_descendant_tree \
+    "${staging_dir}" "${SCFUZZBENCH_ROOT}" "seed corpus staging directory" \
+    "${framework_root}" "${framework_root_identity}"
+  remove_strict_descendant_file \
+    "${installed_metadata}" "${SCFUZZBENCH_ROOT}" "installed seed corpus metadata" \
+    "${framework_root}" "${framework_root_identity}"
+  move_strict_descendant_path \
+    "${metadata_tmp}" "${SCFUZZBENCH_LOG_DIR}" \
+    "${metadata_path}" "${SCFUZZBENCH_LOG_DIR}" \
+    "seed corpus metadata" \
+    "${log_root}" "${log_root_identity}" \
+    "${log_root}" "${log_root_identity}" \
+    regular
   export SCFUZZBENCH_SEED_CORPUS_METADATA_PATH="${metadata_path}"
+  capture_corpus_workspace_anchor || return 1
   local file_count
-  file_count=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["file_count"])' "${metadata_path}")
+  file_count=$(
+    read_strict_descendant_file \
+      "${metadata_path}" "${SCFUZZBENCH_LOG_DIR}" \
+      "${log_root}" "${log_root_identity}" |
+      python3 -c 'import json,sys; print(json.load(sys.stdin)["file_count"])'
+  )
   log "Loaded ${file_count} shared seed corpus files into ${corpus_dir}"
 }
 
@@ -511,14 +1074,19 @@ start_runner_metrics() {
     log "Runner metrics disabled (SCFUZZBENCH_RUNNER_METRICS=${SCFUZZBENCH_RUNNER_METRICS})"
     return 0
   fi
-  if [[ -n "${SCFUZZBENCH_RUNNER_METRICS_PID:-}" ]] && kill -0 "${SCFUZZBENCH_RUNNER_METRICS_PID}" 2>/dev/null; then
+  if [[ "${SCFUZZBENCH_RUNNER_METRICS_PID:-}" =~ ^[0-9]+$ &&
+        "${SCFUZZBENCH_RUNNER_METRICS_PID_START_TICKS:-}" =~ ^[0-9]+$ ]] &&
+      preliminary_process_running_owned \
+        "${SCFUZZBENCH_RUNNER_METRICS_PID}" \
+        "${SCFUZZBENCH_RUNNER_METRICS_PID_START_TICKS}"; then
     return 0
   fi
-  if [[ -z "${SCFUZZBENCH_LOG_DIR:-}" ]]; then
-    log "Runner metrics skipped; SCFUZZBENCH_LOG_DIR is empty."
+  if [[ -z "${SCFUZZBENCH_LOG_DIR:-}" ||
+        -z "${SCFUZZBENCH_LOG_ROOT_ANCHOR:-}" ||
+        -z "${SCFUZZBENCH_LOG_ROOT_IDENTITY:-}" ]]; then
+    log "Runner metrics skipped; the trusted log root is unavailable."
     return 0
   fi
-  mkdir -p "${SCFUZZBENCH_LOG_DIR}"
   local metrics_file="${SCFUZZBENCH_LOG_DIR}/runner_metrics.csv"
   local interval="${SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS:-5}"
   if [[ ! "${interval}" =~ ^[0-9]+$ ]] || [[ "${interval}" -le 0 ]]; then
@@ -526,12 +1094,25 @@ start_runner_metrics() {
   fi
   printf "%s\n" \
     "timestamp,uptime_seconds,load1,load5,load15,cpu_user_pct,cpu_system_pct,cpu_idle_pct,cpu_iowait_pct,mem_total_kb,mem_available_kb,mem_used_kb,swap_total_kb,swap_free_kb,swap_used_kb" \
-    >"${metrics_file}"
+    | write_strict_descendant_file \
+      "${metrics_file}" "${SCFUZZBENCH_LOG_DIR}" \
+      "${SCFUZZBENCH_LOG_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_LOG_ROOT_IDENTITY}" 1
 
   (
     set +e
     set +u
     set +o pipefail
+
+    metrics_sleep_pid=""
+    stop_metrics_loop() {
+      if [[ "${metrics_sleep_pid}" =~ ^[0-9]+$ ]]; then
+        kill "${metrics_sleep_pid}" 2>/dev/null || true
+        wait "${metrics_sleep_pid}" 2>/dev/null || true
+      fi
+      exit 0
+    }
+    trap stop_metrics_loop TERM HUP INT
 
     read_cpu() {
       local cpu user nice system idle iowait irq softirq steal
@@ -609,8 +1190,14 @@ start_runner_metrics() {
         "${mem_used}" \
         "${swap_total}" \
         "${swap_free}" \
-        "${swap_used}" \
-        >>"${metrics_file}"
+        "${swap_used}" |
+        safe_path_operation append-file \
+          --root-path "${SCFUZZBENCH_LOG_DIR}" \
+          --root-anchor "${SCFUZZBENCH_LOG_ROOT_ANCHOR}" \
+          --root-identity "${SCFUZZBENCH_LOG_ROOT_IDENTITY}" \
+          --path "${metrics_file}" \
+          --max-bytes 4096 \
+          >/dev/null 2>&1 || break
 
       prev_total=${cur_total}
       prev_user=${cur_user}
@@ -618,19 +1205,34 @@ start_runner_metrics() {
       prev_idle=${cur_idle}
       prev_iowait=${cur_iowait}
 
-      sleep "${interval}" || break
+      sleep "${interval}" &
+      metrics_sleep_pid=$!
+      wait "${metrics_sleep_pid}" || break
+      metrics_sleep_pid=""
     done
   ) &
 
-  export SCFUZZBENCH_RUNNER_METRICS_PID=$!
+  local metrics_pid=$!
+  local metrics_start=""
+  if ! metrics_start=$(preliminary_wait_for_process_start_ticks "${metrics_pid}"); then
+    wait "${metrics_pid}" 2>/dev/null || true
+    log "Runner metrics process exited before ownership could be recorded."
+    return 1
+  fi
+  export SCFUZZBENCH_RUNNER_METRICS_PID="${metrics_pid}"
+  export SCFUZZBENCH_RUNNER_METRICS_PID_START_TICKS="${metrics_start}"
 }
 
 stop_runner_metrics() {
   local pid="${SCFUZZBENCH_RUNNER_METRICS_PID:-}"
-  if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+  local start="${SCFUZZBENCH_RUNNER_METRICS_PID_START_TICKS:-}"
+  if [[ "${pid}" =~ ^[0-9]+$ && "${start}" =~ ^[0-9]+$ ]] &&
+      preliminary_process_owned "${pid}" "${start}"; then
     kill "${pid}" 2>/dev/null || true
     wait "${pid}" 2>/dev/null || true
   fi
+  unset SCFUZZBENCH_RUNNER_METRICS_PID
+  unset SCFUZZBENCH_RUNNER_METRICS_PID_START_TICKS
 }
 
 preliminary_snapshot_interval_seconds() {
@@ -674,9 +1276,6 @@ put_preliminary_immutable() {
   local source=$1
   local key=$2
   require_env SCFUZZBENCH_S3_BUCKET
-  local sha256
-  sha256=$(sha256sum "${source}" | awk '{print $1}')
-  local attempt=1
   local max_attempts="${SCFUZZBENCH_PRELIMINARY_UPLOAD_ATTEMPTS:-2}"
   local retry_seconds="${SCFUZZBENCH_PRELIMINARY_UPLOAD_RETRY_SECONDS:-5}"
   if [[ ! "${max_attempts}" =~ ^[0-9]+$ ]] || (( max_attempts < 1 || max_attempts > 5 )); then
@@ -685,43 +1284,12 @@ put_preliminary_immutable() {
   if [[ ! "${retry_seconds}" =~ ^[0-9]+$ ]] || (( retry_seconds > 60 )); then
     retry_seconds=5
   fi
-  while (( attempt <= max_attempts )); do
-    if AWS_MAX_ATTEMPTS=2 AWS_RETRY_MODE=standard aws_cli s3api put-object \
-      --bucket "${SCFUZZBENCH_S3_BUCKET}" \
-      --key "${key}" \
-      --body "${source}" \
-      --if-none-match '*' \
-      --metadata "sha256=${sha256}" \
-      --cli-connect-timeout 10 \
-      --cli-read-timeout 60 \
-      >/dev/null; then
-      return 0
-    fi
-
-    local remote_sha=""
-    if remote_sha=$(AWS_MAX_ATTEMPTS=2 AWS_RETRY_MODE=standard aws_cli s3api head-object \
-      --bucket "${SCFUZZBENCH_S3_BUCKET}" \
-      --key "${key}" \
-      --query 'Metadata.sha256' \
-      --output text \
-      --cli-connect-timeout 10 \
-      --cli-read-timeout 60 2>/dev/null); then
-      if [[ "${remote_sha}" == "${sha256}" ]]; then
-        log "Immutable preliminary object already exists with matching SHA-256: ${key}"
-        return 0
-      fi
-      log "Refusing to overwrite preliminary object ${key}; existing SHA-256 is '${remote_sha:-missing}', local is ${sha256}."
-      return 1
-    fi
-    if (( attempt == max_attempts )); then
-      break
-    fi
-    log "Preliminary upload failed (attempt ${attempt}/${max_attempts}); retrying in ${retry_seconds}s: ${key}"
-    sleep "${retry_seconds}" || true
-    attempt=$((attempt + 1))
-  done
-  log "Preliminary upload failed after ${max_attempts} attempts: ${key}"
-  return 1
+  upload_pinned_s3_file \
+    "${source}" "${SCFUZZBENCH_ROOT}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" \
+    "${SCFUZZBENCH_S3_BUCKET}" "${key}" \
+    application/zip 1 3221225472 "${max_attempts}" "${retry_seconds}"
 }
 
 capture_preliminary_snapshot() (
@@ -741,9 +1309,17 @@ capture_preliminary_snapshot() (
   local checkpoint_padded
   checkpoint_padded=$(printf '%06d' "${checkpoint}")
   local capture_root="${SCFUZZBENCH_ROOT}/preliminary-checkpoints"
-  mkdir -p "${capture_root}"
-  exec 9>"${capture_root}/capture.lock"
-  if ! flock -n 9; then
+  mkdir_strict_descendant \
+    "${capture_root}" "${SCFUZZBENCH_ROOT}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" 0700
+  local capture_lock="${capture_root}/capture-active"
+  if ! safe_path_operation mkdir \
+    --root-path "${SCFUZZBENCH_ROOT}" \
+    --root-anchor "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+    --root-identity "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" \
+    --path "${capture_lock}" \
+    --mode 0700; then
     log "Skipping preliminary checkpoint ${checkpoint_padded}; another capture is active."
     return 75
   fi
@@ -751,9 +1327,25 @@ capture_preliminary_snapshot() (
   local archive="${capture_dir}/snapshot.zip"
   local captured_at
   captured_at=$(date +%s)
-  rm -rf "${capture_dir}"
-  mkdir -p "${capture_dir}"
-  trap 'rm -rf "${capture_dir}"' EXIT
+  remove_strict_descendant_tree \
+    "${capture_dir}" "${SCFUZZBENCH_ROOT}" "preliminary capture directory" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}"
+  mkdir_strict_descendant \
+    "${capture_dir}" "${SCFUZZBENCH_ROOT}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" 0700
+  cleanup_preliminary_capture() {
+    remove_strict_descendant_tree \
+      "${capture_dir}" "${SCFUZZBENCH_ROOT}" "preliminary capture directory" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" || true
+    remove_strict_descendant_tree \
+      "${capture_lock}" "${SCFUZZBENCH_ROOT}" "preliminary capture lock" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" || true
+  }
+  trap cleanup_preliminary_capture EXIT
 
   local helper_timeout="${SCFUZZBENCH_PRELIMINARY_HELPER_TIMEOUT_SECONDS:-300}"
   if [[ ! "${helper_timeout}" =~ ^[0-9]+$ ]] || (( helper_timeout < 1 || helper_timeout > 900 )); then
@@ -763,7 +1355,13 @@ capture_preliminary_snapshot() (
   timeout --signal=TERM --kill-after=10s "${helper_timeout}s" \
     python3 "${SCFUZZBENCH_PRELIMINARY_SNAPSHOT_SCRIPT}" \
     --log-dir "${SCFUZZBENCH_LOG_DIR}" \
+    --log-root-anchor "${SCFUZZBENCH_LOG_ROOT_ANCHOR}" \
+    --log-root-identity "${SCFUZZBENCH_LOG_ROOT_IDENTITY}" \
     --archive "${archive}" \
+    --framework-root-path "${SCFUZZBENCH_ROOT}" \
+    --framework-root-anchor "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+    --framework-root-identity "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" \
+    --safe-path-ops "${SCFUZZBENCH_SAFE_PATH_OPS}" \
     --run-id "${SCFUZZBENCH_RUN_ID}" \
     --run-started-at-epoch "${SCFUZZBENCH_RUN_STARTED_AT_EPOCH}" \
     --benchmark-uuid "${SCFUZZBENCH_BENCHMARK_UUID}" \
@@ -775,8 +1373,11 @@ capture_preliminary_snapshot() (
     --fuzzer-key "${SCFUZZBENCH_FUZZER_KEY}" \
     --run-index "${SCFUZZBENCH_RUN_INDEX}" \
     --fuzzer-label "${SCFUZZBENCH_FUZZER_LABEL}" \
-    --timeout-seconds "${SCFUZZBENCH_TIMEOUT_SECONDS}" \
-    >"${capture_dir}/capture-result.json"
+    --timeout-seconds "${SCFUZZBENCH_TIMEOUT_SECONDS}" |
+    write_strict_descendant_file \
+      "${capture_dir}/capture-result.json" "${SCFUZZBENCH_ROOT}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}"
 
   local identity="${SCFUZZBENCH_FUZZER_KEY}-${SCFUZZBENCH_RUN_INDEX}-${instance_id}"
   local key
@@ -883,10 +1484,19 @@ preliminary_write_active_owner() (
   local capture_pid=$4
   local capture_start=$5
   local lock_file="${owner_file}.lock"
-  local tmp_file="${owner_file}.${loop_pid}.${capture_pid}.tmp"
   local lock_fd
-  mkdir -p "$(dirname "${owner_file}")"
-  exec {lock_fd}>"${lock_file}" || return 1
+  mkdir_strict_descendant \
+    "$(dirname "${owner_file}")" "${SCFUZZBENCH_ROOT}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+    "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" 0700 || return 1
+  if [[ ! -e "${lock_file}" ]]; then
+    printf '' |
+      write_strict_descendant_file \
+        "${lock_file}" "${SCFUZZBENCH_ROOT}" \
+        "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+        "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" || [[ -f "${lock_file}" ]]
+  fi
+  exec {lock_fd}<>"${lock_file}" || return 1
   flock "${lock_fd}" || {
     exec {lock_fd}>&-
     return 1
@@ -894,9 +1504,10 @@ preliminary_write_active_owner() (
   umask 077
   if ! printf '%s %s %s %s\n' \
     "${loop_pid}" "${loop_start}" "${capture_pid}" "${capture_start}" \
-    >"${tmp_file}" \
-    || ! mv -f -- "${tmp_file}" "${owner_file}"; then
-    rm -f -- "${tmp_file}"
+    | write_strict_descendant_file \
+      "${owner_file}" "${SCFUZZBENCH_ROOT}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" 1; then
     flock -u "${lock_fd}" || true
     exec {lock_fd}>&-
     return 1
@@ -910,13 +1521,18 @@ preliminary_read_active_owner() {
   local lock_file="${owner_file}.lock"
   local lock_fd
   local loop_pid loop_start capture_pid capture_start extra
-  exec {lock_fd}>"${lock_file}" || return 1
+  exec {lock_fd}<>"${lock_file}" || return 1
   flock "${lock_fd}" || {
     exec {lock_fd}>&-
     return 1
   }
   if [[ ! -f "${owner_file}" ]] \
-    || ! read -r loop_pid loop_start capture_pid capture_start extra <"${owner_file}" \
+    || ! read -r loop_pid loop_start capture_pid capture_start extra < <(
+      read_strict_descendant_file \
+        "${owner_file}" "${SCFUZZBENCH_ROOT}" \
+        "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+        "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}"
+    ) \
     || [[ -n "${extra:-}" ]] \
     || [[ ! "${loop_pid}" =~ ^[0-9]+$ ]] \
     || [[ ! "${loop_start}" =~ ^[0-9]+$ ]] \
@@ -939,16 +1555,24 @@ preliminary_remove_active_owner_if_matches() {
   local lock_file="${owner_file}.lock"
   local lock_fd
   local loop_pid loop_start _
-  exec {lock_fd}>"${lock_file}" || return 1
+  exec {lock_fd}<>"${lock_file}" || return 1
   flock "${lock_fd}" || {
     exec {lock_fd}>&-
     return 1
   }
   if [[ -f "${owner_file}" ]] \
-    && read -r loop_pid loop_start _ <"${owner_file}" \
+    && read -r loop_pid loop_start _ < <(
+      read_strict_descendant_file \
+        "${owner_file}" "${SCFUZZBENCH_ROOT}" \
+        "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+        "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}"
+    ) \
     && [[ "${loop_pid}" == "${expected_loop_pid}" ]] \
     && [[ "${loop_start}" == "${expected_loop_start}" ]]; then
-    rm -f -- "${owner_file}"
+    remove_strict_descendant_file \
+      "${owner_file}" "${SCFUZZBENCH_ROOT}" "preliminary owner record" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}"
   fi
   flock -u "${lock_fd}" || true
   exec {lock_fd}>&-
@@ -1287,6 +1911,9 @@ finalize_run() {
       log "Skipping upload in finalize; missing S3 bucket, run id, or fuzzer label."
     fi
   fi
+  # Keep credentials fresh through the final artifact upload, then stop the
+  # owned refresh loop before shutting down (or returning in local mode).
+  stop_aws_creds_refresher || true
   shutdown_instance
   return ${exit_code}
 }
@@ -1315,6 +1942,11 @@ schedule_hard_deadline() {
 }
 
 register_shutdown_trap() {
+  trap finalize_run EXIT
+  if [[ -z "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR:-}" ||
+        -z "${SCFUZZBENCH_LOG_ROOT_ANCHOR:-}" ]]; then
+    prepare_workspace
+  fi
   install_shutdown_script
   cache_instance_id || true
   if [[ -z "${SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE:-}" ]]; then
@@ -1323,12 +1955,15 @@ register_shutdown_trap() {
   fi
   schedule_hard_deadline || true
   start_runner_metrics
-  trap finalize_run EXIT
 }
 
 install_base_packages() {
   local install_start
   install_start=$(now_epoch_seconds)
+  if [[ -z "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR:-}" ||
+        -z "${SCFUZZBENCH_LOG_ROOT_ANCHOR:-}" ]]; then
+    prepare_workspace
+  fi
   if is_local_mode; then
     log "Skipping system package installation (local mode)"
     log_duration "install_base_packages" "${install_start}"
@@ -1348,6 +1983,7 @@ install_base_packages() {
     pkg-config \
     libssl-dev \
     python3 \
+    python3-boto3 \
     python3-pip \
     python3-venv
 
@@ -1361,6 +1997,10 @@ install_base_packages() {
     rm -rf "${tmp_dir}"
     aws --version
   fi
+  # Begin lifecycle evidence as soon as boto3 exists, before expensive
+  # compiler/fuzzer builds. The PID-file guard prevents later sourced runners
+  # from starting a duplicate loop.
+  start_run_heartbeat || true
   log_duration "install_base_packages" "${install_start}"
 }
 
@@ -1531,6 +2171,11 @@ cache_aws_creds_from_imds() {
     log "jq not found; skipping IMDS credential cache."
     return 1
   fi
+  if [[ -z "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR:-}" ||
+        -z "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY:-}" ]]; then
+    log "Trusted framework root is unavailable; skipping credential cache."
+    return 1
+  fi
 
   local role_name
   role_name=$(imds_get "meta-data/iam/security-credentials/" 2>/dev/null | head -n 1 | tr -d '\r' || true)
@@ -1546,108 +2191,157 @@ cache_aws_creds_from_imds() {
     return 1
   fi
 
-  local access_key_id_sh
-  local secret_access_key_sh
-  local session_token_sh
+  local access_key_id
+  local secret_access_key
+  local session_token
   local expiration_raw
-  local expiration_sh
-  access_key_id_sh=$(jq -r '.AccessKeyId // empty | @sh' <<<"${creds_json}")
-  secret_access_key_sh=$(jq -r '.SecretAccessKey // empty | @sh' <<<"${creds_json}")
-  session_token_sh=$(jq -r '.Token // empty | @sh' <<<"${creds_json}")
+  access_key_id=$(jq -er '.AccessKeyId | select(type == "string")' <<<"${creds_json}" 2>/dev/null || true)
+  secret_access_key=$(jq -er '.SecretAccessKey | select(type == "string")' <<<"${creds_json}" 2>/dev/null || true)
+  session_token=$(jq -er '.Token | select(type == "string")' <<<"${creds_json}" 2>/dev/null || true)
   expiration_raw=$(jq -r '.Expiration // empty' <<<"${creds_json}")
-  expiration_sh=$(jq -r '.Expiration // empty | @sh' <<<"${creds_json}")
-  if [[ -z "${access_key_id_sh}" || -z "${secret_access_key_sh}" || -z "${session_token_sh}" ]]; then
+  if [[ -z "${access_key_id}" ||
+        -z "${secret_access_key}" ||
+        -z "${session_token}" ||
+        -z "${expiration_raw}" ]]; then
     log "IMDS returned incomplete IAM role credentials; skipping credential cache."
     return 1
   fi
 
-  local expiration_epoch=""
-  if [[ -n "${expiration_raw}" ]]; then
-    expiration_epoch=$(date -u -d "${expiration_raw}" +%s 2>/dev/null || true)
+  local expiration_epoch
+  expiration_epoch=$(date -u -d "${expiration_raw}" +%s 2>/dev/null || true)
+  if [[ ! "${expiration_epoch}" =~ ^[0-9]+$ ]]; then
+    log "IMDS returned an invalid credential expiration; skipping credential cache."
+    return 1
   fi
 
-  local creds_file="${SCFUZZBENCH_AWS_CREDS_ENV_FILE:-${SCFUZZBENCH_ROOT}/aws_creds.env}"
-  mkdir -p "$(dirname "${creds_file}")"
-  umask 077
-  local tmp_file
-  tmp_file=$(mktemp "${creds_file}.tmp.XXXXXX")
-  chmod 0600 "${tmp_file}"
-  {
-    echo "# Cached from IMDS. Used to keep S3/SSM uploads working during shutdown."
-    echo "AWS_ACCESS_KEY_ID=${access_key_id_sh}"
-    echo "AWS_SECRET_ACCESS_KEY=${secret_access_key_sh}"
-    echo "AWS_SESSION_TOKEN=${session_token_sh}"
-    if [[ -n "${expiration_sh}" ]]; then
-      echo "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION=${expiration_sh}"
-    fi
-    if [[ -n "${expiration_epoch}" ]]; then
-      echo "SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH=${expiration_epoch}"
-    fi
-  } >"${tmp_file}"
-  mv -f "${tmp_file}" "${creds_file}"
-  return 0
+  local cache_json
+  cache_json=$(
+    SCFUZZBENCH_CACHE_EXPIRATION_EPOCH="${expiration_epoch}" python3 -c '
+import json
+import os
+import sys
+
+value = json.load(sys.stdin)
+normalized = {
+    "version": 1,
+    "access_key_id": value["AccessKeyId"],
+    "secret_access_key": value["SecretAccessKey"],
+    "session_token": value["Token"],
+    "expiration": value["Expiration"],
+    "expiration_epoch": int(os.environ["SCFUZZBENCH_CACHE_EXPIRATION_EPOCH"]),
+}
+json.dump(normalized, sys.stdout, separators=(",", ":"), sort_keys=True)
+' <<<"${creds_json}"
+  ) || return 1
+  local creds_file="${SCFUZZBENCH_AWS_CREDS_ENV_FILE:-${SCFUZZBENCH_ROOT}/aws_creds.json}"
+  printf '%s\n' "${cache_json}" |
+    write_strict_descendant_file \
+      "${creds_file}" "${SCFUZZBENCH_ROOT}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" 1
 }
 
 load_cached_aws_creds() {
   if [[ -n "${SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE:-}" ]]; then
     return 1
   fi
-  local creds_file="${SCFUZZBENCH_AWS_CREDS_ENV_FILE:-${SCFUZZBENCH_ROOT}/aws_creds.env}"
-  if [[ ! -f "${creds_file}" ]]; then
+  if [[ -z "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR:-}" ||
+        -z "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY:-}" ]]; then
     return 1
   fi
+  local creds_file="${SCFUZZBENCH_AWS_CREDS_ENV_FILE:-${SCFUZZBENCH_ROOT}/aws_creds.json}"
+  local cache_json
+  cache_json=$(
+    read_strict_descendant_file \
+      "${creds_file}" "${SCFUZZBENCH_ROOT}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" 65536
+  ) || return 1
 
-  local old_ak_set=0
-  local old_sk_set=0
-  local old_st_set=0
-  local old_exp_set=0
-  local old_exp_epoch_set=0
-  if [[ "${AWS_ACCESS_KEY_ID+x}" == "x" ]]; then old_ak_set=1; fi
-  if [[ "${AWS_SECRET_ACCESS_KEY+x}" == "x" ]]; then old_sk_set=1; fi
-  if [[ "${AWS_SESSION_TOKEN+x}" == "x" ]]; then old_st_set=1; fi
-  if [[ "${SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION+x}" == "x" ]]; then old_exp_set=1; fi
-  if [[ "${SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH+x}" == "x" ]]; then old_exp_epoch_set=1; fi
-  local old_ak="${AWS_ACCESS_KEY_ID-}"
-  local old_sk="${AWS_SECRET_ACCESS_KEY-}"
-  local old_st="${AWS_SESSION_TOKEN-}"
-  local old_exp="${SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION-}"
-  local old_exp_epoch="${SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH-}"
+  local parsed
+  parsed=$(
+    python3 -c '
+import base64
+import json
+import sys
+import time
 
-  local ok=0
-  # shellcheck disable=SC1090
-  set -a
-  if source "${creds_file}"; then
-    ok=1
+try:
+    value = json.load(sys.stdin)
+    expected = {
+        "version",
+        "access_key_id",
+        "secret_access_key",
+        "session_token",
+        "expiration",
+        "expiration_epoch",
+    }
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ValueError("unexpected credential cache fields")
+    if value["version"] != 1:
+        raise ValueError("unexpected credential cache version")
+    for name in (
+        "access_key_id",
+        "secret_access_key",
+        "session_token",
+        "expiration",
+    ):
+        field = value[name]
+        if (
+            not isinstance(field, str)
+            or not field
+            or len(field) > 16384
+            or any(ord(character) < 32 or ord(character) == 127 for character in field)
+        ):
+            raise ValueError(f"invalid credential field: {name}")
+    epoch = value["expiration_epoch"]
+    if (
+        isinstance(epoch, bool)
+        or not isinstance(epoch, int)
+        or epoch <= int(time.time()) + 300
+    ):
+        raise ValueError("expired credential cache")
+    for name in (
+        "access_key_id",
+        "secret_access_key",
+        "session_token",
+        "expiration",
+    ):
+        encoded = base64.b64encode(value[name].encode("utf-8")).decode("ascii")
+        print(encoded)
+    print(epoch)
+    print("SCFUZZBENCH-CREDENTIALS-V1")
+except (TypeError, ValueError, json.JSONDecodeError, UnicodeError) as exc:
+    print(f"invalid cached credentials: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+' <<<"${cache_json}"
+  ) || return 1
+
+  local -a fields=()
+  mapfile -t fields <<<"${parsed}"
+  if [[ "${#fields[@]}" -ne 6 ||
+        "${fields[5]}" != "SCFUZZBENCH-CREDENTIALS-V1" ||
+        ! "${fields[4]}" =~ ^[0-9]+$ ]]; then
+    return 1
   fi
-  set +a
+  local access_key_id
+  local secret_access_key
+  local session_token
+  local expiration
+  access_key_id=$(printf '%s' "${fields[0]}" | base64 --decode) || return 1
+  secret_access_key=$(printf '%s' "${fields[1]}" | base64 --decode) || return 1
+  session_token=$(printf '%s' "${fields[2]}" | base64 --decode) || return 1
+  expiration=$(printf '%s' "${fields[3]}" | base64 --decode) || return 1
 
-  if (( ok )); then
-    if [[ -z "${AWS_ACCESS_KEY_ID:-}" || -z "${AWS_SECRET_ACCESS_KEY:-}" || -z "${AWS_SESSION_TOKEN:-}" ]]; then
-      ok=0
-    fi
-    local exp_epoch="${SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH:-}"
-    if [[ -n "${exp_epoch}" && "${exp_epoch}" =~ ^[0-9]+$ ]]; then
-      local now
-      now=$(date -u +%s)
-      if (( exp_epoch <= now )); then
-        ok=0
-      fi
-    fi
-  fi
-
-  if (( ok )); then
-    return 0
-  fi
-
-  if (( old_ak_set )); then export AWS_ACCESS_KEY_ID="${old_ak}"; else unset AWS_ACCESS_KEY_ID; fi
-  if (( old_sk_set )); then export AWS_SECRET_ACCESS_KEY="${old_sk}"; else unset AWS_SECRET_ACCESS_KEY; fi
-  if (( old_st_set )); then export AWS_SESSION_TOKEN="${old_st}"; else unset AWS_SESSION_TOKEN; fi
-  if (( old_exp_set )); then export SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION="${old_exp}"; else unset SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION; fi
-  if (( old_exp_epoch_set )); then export SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH="${old_exp_epoch}"; else unset SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH; fi
-  return 1
+  export AWS_ACCESS_KEY_ID="${access_key_id}"
+  export AWS_SECRET_ACCESS_KEY="${secret_access_key}"
+  export AWS_SESSION_TOKEN="${session_token}"
+  export SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION="${expiration}"
+  export SCFUZZBENCH_CACHED_AWS_CREDS_EXPIRATION_EPOCH="${fields[4]}"
+  return 0
 }
 
-aws_cli() {
+aws_cli() (
   local have_cached=0
   if [[ -z "${SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE:-}" ]]; then
     if load_cached_aws_creds; then
@@ -1664,15 +2358,134 @@ aws_cli() {
   else
     aws "$@"
   fi
+)
+
+start_run_heartbeat() {
+  if is_local_mode; then
+    return 0
+  fi
+  if [[ -z "${SCFUZZBENCH_S3_BUCKET:-}" ||
+        -z "${SCFUZZBENCH_RUN_ID:-}" ||
+        -z "${SCFUZZBENCH_BENCHMARK_UUID:-}" ]]; then
+    log "Run heartbeat skipped; run identity or bucket is missing."
+    return 0
+  fi
+
+  local pid_file="${SCFUZZBENCH_ROOT}/run-heartbeat.pid"
+  local existing_owner=""
+  local existing_pid=""
+  local existing_start=""
+  local existing_extra=""
+  existing_owner=$(
+    read_strict_descendant_file \
+      "${pid_file}" "${SCFUZZBENCH_ROOT}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" 64 2>/dev/null
+  ) || true
+  read -r existing_pid existing_start existing_extra <<<"${existing_owner}"
+  if [[ -z "${existing_extra}" &&
+        "${existing_pid}" =~ ^[0-9]+$ &&
+        "${existing_start}" =~ ^[0-9]+$ ]] &&
+      preliminary_process_owned "${existing_pid}" "${existing_start}"; then
+    return 0
+  fi
+
+  cache_instance_id || true
+  local instance_token
+  instance_token=$(printf '%s' "${SCFUZZBENCH_INSTANCE_ID:-unknown}" |
+    tr -cd 'A-Za-z0-9._-')
+  instance_token="${instance_token:-unknown}"
+  local interval="${SCFUZZBENCH_RUN_HEARTBEAT_SECONDS:-300}"
+  if [[ ! "${interval}" =~ ^[0-9]+$ ]] || (( interval < 60 )); then
+    interval=300
+  fi
+  local heartbeat_file="${SCFUZZBENCH_ROOT}/run-heartbeat.json"
+  local heartbeat_key="run-state/heartbeats/${SCFUZZBENCH_RUN_ID}/${SCFUZZBENCH_BENCHMARK_UUID}/${instance_token}.json"
+
+  (
+    set +e
+    heartbeat_sleep_pid=""
+    stop_heartbeat_loop() {
+      if [[ "${heartbeat_sleep_pid}" =~ ^[0-9]+$ ]]; then
+        kill "${heartbeat_sleep_pid}" 2>/dev/null || true
+        wait "${heartbeat_sleep_pid}" 2>/dev/null || true
+      fi
+      exit 0
+    }
+    trap stop_heartbeat_loop TERM HUP INT
+    while true; do
+      SCFUZZBENCH_HEARTBEAT_RUN_ID="${SCFUZZBENCH_RUN_ID}" \
+      SCFUZZBENCH_HEARTBEAT_BENCHMARK_UUID="${SCFUZZBENCH_BENCHMARK_UUID}" \
+      SCFUZZBENCH_HEARTBEAT_INSTANCE_ID="${instance_token}" \
+      SCFUZZBENCH_HEARTBEAT_OBSERVED_AT="$(date +%s)" \
+        python3 -c '
+import json
+import os
+import sys
+
+json.dump(
+    {
+        "run_id": os.environ["SCFUZZBENCH_HEARTBEAT_RUN_ID"],
+        "benchmark_uuid": os.environ["SCFUZZBENCH_HEARTBEAT_BENCHMARK_UUID"],
+        "instance_id": os.environ["SCFUZZBENCH_HEARTBEAT_INSTANCE_ID"],
+        "observed_at_epoch": int(
+            os.environ["SCFUZZBENCH_HEARTBEAT_OBSERVED_AT"]
+        ),
+    },
+    sys.stdout,
+    separators=(",", ":"),
+    sort_keys=True,
+)
+sys.stdout.write("\n")
+' |
+        write_strict_descendant_file \
+          "${heartbeat_file}" "${SCFUZZBENCH_ROOT}" \
+          "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+          "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" 1 || break
+      upload_pinned_s3_file \
+        "${heartbeat_file}" "${SCFUZZBENCH_ROOT}" \
+        "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+        "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" \
+        "${SCFUZZBENCH_S3_BUCKET}" "${heartbeat_key}" \
+        application/json 0 1048576 2 2 || true
+      sleep "${interval}" &
+      heartbeat_sleep_pid=$!
+      wait "${heartbeat_sleep_pid}" || break
+      heartbeat_sleep_pid=""
+    done
+  ) &
+  local heartbeat_pid=$!
+  local heartbeat_start=""
+  if ! heartbeat_start=$(
+    preliminary_wait_for_process_start_ticks "${heartbeat_pid}"
+  ); then
+    wait "${heartbeat_pid}" 2>/dev/null || true
+    return 1
+  fi
+  if ! printf '%s %s\n' "${heartbeat_pid}" "${heartbeat_start}" |
+    write_strict_descendant_file \
+      "${pid_file}" "${SCFUZZBENCH_ROOT}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" 1; then
+    kill "${heartbeat_pid}" 2>/dev/null || true
+    wait "${heartbeat_pid}" 2>/dev/null || true
+    return 1
+  fi
 }
 
 start_aws_creds_refresher() {
   if [[ -n "${SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE:-}" ]]; then
     return 0
   fi
-  if [[ -n "${SCFUZZBENCH_AWS_CREDS_REFRESH_PID:-}" ]] && kill -0 "${SCFUZZBENCH_AWS_CREDS_REFRESH_PID}" 2>/dev/null; then
+  if [[ "${SCFUZZBENCH_AWS_CREDS_REFRESH_PID:-}" =~ ^[0-9]+$ &&
+        "${SCFUZZBENCH_AWS_CREDS_REFRESH_PID_START_TICKS:-}" =~ ^[0-9]+$ ]] &&
+      preliminary_process_running_owned \
+        "${SCFUZZBENCH_AWS_CREDS_REFRESH_PID}" \
+        "${SCFUZZBENCH_AWS_CREDS_REFRESH_PID_START_TICKS}"; then
     return 0
   fi
+  unset SCFUZZBENCH_AWS_CREDS_REFRESH_PID
+  unset SCFUZZBENCH_AWS_CREDS_REFRESH_PID_START_TICKS
 
   local interval="${SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS:-300}"
   if [[ ! "${interval}" =~ ^[0-9]+$ ]] || (( interval < 60 )); then
@@ -1681,12 +2494,57 @@ start_aws_creds_refresher() {
 
   (
     set +e
+    refresh_sleep_pid=""
+    stop_aws_creds_refresh_loop() {
+      if [[ "${refresh_sleep_pid}" =~ ^[0-9]+$ ]]; then
+        kill "${refresh_sleep_pid}" 2>/dev/null || true
+        wait "${refresh_sleep_pid}" 2>/dev/null || true
+      fi
+      exit 0
+    }
+    trap stop_aws_creds_refresh_loop TERM HUP INT
+
     while true; do
       cache_aws_creds_from_imds >/dev/null 2>&1 || true
-      sleep "${interval}" || true
+      sleep "${interval}" &
+      refresh_sleep_pid=$!
+      wait "${refresh_sleep_pid}" || break
+      refresh_sleep_pid=""
     done
   ) &
-  export SCFUZZBENCH_AWS_CREDS_REFRESH_PID=$!
+  local refresh_pid=$!
+  local refresh_start=""
+  if ! refresh_start=$(
+    preliminary_wait_for_process_start_ticks "${refresh_pid}"
+  ); then
+    kill "${refresh_pid}" 2>/dev/null || true
+    wait "${refresh_pid}" 2>/dev/null || true
+    log "AWS credential refresh process exited before ownership could be recorded."
+    return 1
+  fi
+  export SCFUZZBENCH_AWS_CREDS_REFRESH_PID="${refresh_pid}"
+  export SCFUZZBENCH_AWS_CREDS_REFRESH_PID_START_TICKS="${refresh_start}"
+}
+
+stop_aws_creds_refresher() {
+  local pid="${SCFUZZBENCH_AWS_CREDS_REFRESH_PID:-}"
+  local start="${SCFUZZBENCH_AWS_CREDS_REFRESH_PID_START_TICKS:-}"
+  if [[ "${pid}" =~ ^[0-9]+$ && "${start}" =~ ^[0-9]+$ ]] &&
+      preliminary_process_owned "${pid}" "${start}"; then
+    kill "${pid}" 2>/dev/null || true
+    local attempts=0
+    while preliminary_process_running_owned "${pid}" "${start}" &&
+      (( attempts < 250 )); do
+      sleep 0.02
+      attempts=$((attempts + 1))
+    done
+    if preliminary_process_running_owned "${pid}" "${start}"; then
+      kill -KILL "${pid}" 2>/dev/null || true
+    fi
+    wait "${pid}" 2>/dev/null || true
+  fi
+  unset SCFUZZBENCH_AWS_CREDS_REFRESH_PID
+  unset SCFUZZBENCH_AWS_CREDS_REFRESH_PID_START_TICKS
 }
 
 get_github_token() {
@@ -1734,13 +2592,19 @@ clone_target() {
   }
 
   if [[ ! -d "${repo_dir}/.git" ]]; then
-    rm -rf "${repo_dir}" || true
+    remove_strict_descendant_tree \
+      "${repo_dir}" "${SCFUZZBENCH_WORKDIR}" "target clone directory" \
+      "${SCFUZZBENCH_WORK_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_WORK_ROOT_IDENTITY}" || true
     log "Cloning ${SCFUZZBENCH_REPO_URL}"
     if ! GIT_TERMINAL_PROMPT=0 git clone "${SCFUZZBENCH_REPO_URL}" "${repo_dir}"; then
       local clone_url
       if clone_url=$(token_clone_url); then
         log "Unauthenticated clone failed; retrying with GitHub token."
-        rm -rf "${repo_dir}" || true
+        remove_strict_descendant_tree \
+          "${repo_dir}" "${SCFUZZBENCH_WORKDIR}" "failed target clone" \
+          "${SCFUZZBENCH_WORK_ROOT_ANCHOR}" \
+          "${SCFUZZBENCH_WORK_ROOT_IDENTITY}" || true
         GIT_TERMINAL_PROMPT=0 git clone "${clone_url}" "${repo_dir}"
         git -C "${repo_dir}" remote set-url origin "${clone_url}"
       else
@@ -1907,8 +2771,16 @@ run_with_timeout() {
   start_preliminary_snapshots
   log "Running command with timeout ${SCFUZZBENCH_TIMEOUT_SECONDS}s (grace ${kill_after}s)"
   set +e
-  timeout --signal=SIGINT --kill-after="${kill_after}s" "${SCFUZZBENCH_TIMEOUT_SECONDS}s" "$@" 2>&1 | tee "${log_file}"
-  local exit_code=${PIPESTATUS[0]}
+  safe_path_operation exec-tee \
+    --root-path "${SCFUZZBENCH_LOG_DIR}" \
+    --root-anchor "${SCFUZZBENCH_LOG_ROOT_ANCHOR}" \
+    --root-identity "${SCFUZZBENCH_LOG_ROOT_IDENTITY}" \
+    --path "${log_file}" \
+    --parents \
+    -- \
+    timeout --signal=SIGINT --kill-after="${kill_after}s" \
+      "${SCFUZZBENCH_TIMEOUT_SECONDS}s" "$@"
+  local exit_code=$?
   set -e
   stop_preliminary_snapshots || true
   log_duration "run_with_timeout $(basename "${log_file}")" "${run_start}"
@@ -1926,11 +2798,37 @@ run_with_timeout() {
 # Every instance of a run resolves the same pin, so uploads stay identical.
 resolve_manifest_foundry_version() {
   local manifest_path=$1
+  local manifest_root=${2:-}
+  local manifest_root_anchor=${3:-}
+  local manifest_root_identity=${4:-}
+  if [[ -z "${manifest_root}" ]]; then
+    local normalized_manifest
+    normalized_manifest=$(realpath -m -- "${manifest_path}") || return 1
+    if [[ -n "${SCFUZZBENCH_OUTPUT_ROOT_ANCHOR:-}" &&
+          "${normalized_manifest}" == "${SCFUZZBENCH_OUTPUT_ROOT_ANCHOR}/"* ]]; then
+      manifest_root="${SCFUZZBENCH_OUTPUT_ROOT_PATH}"
+      manifest_root_anchor="${SCFUZZBENCH_OUTPUT_ROOT_ANCHOR}"
+      manifest_root_identity="${SCFUZZBENCH_OUTPUT_ROOT_IDENTITY}"
+    elif [[ -n "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR:-}" &&
+            "${normalized_manifest}" == "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}/"* ]]; then
+      manifest_root="${SCFUZZBENCH_ROOT}"
+      manifest_root_anchor="${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}"
+      manifest_root_identity="${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}"
+    else
+      log "Refusing manifest update outside captured roots: ${manifest_path}"
+      return 1
+    fi
+  fi
   command -v jq >/dev/null 2>&1 || return 0
   command -v forge >/dev/null 2>&1 || return 0
   [[ -f "${manifest_path}" ]] || return 0
   local manifest_version
-  manifest_version=$(jq -r '.foundry_version // ""' "${manifest_path}" 2>/dev/null) || return 0
+  manifest_version=$(
+    read_strict_descendant_file \
+      "${manifest_path}" "${manifest_root}" \
+      "${manifest_root_anchor}" "${manifest_root_identity}" |
+      jq -r '.foundry_version // ""' 2>/dev/null
+  ) || return 0
   if [[ -n "${manifest_version}" ]]; then
     return 0
   fi
@@ -1940,14 +2838,61 @@ resolve_manifest_foundry_version() {
   resolved=$(forge --version 2>/dev/null | head -n1 | sed -E 's/^forge[[:space:]]+(Version:[[:space:]]*)?//; s/[[:space:]]*\(.*$//')
   [[ -n "${resolved}" ]] || return 0
   log "Recording resolved foundry version in manifest: ${resolved}"
-  jq --arg v "${resolved}" '.foundry_version = $v' "${manifest_path}" > "${manifest_path}.tmp" \
-    && mv "${manifest_path}.tmp" "${manifest_path}"
+  read_strict_descendant_file \
+    "${manifest_path}" "${manifest_root}" \
+    "${manifest_root_anchor}" "${manifest_root_identity}" |
+    jq --arg v "${resolved}" '.foundry_version = $v' |
+    write_strict_descendant_file \
+      "${manifest_path}" "${manifest_root}" \
+      "${manifest_root_anchor}" "${manifest_root_identity}" 1
 }
 
 record_seed_corpus_in_manifest() {
   local manifest_path=$1
+  local manifest_root=${2:-}
+  local manifest_root_anchor=${3:-}
+  local manifest_root_identity=${4:-}
+  if [[ -z "${manifest_root}" ]]; then
+    local normalized_manifest
+    normalized_manifest=$(realpath -m -- "${manifest_path}") || return 1
+    if [[ -n "${SCFUZZBENCH_OUTPUT_ROOT_ANCHOR:-}" &&
+          "${normalized_manifest}" == "${SCFUZZBENCH_OUTPUT_ROOT_ANCHOR}/"* ]]; then
+      manifest_root="${SCFUZZBENCH_OUTPUT_ROOT_PATH}"
+      manifest_root_anchor="${SCFUZZBENCH_OUTPUT_ROOT_ANCHOR}"
+      manifest_root_identity="${SCFUZZBENCH_OUTPUT_ROOT_IDENTITY}"
+    elif [[ -n "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR:-}" &&
+            "${normalized_manifest}" == "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}/"* ]]; then
+      manifest_root="${SCFUZZBENCH_ROOT}"
+      manifest_root_anchor="${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}"
+      manifest_root_identity="${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}"
+    else
+      log "Refusing manifest update outside captured roots: ${manifest_path}"
+      return 1
+    fi
+  fi
   local metadata_path="${SCFUZZBENCH_SEED_CORPUS_METADATA_PATH:-${SCFUZZBENCH_LOG_DIR}/seed_corpus.json}"
   [[ -f "${manifest_path}" ]] || return 0
+  if [[ -e "${metadata_path}" || -L "${metadata_path}" ]]; then
+    if [[ -z "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" ||
+          -z "${SCFUZZBENCH_LOG_ROOT_ANCHOR}" ]]; then
+      log "Refusing seed metadata read because trusted log anchors are missing."
+      return 1
+    fi
+    assert_path_anchor \
+      "${SCFUZZBENCH_ROOT}" "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" "framework root" || return 1
+    assert_strict_descendant_path \
+      "${SCFUZZBENCH_LOG_DIR}" "${SCFUZZBENCH_ROOT}" "log directory" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}" || return 1
+    assert_path_anchor \
+      "${SCFUZZBENCH_LOG_DIR}" "${SCFUZZBENCH_LOG_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_LOG_ROOT_IDENTITY}" "log directory" || return 1
+    assert_strict_descendant_path \
+      "${metadata_path}" "${SCFUZZBENCH_LOG_DIR}" "seed corpus metadata" \
+      "${SCFUZZBENCH_LOG_ROOT_ANCHOR}" \
+      "${SCFUZZBENCH_LOG_ROOT_IDENTITY}" || return 1
+  fi
   if [[ ! -f "${metadata_path}" ]]; then
     if [[ -n "${SCFUZZBENCH_SEED_CORPUS_SOURCE:-}" ]]; then
       log "Configured seed corpus metadata is missing: ${metadata_path}"
@@ -1955,9 +2900,19 @@ record_seed_corpus_in_manifest() {
     fi
     return 0
   fi
-  python3 - "${manifest_path}" "${metadata_path}" <<'PY'
+  python3 - \
+    <(
+      read_strict_descendant_file \
+        "${manifest_path}" "${manifest_root}" \
+        "${manifest_root_anchor}" "${manifest_root_identity}"
+    ) \
+    <(
+      read_strict_descendant_file \
+        "${metadata_path}" "${SCFUZZBENCH_LOG_DIR}" \
+        "${SCFUZZBENCH_LOG_ROOT_ANCHOR}" \
+        "${SCFUZZBENCH_LOG_ROOT_IDENTITY}"
+    ) <<'PY' |
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -1965,51 +2920,53 @@ manifest_path = Path(sys.argv[1])
 metadata_path = Path(sys.argv[2])
 manifest = json.loads(manifest_path.read_text())
 manifest["seed_corpus"] = json.loads(metadata_path.read_text())
-temporary = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
-temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-os.replace(temporary, manifest_path)
+print(json.dumps(manifest, indent=2, sort_keys=True))
 PY
+    write_strict_descendant_file \
+      "${manifest_path}" "${manifest_root}" \
+      "${manifest_root_anchor}" "${manifest_root_identity}" 1
 }
 
-upload_manifest_once_or_verify() {
+upload_manifest_once_or_verify() (
   local manifest_path=$1
   local bucket=$2
   local key=$3
-  local digest
-  digest=$(sha256sum "${manifest_path}" | cut -d' ' -f1)
-  local existing
-  existing=$(mktemp "${SCFUZZBENCH_ROOT}/manifest-existing.XXXXXX")
-  local attempt
-  for attempt in 1 2 3 4 5; do
-    if aws_cli s3api put-object \
-      --bucket "${bucket}" \
-      --key "${key}" \
-      --body "${manifest_path}" \
-      --content-type application/json \
-      --metadata "sha256=${digest}" \
-      --if-none-match '*' >/dev/null 2>&1; then
-      rm -f -- "${existing}"
-      return 0
-    fi
-    rm -f -- "${existing}"
-    if aws_cli s3api get-object \
-      --bucket "${bucket}" \
-      --key "${key}" \
-      "${existing}" >/dev/null 2>&1; then
-      if cmp -s -- "${manifest_path}" "${existing}"; then
-        rm -f -- "${existing}"
-        return 0
-      fi
-      rm -f -- "${existing}"
-      log "Refusing to overwrite a different benchmark manifest at s3://${bucket}/${key}"
+  local manifest_root=${4:-}
+  local manifest_root_anchor=${5:-}
+  local manifest_root_identity=${6:-}
+  if [[ -z "${manifest_root}" ]]; then
+    local normalized_manifest
+    normalized_manifest=$(realpath -m -- "${manifest_path}") || return 1
+    if [[ -n "${SCFUZZBENCH_OUTPUT_ROOT_ANCHOR:-}" &&
+          "${normalized_manifest}" == "${SCFUZZBENCH_OUTPUT_ROOT_ANCHOR}/"* ]]; then
+      manifest_root="${SCFUZZBENCH_OUTPUT_ROOT_PATH}"
+      manifest_root_anchor="${SCFUZZBENCH_OUTPUT_ROOT_ANCHOR}"
+      manifest_root_identity="${SCFUZZBENCH_OUTPUT_ROOT_IDENTITY}"
+    elif [[ -n "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR:-}" &&
+            "${normalized_manifest}" == "${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}/"* ]]; then
+      manifest_root="${SCFUZZBENCH_ROOT}"
+      manifest_root_anchor="${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}"
+      manifest_root_identity="${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}"
+    else
+      log "Refusing manifest upload outside captured roots: ${manifest_path}"
       return 1
     fi
-    sleep $((attempt * 2))
-  done
-  rm -f -- "${existing}"
-  log "Could not create or verify benchmark manifest at s3://${bucket}/${key}"
-  return 1
-}
+  fi
+  if [[ ! -f "${SCFUZZBENCH_MANIFEST_OBJECT_HELPER}" ]]; then
+    log "Manifest object helper not found: ${SCFUZZBENCH_MANIFEST_OBJECT_HELPER}"
+    return 1
+  fi
+  if [[ -z "${SCFUZZBENCH_DISABLE_IMDS_CREDENTIAL_CACHE:-}" ]] &&
+      load_cached_aws_creds >/dev/null 2>&1; then
+    export AWS_EC2_METADATA_DISABLED=true
+  fi
+  read_strict_descendant_file \
+    "${manifest_path}" "${manifest_root}" \
+    "${manifest_root_anchor}" "${manifest_root_identity}" |
+    python3 "${SCFUZZBENCH_MANIFEST_OBJECT_HELPER}" \
+      --bucket "${bucket}" \
+      --key "${key}"
+)
 
 upload_results() {
   local upload_start
@@ -2019,13 +2976,62 @@ upload_results() {
     log_duration "upload_results_local" "${upload_start}"
     return $?
   fi
+  local framework_root="${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}"
+  local framework_root_identity="${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}"
+  local work_root="${SCFUZZBENCH_WORK_ROOT_ANCHOR}"
+  local work_root_identity="${SCFUZZBENCH_WORK_ROOT_IDENTITY}"
+  local target_root="${SCFUZZBENCH_TARGET_ROOT_ANCHOR}"
+  local target_root_identity="${SCFUZZBENCH_TARGET_ROOT_IDENTITY}"
+  local log_root="${SCFUZZBENCH_LOG_ROOT_ANCHOR}"
+  local log_root_identity="${SCFUZZBENCH_LOG_ROOT_IDENTITY}"
+  local corpus_root="${SCFUZZBENCH_CORPUS_ROOT_ANCHOR}"
+  local corpus_root_identity="${SCFUZZBENCH_CORPUS_ROOT_IDENTITY}"
+  if [[ -z "${framework_root}" || -z "${work_root}" || -z "${log_root}" ]]; then
+    log "Refusing artifact upload because trusted workspace anchors are missing."
+    return 1
+  fi
+  assert_path_anchor \
+    "${SCFUZZBENCH_ROOT}" "${framework_root}" "${framework_root_identity}" \
+    "framework root" || return 1
+  assert_strict_descendant_path \
+    "${SCFUZZBENCH_WORKDIR}" "${SCFUZZBENCH_ROOT}" "work directory" \
+    "${framework_root}" "${framework_root_identity}" || return 1
+  assert_path_anchor \
+    "${SCFUZZBENCH_WORKDIR}" "${work_root}" "${work_root_identity}" \
+    "work directory" || return 1
+  assert_strict_descendant_path \
+    "${SCFUZZBENCH_LOG_DIR}" "${SCFUZZBENCH_ROOT}" "log directory" \
+    "${framework_root}" "${framework_root_identity}" || return 1
+  assert_path_anchor \
+    "${SCFUZZBENCH_LOG_DIR}" "${log_root}" "${log_root_identity}" \
+    "log directory" || return 1
+  if [[ -n "${SCFUZZBENCH_CORPUS_DIR:-}" ]]; then
+    if [[ -z "${target_root}" || -z "${corpus_root}" ]]; then
+      log "Refusing corpus upload because trusted corpus anchors are missing."
+      return 1
+    fi
+    assert_strict_descendant_path \
+      "${SCFUZZBENCH_WORKDIR}/target" "${SCFUZZBENCH_WORKDIR}" \
+      "target workspace" "${work_root}" "${work_root_identity}" || return 1
+    assert_path_anchor \
+      "${SCFUZZBENCH_WORKDIR}/target" "${target_root}" "${target_root_identity}" \
+      "target workspace" || return 1
+    assert_strict_descendant_path \
+      "${SCFUZZBENCH_CORPUS_DIR}" "${SCFUZZBENCH_WORKDIR}/target" \
+      "corpus directory" "${target_root}" "${target_root_identity}" || return 1
+    assert_path_anchor \
+      "${SCFUZZBENCH_CORPUS_DIR}" "${corpus_root}" \
+      "${corpus_root_identity}" "corpus directory" || return 1
+  fi
   require_env SCFUZZBENCH_S3_BUCKET SCFUZZBENCH_RUN_ID SCFUZZBENCH_FUZZER_LABEL
   stop_runner_metrics || true
   cache_instance_id || true
   local instance_id="${SCFUZZBENCH_INSTANCE_ID:-unknown}"
   local base_name="${instance_id}-${SCFUZZBENCH_FUZZER_LABEL}"
   local upload_dir="${SCFUZZBENCH_ROOT}/upload"
-  mkdir -p "${upload_dir}"
+  mkdir_strict_descendant \
+    "${upload_dir}" "${SCFUZZBENCH_ROOT}" \
+    "${framework_root}" "${framework_root_identity}" 0700
   local log_zip="${upload_dir}/logs-${base_name}.zip"
   local prefix="${SCFUZZBENCH_RUN_ID}"
   local manifest_upload_ok=1
@@ -2036,9 +3042,17 @@ upload_results() {
 
   if [[ -n "${SCFUZZBENCH_BENCHMARK_MANIFEST_B64}" ]]; then
     local manifest_path="${upload_dir}/benchmark_manifest.json"
-    echo "${SCFUZZBENCH_BENCHMARK_MANIFEST_B64}" | base64 -d > "${manifest_path}"
-    resolve_manifest_foundry_version "${manifest_path}" || true
-    if ! record_seed_corpus_in_manifest "${manifest_path}"; then
+    printf '%s' "${SCFUZZBENCH_BENCHMARK_MANIFEST_B64}" |
+      base64 -d |
+      write_strict_descendant_file \
+        "${manifest_path}" "${SCFUZZBENCH_ROOT}" \
+        "${framework_root}" "${framework_root_identity}" 1
+    resolve_manifest_foundry_version \
+      "${manifest_path}" "${SCFUZZBENCH_ROOT}" \
+      "${framework_root}" "${framework_root_identity}" || true
+    if ! record_seed_corpus_in_manifest \
+      "${manifest_path}" "${SCFUZZBENCH_ROOT}" \
+      "${framework_root}" "${framework_root_identity}"; then
       manifest_upload_ok=0
     elif ! upload_manifest_once_or_verify \
       "${manifest_path}" \
@@ -2047,9 +3061,9 @@ upload_results() {
       manifest_upload_ok=0
     fi
 
-    # Timestamp-first discovery index for the docs site:
+    # Run-identity-first discovery index for the docs site:
     # runs/<run_id>/<benchmark_uuid>/manifest.json
-    if [[ -n "${SCFUZZBENCH_BENCHMARK_UUID}" && "${SCFUZZBENCH_RUN_ID}" =~ ^[0-9]+$ ]]; then
+    if [[ -n "${SCFUZZBENCH_BENCHMARK_UUID}" && "${SCFUZZBENCH_RUN_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$ ]]; then
       if (( manifest_upload_ok )) && ! upload_manifest_once_or_verify \
         "${manifest_path}" \
         "${SCFUZZBENCH_S3_BUCKET}" \
@@ -2057,35 +3071,49 @@ upload_results() {
         manifest_upload_ok=0
       fi
     else
-      log "Skipping docs index upload; missing benchmark UUID or non-numeric run id."
+      log "Skipping docs index upload; missing benchmark UUID or unsafe run id."
     fi
   fi
 
-  local log_dest="s3://${SCFUZZBENCH_S3_BUCKET}/logs/${prefix}/${base_name}.zip"
+  local log_key="logs/${prefix}/${base_name}.zip"
+  local log_dest="s3://${SCFUZZBENCH_S3_BUCKET}/${log_key}"
   if [[ -d "${SCFUZZBENCH_LOG_DIR}" ]]; then
     log "Zipping logs to ${log_zip}"
-    local log_parent
-    local log_base
-    log_parent=$(dirname "${SCFUZZBENCH_LOG_DIR}")
-    log_base=$(basename "${SCFUZZBENCH_LOG_DIR}")
-    (cd "${log_parent}" && zip -r -q "${log_zip}" "${log_base}")
+    remove_strict_descendant_file \
+      "${log_zip}" "${SCFUZZBENCH_ROOT}" "log archive" \
+      "${framework_root}" "${framework_root_identity}"
+    archive_pinned_directory \
+      "${SCFUZZBENCH_LOG_DIR}" "${SCFUZZBENCH_LOG_DIR}" \
+      "${log_root}" "${log_root_identity}" "${log_root_identity}" \
+      "${log_zip}" "${SCFUZZBENCH_ROOT}" \
+      "${framework_root}" "${framework_root_identity}"
     log "Uploading logs to ${log_dest}"
-    retry_cmd 5 60 aws_cli s3 cp "${log_zip}" "${log_dest}" --no-progress
+    upload_pinned_s3_file \
+      "${log_zip}" "${SCFUZZBENCH_ROOT}" \
+      "${framework_root}" "${framework_root_identity}" \
+      "${SCFUZZBENCH_S3_BUCKET}" "${log_key}" application/zip
   else
     log "No logs directory found; skipping log upload."
   fi
 
   if [[ -n "${SCFUZZBENCH_CORPUS_DIR}" && -d "${SCFUZZBENCH_CORPUS_DIR}" ]]; then
     local corpus_zip="${upload_dir}/corpus-${base_name}.zip"
-    local corpus_dest="s3://${SCFUZZBENCH_S3_BUCKET}/corpus/${prefix}/${base_name}.zip"
+    local corpus_key="corpus/${prefix}/${base_name}.zip"
+    local corpus_dest="s3://${SCFUZZBENCH_S3_BUCKET}/${corpus_key}"
     log "Zipping corpus to ${corpus_zip}"
-    local corpus_parent
-    local corpus_base
-    corpus_parent=$(dirname "${SCFUZZBENCH_CORPUS_DIR}")
-    corpus_base=$(basename "${SCFUZZBENCH_CORPUS_DIR}")
-    (cd "${corpus_parent}" && zip -r -q "${corpus_zip}" "${corpus_base}")
+    remove_strict_descendant_file \
+      "${corpus_zip}" "${SCFUZZBENCH_ROOT}" "corpus archive" \
+      "${framework_root}" "${framework_root_identity}"
+    archive_pinned_directory \
+      "${SCFUZZBENCH_CORPUS_DIR}" "${SCFUZZBENCH_CORPUS_DIR}" \
+      "${corpus_root}" "${corpus_root_identity}" "${corpus_root_identity}" \
+      "${corpus_zip}" "${SCFUZZBENCH_ROOT}" \
+      "${framework_root}" "${framework_root_identity}"
     log "Uploading corpus to ${corpus_dest}"
-    retry_cmd 5 60 aws_cli s3 cp "${corpus_zip}" "${corpus_dest}" --no-progress
+    upload_pinned_s3_file \
+      "${corpus_zip}" "${SCFUZZBENCH_ROOT}" \
+      "${framework_root}" "${framework_root_identity}" \
+      "${SCFUZZBENCH_S3_BUCKET}" "${corpus_key}" application/zip
   else
     log "No corpus directory configured or found; skipping corpus upload."
   fi
@@ -2101,6 +3129,59 @@ upload_results() {
 save_results_local() {
   local save_start
   save_start=$(now_epoch_seconds)
+  local framework_root="${SCFUZZBENCH_FRAMEWORK_ROOT_ANCHOR}"
+  local framework_root_identity="${SCFUZZBENCH_FRAMEWORK_ROOT_IDENTITY}"
+  local work_root="${SCFUZZBENCH_WORK_ROOT_ANCHOR}"
+  local work_root_identity="${SCFUZZBENCH_WORK_ROOT_IDENTITY}"
+  local target_root="${SCFUZZBENCH_TARGET_ROOT_ANCHOR}"
+  local target_root_identity="${SCFUZZBENCH_TARGET_ROOT_IDENTITY}"
+  local log_root="${SCFUZZBENCH_LOG_ROOT_ANCHOR}"
+  local log_root_identity="${SCFUZZBENCH_LOG_ROOT_IDENTITY}"
+  local corpus_root="${SCFUZZBENCH_CORPUS_ROOT_ANCHOR}"
+  local corpus_root_identity="${SCFUZZBENCH_CORPUS_ROOT_IDENTITY}"
+  local output_root="${SCFUZZBENCH_OUTPUT_ROOT_ANCHOR}"
+  local output_root_identity="${SCFUZZBENCH_OUTPUT_ROOT_IDENTITY}"
+  if [[ -z "${framework_root}" || -z "${work_root}" ||
+        -z "${log_root}" || -z "${output_root}" ]]; then
+    log "Refusing local result save because trusted workspace anchors are missing."
+    return 1
+  fi
+  assert_path_anchor \
+    "${SCFUZZBENCH_OUTPUT_ROOT_PATH}" "${output_root}" \
+    "${output_root_identity}" "local output root" || return 1
+  assert_path_anchor \
+    "${SCFUZZBENCH_ROOT}" "${framework_root}" "${framework_root_identity}" \
+    "framework root" || return 1
+  assert_strict_descendant_path \
+    "${SCFUZZBENCH_WORKDIR}" "${SCFUZZBENCH_ROOT}" "work directory" \
+    "${framework_root}" "${framework_root_identity}" || return 1
+  assert_path_anchor \
+    "${SCFUZZBENCH_WORKDIR}" "${work_root}" "${work_root_identity}" \
+    "work directory" || return 1
+  assert_strict_descendant_path \
+    "${SCFUZZBENCH_LOG_DIR}" "${SCFUZZBENCH_ROOT}" "log directory" \
+    "${framework_root}" "${framework_root_identity}" || return 1
+  assert_path_anchor \
+    "${SCFUZZBENCH_LOG_DIR}" "${log_root}" "${log_root_identity}" \
+    "log directory" || return 1
+  if [[ -n "${SCFUZZBENCH_CORPUS_DIR:-}" ]]; then
+    if [[ -z "${target_root}" || -z "${corpus_root}" ]]; then
+      log "Refusing local corpus save because trusted corpus anchors are missing."
+      return 1
+    fi
+    assert_strict_descendant_path \
+      "${SCFUZZBENCH_WORKDIR}/target" "${SCFUZZBENCH_WORKDIR}" \
+      "target workspace" "${work_root}" "${work_root_identity}" || return 1
+    assert_path_anchor \
+      "${SCFUZZBENCH_WORKDIR}/target" "${target_root}" "${target_root_identity}" \
+      "target workspace" || return 1
+    assert_strict_descendant_path \
+      "${SCFUZZBENCH_CORPUS_DIR}" "${SCFUZZBENCH_WORKDIR}/target" \
+      "corpus directory" "${target_root}" "${target_root_identity}" || return 1
+    assert_path_anchor \
+      "${SCFUZZBENCH_CORPUS_DIR}" "${corpus_root}" \
+      "${corpus_root_identity}" "corpus directory" || return 1
+  fi
   stop_runner_metrics || true
   cache_instance_id || true
   local fuzzer_label="${SCFUZZBENCH_FUZZER_LABEL:-unknown}"
@@ -2109,31 +3190,49 @@ save_results_local() {
   local timestamp
   timestamp=$(date +%Y-%m-%dT%H-%M-%S)
   local run_dir="${repo_name}/${fuzzer_label}/${timestamp}"
-  local output_dir="${SCFUZZBENCH_LOCAL_OUTPUT_DIR:-${SCFUZZBENCH_ROOT}/output}/${run_dir}"
-  mkdir -p "${output_dir}"
+  local output_dir="${SCFUZZBENCH_OUTPUT_ROOT_PATH}/${run_dir}"
+  mkdir_strict_descendant \
+    "${output_dir}" "${SCFUZZBENCH_OUTPUT_ROOT_PATH}" \
+    "${output_root}" "${output_root_identity}" 0700
 
   if [[ -n "${SCFUZZBENCH_BENCHMARK_MANIFEST_B64:-}" ]]; then
     local manifest_path="${output_dir}/benchmark_manifest.json"
-    echo "${SCFUZZBENCH_BENCHMARK_MANIFEST_B64}" | base64 -d > "${manifest_path}"
-    resolve_manifest_foundry_version "${manifest_path}" || true
-    record_seed_corpus_in_manifest "${manifest_path}"
+    printf '%s' "${SCFUZZBENCH_BENCHMARK_MANIFEST_B64}" |
+      base64 -d |
+      write_strict_descendant_file \
+        "${manifest_path}" "${SCFUZZBENCH_OUTPUT_ROOT_PATH}" \
+        "${output_root}" "${output_root_identity}" 1
+    resolve_manifest_foundry_version \
+      "${manifest_path}" "${SCFUZZBENCH_OUTPUT_ROOT_PATH}" \
+      "${output_root}" "${output_root_identity}" || true
+    record_seed_corpus_in_manifest \
+      "${manifest_path}" "${SCFUZZBENCH_OUTPUT_ROOT_PATH}" \
+      "${output_root}" "${output_root_identity}"
   fi
 
   if [[ -d "${SCFUZZBENCH_LOG_DIR}" ]]; then
     local log_zip="${output_dir}/logs.zip"
-    local log_parent log_base
-    log_parent=$(dirname "${SCFUZZBENCH_LOG_DIR}")
-    log_base=$(basename "${SCFUZZBENCH_LOG_DIR}")
-    (cd "${log_parent}" && zip -r -q "${log_zip}" "${log_base}")
+    remove_strict_descendant_file \
+      "${log_zip}" "${SCFUZZBENCH_OUTPUT_ROOT_PATH}" "local log archive" \
+      "${output_root}" "${output_root_identity}"
+    archive_pinned_directory \
+      "${SCFUZZBENCH_LOG_DIR}" "${SCFUZZBENCH_LOG_DIR}" \
+      "${log_root}" "${log_root_identity}" "${log_root_identity}" \
+      "${log_zip}" "${SCFUZZBENCH_OUTPUT_ROOT_PATH}" \
+      "${output_root}" "${output_root_identity}"
     log "Logs saved to ${log_zip}"
   fi
 
   if [[ -n "${SCFUZZBENCH_CORPUS_DIR:-}" && -d "${SCFUZZBENCH_CORPUS_DIR}" ]]; then
     local corpus_zip="${output_dir}/corpus.zip"
-    local corpus_parent corpus_base
-    corpus_parent=$(dirname "${SCFUZZBENCH_CORPUS_DIR}")
-    corpus_base=$(basename "${SCFUZZBENCH_CORPUS_DIR}")
-    (cd "${corpus_parent}" && zip -r -q "${corpus_zip}" "${corpus_base}")
+    remove_strict_descendant_file \
+      "${corpus_zip}" "${SCFUZZBENCH_OUTPUT_ROOT_PATH}" \
+      "local corpus archive" "${output_root}" "${output_root_identity}"
+    archive_pinned_directory \
+      "${SCFUZZBENCH_CORPUS_DIR}" "${SCFUZZBENCH_CORPUS_DIR}" \
+      "${corpus_root}" "${corpus_root_identity}" "${corpus_root_identity}" \
+      "${corpus_zip}" "${SCFUZZBENCH_OUTPUT_ROOT_PATH}" \
+      "${output_root}" "${output_root_identity}"
     log "Corpus saved to ${corpus_zip}"
   fi
 
