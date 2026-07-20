@@ -2,6 +2,9 @@ locals {
   timeout_seconds      = var.timeout_hours * 3600
   run_id               = var.run_id != "" ? var.run_id : time_static.run.unix
   run_started_at_epoch = var.run_started_at_epoch != 0 ? var.run_started_at_epoch : time_static.run.unix
+  # The AWS provider marks every SSM value sensitive. This value is retrieved
+  # without SecureString decryption and validated as an AMI ID before use.
+  ubuntu_ami_id = nonsensitive(data.aws_ssm_parameter.ubuntu_ami.value)
 
   echidna_ci_inputs = [
     var.echidna_ci_repo,
@@ -112,7 +115,7 @@ locals {
     timeout_hours                = var.timeout_hours
     preliminary_interval_seconds = var.preliminary_interval_seconds
     aws_region                   = var.aws_region
-    ubuntu_ami_id                = data.aws_ssm_parameter.ubuntu_ami.value
+    ubuntu_ami_id                = local.ubuntu_ami_id
     foundry_version              = local.foundry_release_version
     foundry_git_repo             = var.foundry_git_repo
     foundry_git_ref              = var.foundry_git_ref
@@ -308,7 +311,15 @@ resource "random_id" "suffix" {
 resource "time_static" "run" {}
 
 data "aws_ssm_parameter" "ubuntu_ami" {
-  name = var.ubuntu_ami_ssm_parameter
+  name            = var.ubuntu_ami_ssm_parameter
+  with_decryption = false
+
+  lifecycle {
+    postcondition {
+      condition     = can(regex("^ami-[0-9a-f]{8}([0-9a-f]{9})?$", nonsensitive(self.value)))
+      error_message = "ubuntu_ami_ssm_parameter must resolve to an AMI ID."
+    }
+  }
 }
 
 data "aws_caller_identity" "current" {}
@@ -690,7 +701,7 @@ resource "terraform_data" "bootstrap_source_guard" {
 resource "aws_instance" "fuzzer" {
   for_each = local.instance_map
 
-  ami                         = data.aws_ssm_parameter.ubuntu_ami.value
+  ami                         = local.ubuntu_ami_id
   instance_type               = var.instance_type
   associate_public_ip_address = true
   subnet_id                   = aws_subnet.public.id
