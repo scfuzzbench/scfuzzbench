@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import awsCosts from "../generated/aws-costs.json";
 import grantWallet from "../generated/grant-wallet.json";
 
@@ -15,6 +15,8 @@ type ServiceCost = {
   cost_usd: number;
   share_of_total_pct: number;
 };
+
+type CashFlowMode = "monthly" | "cumulative";
 
 type CostPayload = {
   available: boolean;
@@ -48,6 +50,7 @@ type GrantPayload = {
 
 const costs = awsCosts as CostPayload;
 const wallet = grantWallet as GrantPayload;
+const cashFlowMode = ref<CashFlowMode>("monthly");
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -58,6 +61,11 @@ const compactCurrencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: wallet.currency || costs.currency || "USD",
   notation: "compact",
+  maximumFractionDigits: 1,
+});
+const roundedCurrencyFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: wallet.currency || costs.currency || "USD",
   maximumFractionDigits: 0,
 });
 const updatedAtFormatter = new Intl.DateTimeFormat("en-US", {
@@ -83,16 +91,44 @@ const estimatedRunway = computed<number | null>(() => {
   }
   return trackedFunding.value - awsCostsToDate.value;
 });
-const cashFlowRows = computed(() =>
-  historyMonths.value
-    .slice(-6)
-    .map((month) => ({ ...month, cash_flow_usd: -month.total_usd }))
-);
-const monthlyMax = computed(() =>
-  Math.max(...cashFlowRows.value.map((month) => Math.abs(month.cash_flow_usd)), 0)
+const cashFlowRows = computed(() => {
+  let cumulativeCashFlow = 0;
+  return historyMonths.value.map((month) => {
+    const monthlyCashFlow = -month.total_usd;
+    cumulativeCashFlow += monthlyCashFlow;
+    return {
+      ...month,
+      cash_flow_usd:
+        cashFlowMode.value === "cumulative" ? cumulativeCashFlow : monthlyCashFlow,
+    };
+  });
+});
+const cashFlowScale = computed(() => {
+  const values = cashFlowRows.value.map((month) => month.cash_flow_usd);
+  const minimum = Math.min(0, ...values);
+  const maximum = Math.max(0, ...values);
+  const span = maximum - minimum || 1;
+  return {
+    span,
+    verticalZero: (maximum / span) * 100,
+    inlineZero: (-minimum / span) * 100,
+  };
+});
+const cashFlowScaleStyle = computed(() => ({
+  "--zero-position": `${cashFlowScale.value.verticalZero}%`,
+  "--zero-inline-position": `${cashFlowScale.value.inlineZero}%`,
+}));
+const cashFlowViewLabel = computed(() =>
+  cashFlowMode.value === "cumulative" ? "Cumulative AWS outflow" : "Monthly AWS outflow"
 );
 const cashFlowPeriod = computed(() =>
-  cashFlowRows.value.length === 1 ? "Latest month" : `Latest ${cashFlowRows.value.length} months`
+  cashFlowRows.value.length === 1 ? "1 month" : `All ${cashFlowRows.value.length} months`
+);
+const cashFlowStatus = computed(
+  () =>
+    `Showing ${cashFlowMode.value} AWS outflow for ${
+      cashFlowRows.value.length === 1 ? "1 month" : `all ${cashFlowRows.value.length} months`
+    }.`
 );
 const serviceRows = computed<ServiceCost[]>(() => {
   const rows = [...(costs.current_month?.by_service ?? [])]
@@ -132,9 +168,17 @@ function formatUsd(value: number | null): string {
 
 function formatCompactCashFlow(value: number): string {
   if (Math.abs(value) < 0.005) {
-    return currencyFormatter.format(0);
+    return roundedCurrencyFormatter.format(0);
   }
-  const formatted = compactCurrencyFormatter.format(Math.abs(value));
+  const absoluteValue = Math.abs(value);
+  let formatted: string;
+  if (absoluteValue < 10) {
+    formatted = currencyFormatter.format(absoluteValue);
+  } else if (absoluteValue < 1000) {
+    formatted = roundedCurrencyFormatter.format(absoluteValue);
+  } else {
+    formatted = compactCurrencyFormatter.format(absoluteValue);
+  }
   return value > 0 ? `+${formatted}` : `−${formatted}`;
 }
 
@@ -142,12 +186,22 @@ function monthAbbreviation(label: string): string {
   return label.split(/\s+/)[0] || label;
 }
 
-function monthlyBarHeight(value: number): string {
-  if (monthlyMax.value === 0 || Math.abs(value) < 0.005) {
+function abbreviatedYear(label: string): string {
+  const year = label.match(/\b(\d{4})\b/)?.[1];
+  return year ? `’${year.slice(-2)}` : "";
+}
+
+function cashFlowBarSize(value: number): string {
+  if (Math.abs(value) < 0.005) {
     return "0%";
   }
-  const percentage = (Math.abs(value) / monthlyMax.value) * 100;
-  return `${Math.max(percentage, 3)}%`;
+  return `${(Math.abs(value) / cashFlowScale.value.span) * 100}%`;
+}
+
+function cashFlowAriaLabel(month: MonthBucket & { cash_flow_usd: number }): string {
+  const view = cashFlowMode.value === "cumulative" ? "cumulative AWS cash flow" : "AWS cash flow";
+  const estimate = month.estimated ? ", month-to-date estimate" : "";
+  return `${month.label}: ${formatCompactCashFlow(month.cash_flow_usd)} ${view}${estimate}`;
 }
 
 function serviceBarWidth(value: number): string {
@@ -201,14 +255,35 @@ function formatUpdatedAt(value: string): string {
 
     <section class="finance-charts" aria-label="AWS cost charts">
       <article class="chart-card" aria-labelledby="cash-flow-title">
-        <header class="chart-card__heading">
+        <header class="chart-card__heading chart-card__heading--cash-flow">
           <div>
             <p class="chart-card__eyebrow">Cash flow</p>
-            <h2 id="cash-flow-title">Monthly AWS outflow</h2>
+            <h2 id="cash-flow-title">AWS outflow</h2>
           </div>
-          <span v-if="cashFlowRows.length" class="chart-card__period">
-            {{ cashFlowPeriod }}
-          </span>
+          <div v-if="cashFlowRows.length" class="chart-card__controls">
+            <span class="chart-card__period">{{ cashFlowPeriod }}</span>
+            <div class="cash-flow-toggle" role="group" aria-label="Cash flow view">
+              <button
+                type="button"
+                :aria-pressed="cashFlowMode === 'monthly'"
+                aria-controls="aws-cash-flow-chart"
+                @click="cashFlowMode = 'monthly'"
+              >
+                Monthly
+              </button>
+              <button
+                type="button"
+                :aria-pressed="cashFlowMode === 'cumulative'"
+                aria-controls="aws-cash-flow-chart"
+                @click="cashFlowMode = 'cumulative'"
+              >
+                Cumulative
+              </button>
+            </div>
+          </div>
+          <p v-if="cashFlowRows.length" class="visually-hidden" aria-live="polite">
+            {{ cashFlowStatus }}
+          </p>
         </header>
 
         <div v-if="!costs.available" class="chart-card__empty" role="status">
@@ -221,38 +296,45 @@ function formatUpdatedAt(value: string): string {
           <span>Monthly outflow will appear when costs are published.</span>
         </div>
 
-        <figure v-else class="monthly-chart">
+        <figure v-else id="aws-cash-flow-chart" class="monthly-chart">
           <ol
             class="monthly-chart__plot"
-            aria-label="Recent AWS outflow by month"
+            :aria-label="cashFlowViewLabel"
             :style="{ '--month-count': cashFlowRows.length }"
           >
             <li
               v-for="month in cashFlowRows"
               :key="month.key"
               class="monthly-chart__item"
-              :aria-label="`${month.label}: ${formatCompactCashFlow(month.cash_flow_usd)}${month.estimated ? ', month-to-date estimate' : ''}`"
+              :aria-label="cashFlowAriaLabel(month)"
             >
               <span class="monthly-chart__amount" aria-hidden="true">
                 {{ formatCompactCashFlow(month.cash_flow_usd) }}
               </span>
-              <span class="monthly-chart__track" aria-hidden="true">
+              <span
+                class="monthly-chart__track"
+                :style="cashFlowScaleStyle"
+                aria-hidden="true"
+              >
                 <span
+                  v-if="Math.abs(month.cash_flow_usd) >= 0.005"
                   class="monthly-chart__bar"
                   :class="{ 'monthly-chart__bar--inflow': month.cash_flow_usd > 0 }"
-                  :style="{ height: monthlyBarHeight(month.cash_flow_usd) }"
+                  :style="{ '--bar-size': cashFlowBarSize(month.cash_flow_usd) }"
                 />
               </span>
               <span class="monthly-chart__month" aria-hidden="true">
-                {{ monthAbbreviation(month.label) }}
+                <span>{{ monthAbbreviation(month.label) }}</span>
+                <span class="monthly-chart__year">{{ abbreviatedYear(month.label) }}</span>
               </span>
-              <span class="monthly-chart__estimate" aria-hidden="true">
-                {{ month.estimated ? "MTD" : "" }}
+              <span v-if="month.estimated" class="monthly-chart__estimate" aria-hidden="true">
+                MTD
               </span>
             </li>
           </ol>
-          <figcaption class="visually-hidden">
-            Negative values are AWS spending. MTD marks the current month-to-date estimate.
+          <figcaption class="monthly-chart__caption">
+            <span>Bars start at zero. Outflows are negative; credits appear positive.</span>
+            <span v-if="cashFlowRows.some((month) => month.estimated)">MTD is estimated.</span>
           </figcaption>
         </figure>
       </article>
@@ -405,7 +487,7 @@ function formatUpdatedAt(value: string): string {
   align-items: stretch;
   display: grid;
   gap: 1rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
 }
 
@@ -433,6 +515,13 @@ function formatUpdatedAt(value: string): string {
   min-width: 0;
 }
 
+.chart-card__controls {
+  align-items: end;
+  display: grid;
+  gap: 0.5rem;
+  justify-items: end;
+}
+
 .chart-card__heading h2 {
   border-top: 0;
   font-size: 1.05rem;
@@ -449,6 +538,45 @@ function formatUpdatedAt(value: string): string {
   line-height: 1.35;
   max-width: 7rem;
   text-align: right;
+}
+
+.cash-flow-toggle {
+  background: color-mix(in srgb, var(--vp-c-bg) 64%, transparent);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 9px;
+  display: inline-grid;
+  gap: 0.15rem;
+  grid-auto-flow: column;
+  padding: 0.18rem;
+}
+
+.cash-flow-toggle button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--vp-c-text-2);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 0.38rem 0.58rem;
+}
+
+.cash-flow-toggle button:hover {
+  color: var(--vp-c-text-1);
+}
+
+.cash-flow-toggle button[aria-pressed="true"] {
+  background: var(--vp-c-bg);
+  box-shadow: inset 0 0 0 1px var(--vp-c-divider);
+  color: var(--vp-c-brand-1);
+}
+
+.cash-flow-toggle button:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
 }
 
 .chart-card__empty {
@@ -468,6 +596,7 @@ function formatUpdatedAt(value: string): string {
 .monthly-chart {
   align-self: stretch;
   display: grid;
+  gap: 0.7rem;
   margin: 0;
   min-width: 0;
 }
@@ -485,7 +614,7 @@ function formatUpdatedAt(value: string): string {
 .monthly-chart__item {
   display: grid;
   gap: 0.25rem;
-  grid-template-rows: auto minmax(7rem, 1fr) auto 0.75rem;
+  grid-template-rows: 1rem minmax(8rem, 1fr) auto 0.75rem;
   min-width: 0;
   text-align: center;
 }
@@ -500,22 +629,37 @@ function formatUpdatedAt(value: string): string {
 }
 
 .monthly-chart__track {
-  align-items: end;
-  background: color-mix(in srgb, var(--vp-c-brand-soft) 38%, transparent);
-  border-radius: 6px 6px 3px 3px;
-  display: flex;
+  background: transparent;
   height: 100%;
   justify-self: center;
-  overflow: hidden;
-  width: min(72%, 1.8rem);
+  position: relative;
+  width: min(68%, 2rem);
+}
+
+.monthly-chart__track::before {
+  border-top: 1px solid var(--vp-c-divider);
+  content: "";
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: var(--zero-position);
 }
 
 .monthly-chart__bar {
   background: var(--vp-c-brand-1);
-  border-radius: 5px 5px 2px 2px;
-  display: block;
+  border-radius: 0 0 5px 5px;
+  height: var(--bar-size);
+  left: 0;
   min-height: 1px;
+  position: absolute;
+  top: var(--zero-position);
   width: 100%;
+}
+
+.monthly-chart__bar--inflow {
+  border-radius: 5px 5px 0 0;
+  bottom: calc(100% - var(--zero-position));
+  top: auto;
 }
 
 .monthly-chart__bar--inflow,
@@ -524,9 +668,20 @@ function formatUpdatedAt(value: string): string {
 }
 
 .monthly-chart__month {
+  align-items: baseline;
   color: var(--vp-c-text-2);
+  display: flex;
   font-size: 0.7rem;
   font-weight: 600;
+  gap: 0.18rem;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.monthly-chart__year {
+  color: var(--vp-c-text-3);
+  font-size: 0.62rem;
+  font-weight: 500;
 }
 
 .monthly-chart__estimate {
@@ -536,6 +691,15 @@ function formatUpdatedAt(value: string): string {
   letter-spacing: 0.07em;
   line-height: 1;
   text-transform: uppercase;
+}
+
+.monthly-chart__caption {
+  color: var(--vp-c-text-3);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  gap: 0.2rem 0.8rem;
+  line-height: 1.45;
 }
 
 .service-chart {
@@ -650,12 +814,6 @@ function formatUpdatedAt(value: string): string {
   width: 1px;
 }
 
-@container transparency (max-width: 680px) {
-  .finance-charts {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 @container transparency (max-width: 620px) {
   .finance-summary {
     grid-template-columns: 1fr;
@@ -664,6 +822,85 @@ function formatUpdatedAt(value: string): string {
   .finance-summary__item + .finance-summary__item {
     border-left: 0;
     border-top: 1px solid var(--vp-c-divider);
+  }
+
+  .chart-card__heading--cash-flow {
+    flex-direction: column;
+  }
+
+  .chart-card__controls {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .monthly-chart__plot {
+    gap: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .monthly-chart__item {
+    align-items: center;
+    gap: 0.35rem 0.65rem;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto 0.5rem auto;
+    padding: 0.5rem 0;
+    text-align: left;
+  }
+
+  .monthly-chart__item + .monthly-chart__item {
+    border-top: 1px solid var(--vp-c-divider);
+  }
+
+  .monthly-chart__amount {
+    grid-column: 2;
+    grid-row: 1;
+    text-align: right;
+  }
+
+  .monthly-chart__track {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    height: 100%;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .monthly-chart__track::before {
+    border-left: 1px solid var(--vp-c-divider);
+    border-top: 0;
+    bottom: 0;
+    left: var(--zero-inline-position);
+    right: auto;
+    top: 0;
+  }
+
+  .monthly-chart__bar {
+    border-radius: 999px 0 0 999px;
+    bottom: 0;
+    height: 100%;
+    left: auto;
+    right: calc(100% - var(--zero-inline-position));
+    top: 0;
+    width: var(--bar-size);
+  }
+
+  .monthly-chart__bar--inflow {
+    border-radius: 0 999px 999px 0;
+    left: var(--zero-inline-position);
+    right: auto;
+  }
+
+  .monthly-chart__month {
+    grid-column: 1;
+    grid-row: 1;
+    justify-content: start;
+  }
+
+  .monthly-chart__estimate {
+    grid-column: 1;
+    grid-row: 3;
   }
 
   .transparency-sources__meta {
@@ -681,12 +918,14 @@ function formatUpdatedAt(value: string): string {
     gap: 0.45rem;
   }
 
-  .monthly-chart__plot {
-    gap: 0.15rem;
+  .chart-card__controls {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
-  .monthly-chart__amount {
-    font-size: 0.54rem;
+  .cash-flow-toggle button {
+    padding-left: 0.45rem;
+    padding-right: 0.45rem;
   }
 }
 </style>
