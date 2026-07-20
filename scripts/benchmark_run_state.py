@@ -1141,7 +1141,15 @@ def cmd_discover_cleanup(args: argparse.Namespace) -> int:
         raise ValueError("forced cleanup run_id does not match requested run_id")
     selected_run_id = force_run_id or requested_run_id
     if selected_run_id:
-        keys = [f"{ACTIVE_PREFIX}{selected_run_id}.json"]
+        active_key = f"{ACTIVE_PREFIX}{selected_run_id}.json"
+        if not active_reservation_exists(args.bucket, selected_run_id):
+            print(
+                json.dumps(
+                    {"include": []}, separators=(",", ":"), sort_keys=True
+                )
+            )
+            return 0
+        keys = [active_key]
     else:
         keys = list_s3_keys(args.bucket, ACTIVE_PREFIX)
     instances = active_benchmark_instances()
@@ -1208,7 +1216,7 @@ def cmd_discover_cleanup(args: argparse.Namespace) -> int:
                     }
                 )
         except Exception as exc:
-            if force_run_id:
+            if selected_run_id:
                 raise
             print(f"Skipping malformed cleanup reservation {key}: {exc}", file=sys.stderr)
     print(json.dumps({"include": include}, separators=(",", ":"), sort_keys=True))
