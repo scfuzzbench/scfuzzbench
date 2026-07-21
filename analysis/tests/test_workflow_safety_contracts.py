@@ -505,6 +505,85 @@ exit "${{status}}"
             with self.subTest(body=body[:80]):
                 self.assertNotIn("${{ matrix.", body)
 
+    def test_force_reanalysis_refreshes_existing_release_notes(self):
+        release = job_blocks(workflow("benchmark-release.yml"))["release"]
+        condition = (
+            "if: ${{ steps.release_check.outputs.exists != 'true' "
+            "|| inputs.force_reanalyze == 'true' }}"
+        )
+        compose = release[
+            release.index("- name: Compose release body") :
+            release.index("- name: Create or update GitHub release")
+        ]
+        publish = release[
+            release.index("- name: Create or update GitHub release") :
+            release.index("- name: Close preliminary stream")
+        ]
+
+        self.assertIn(condition, compose)
+        self.assertIn(condition, publish)
+        self.assertIn(
+            "RELEASE_EXISTS: ${{ steps.release_check.outputs.exists }}",
+            publish,
+        )
+        self.assertIn('if [[ "${RELEASE_EXISTS}" == "true" ]]; then', publish)
+        self.assertIn('gh release edit "${RELEASE_TAG}"', publish)
+        self.assertIn('gh release create "${RELEASE_TAG}"', publish)
+        self.assertIn('--notes-file "${RELEASE_BODY}"', publish)
+
+        body = next(
+            body
+            for body in run_bodies(workflow("benchmark-release.yml"))
+            if 'gh release edit "${RELEASE_TAG}"' in body
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            fake_gh = temp / "gh"
+            calls = temp / "calls"
+            release_body = temp / "RELEASE.md"
+            fake_gh.write_text(
+                '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${GH_CALLS}"\n'
+            )
+            fake_gh.chmod(0o755)
+            release_body.write_text("fresh report\n")
+            env = os.environ.copy()
+            env.update(
+                {
+                    "GH_CALLS": str(calls),
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "PATH": f"{temp}:{env['PATH']}",
+                    "RELEASE_BODY": str(release_body),
+                    "RELEASE_TAG": "canonical-tag",
+                }
+            )
+
+            for exists, expected_action in (
+                ("true", "edit"),
+                ("false", "create"),
+            ):
+                with self.subTest(release_exists=exists):
+                    calls.write_text("")
+                    env["RELEASE_EXISTS"] = exists
+                    subprocess.run(
+                        ["bash", "-c", body],
+                        check=True,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                    )
+                    invocation = calls.read_text().splitlines()
+                    self.assertEqual(1, len(invocation))
+                    self.assertTrue(
+                        invocation[0].startswith(
+                            f"release {expected_action} canonical-tag "
+                        )
+                    )
+                    self.assertIn("--repo owner/repo", invocation[0])
+                    self.assertIn(
+                        f"--notes-file {release_body}",
+                        invocation[0],
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
