@@ -408,6 +408,12 @@ def valid_coverage_counter(value: Optional[float]) -> Optional[float]:
     return value
 
 
+def valid_failure_rate(value: Optional[float]) -> Optional[float]:
+    if value is None or not math.isfinite(value) or value < 0.0 or value > 1.0:
+        return None
+    return value
+
+
 def parse_coverage_from_payload(
     payload: Dict[str, Any], fuzzer: str
 ) -> Tuple[Optional[float], Optional[str]]:
@@ -447,7 +453,13 @@ def parse_coverage_from_text(
     return None, None
 
 
-def parse_failure_rate_from_text(line: str) -> Optional[float]:
+def parse_failure_rate_from_text(line: str, *, fuzzer: str) -> Optional[float]:
+    # Medusa's native `failures: X/Y` counters are failed shrink callbacks
+    # divided by tested sequences. Multiple callbacks can belong to one
+    # sequence, so this is an unbounded diagnostic ratio, not a failure rate.
+    if fuzzer == "medusa":
+        return None
+
     for pattern in FAILURE_RATE_PATTERNS:
         match = pattern.search(line)
         if not match:
@@ -456,7 +468,7 @@ def parse_failure_rate_from_text(line: str) -> Optional[float]:
         total = parse_optional_float(match.group(2))
         if failures is None or total is None or total <= 0.0:
             return None
-        return failures / total
+        return valid_failure_rate(failures / total)
     return None
 
 
@@ -514,7 +526,9 @@ def parse_progress_metrics_from_payload(
         coverage_proxy, coverage_signal = parse_coverage_from_payload(payload, fuzzer)
     corpus_size = pick_metric_value(metric_values, CORPUS_KEYS)
     favored_items = pick_metric_value(metric_values, FAVORED_KEYS)
-    failure_rate = pick_metric_value(metric_values, ("failure_rate", "fail_rate"))
+    failure_rate = valid_failure_rate(
+        pick_metric_value(metric_values, ("failure_rate", "fail_rate"))
+    )
 
     if failure_rate is None:
         failed_current = pick_metric_value(metric_values, FAILED_CURRENT_KEYS)
@@ -524,7 +538,7 @@ def parse_progress_metrics_from_payload(
             and failed_total is not None
             and failed_total > 0.0
         ):
-            failure_rate = failed_current / failed_total
+            failure_rate = valid_failure_rate(failed_current / failed_total)
 
     if (
         seq_per_second is None
@@ -1246,7 +1260,10 @@ def parse_progress_metrics_log(
                         clean_line, fuzzer
                     )
                 corpus_size = parse_count_from_text(clean_line, CORPUS_PATTERNS)
-                failure_rate = parse_failure_rate_from_text(clean_line)
+                failure_rate = parse_failure_rate_from_text(
+                    clean_line,
+                    fuzzer=fuzzer,
+                )
                 if (
                     seq_per_second is not None
                     or coverage_proxy is not None
