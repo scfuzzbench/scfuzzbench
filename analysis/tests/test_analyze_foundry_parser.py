@@ -37,11 +37,9 @@ class FoundryParserTests(unittest.TestCase):
 
     def test_handler_assertion_events_do_not_name_bugs_by_address(self):
         # foundry-rs/foundry#15689 emits mid-run handler-assertion failure
-        # events whose `target` is the harness contract ADDRESS and whose only
-        # function identity is a 4-byte `selector`. Naming by address would
-        # collapse every handler bug into one identity and double-count against
-        # the end-of-run summary, so these events must stay unnamed; identity
-        # comes from the summary lines.
+        # events whose `target` is the harness contract ADDRESS. Selectors other
+        # than the standardized assertion canary must stay unnamed; naming by
+        # address would collapse every handler bug into one identity.
         log_path = self.write_log(
             [
                 '{"timestamp":100,"event":"pulse","metrics":{"cumulative_edges_seen":1}}',
@@ -63,6 +61,98 @@ class FoundryParserTests(unittest.TestCase):
         self.assertIn("assert_canary_ASSERTION_CANARY", names)
         self.assertNotIn("0x7fa9385be102ac3eac297483dd6233d62b3e1496", names)
         self.assertEqual(len(names), len(set(names)))
+
+    def test_names_standardized_canary_selector_in_preliminary_log(self):
+        # Exact handler-assertion and pulse shape captured from both Liquity CP1
+        # replicas. A preliminary snapshot has no terminal assertion summary.
+        log_path = self.write_log(
+            [
+                '{"timestamp":1784625666,"event":"failure","invariant":"invariant_GV01",'
+                '"target":"test/recon/CryticToFoundry.sol:CryticToFoundry","reason":"x"}',
+                '{"timestamp":1784625666,"event":"failure","invariant":"invariant_canary",'
+                '"target":"test/recon/CryticToFoundry.sol:CryticToFoundry","reason":"x"}',
+                '{"timestamp":1784625666,"event":"failure","invariant":"invariant_BI03",'
+                '"target":"test/recon/CryticToFoundry.sol:CryticToFoundry","reason":"x"}',
+                '{"timestamp":1784625666,"event":"failure","invariant":"invariant_BI04",'
+                '"target":"test/recon/CryticToFoundry.sol:CryticToFoundry","reason":"x"}',
+                '{"timestamp":1784625666,"event":"failure","failure_type":"handler_assertion",'
+                '"target":"0x7fa9385be102ac3eac297483dd6233d62b3e1496",'
+                '"selector":"0xf24a44c9","reason":"assertion failed"}',
+                '{"timestamp":1784625671,"event":"pulse",'
+                '"contract":"test/recon/CryticToFoundry.sol:CryticToFoundry",'
+                '"metrics":{"broken_invariants":4,"broken_assertions":1}}',
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+
+        self.assertEqual(
+            [event.event for event in events],
+            [
+                "invariant_GV01",
+                "invariant_canary",
+                "invariant_BI03",
+                "invariant_BI04",
+                "assert_canary_ASSERTION_CANARY",
+            ],
+        )
+        self.assertEqual(events[-1].source, "foundry-handler-selector")
+        self.assertAlmostEqual(events[-1].elapsed_seconds, 0.0)
+        self.assertNotIn("foundry_handler_bug_1", [event.event for event in events])
+
+    def test_unknown_handler_selector_keeps_synthetic_fallback(self):
+        partial_lines = [
+            '{"timestamp":100,"event":"failure","failure_type":"handler_assertion",'
+            '"target":"0x7fa9385be102ac3eac297483dd6233d62b3e1496",'
+            '"selector":"0xdeadbeef","reason":"assertion failed"}',
+            '{"timestamp":105,"event":"pulse","contract":"CryticToFoundry",'
+            '"metrics":{"broken_invariants":0,"broken_assertions":1}}',
+        ]
+        log_path = self.write_log(partial_lines)
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+
+        self.assertEqual([event.event for event in events], ["foundry_handler_bug_1"])
+        self.assertEqual(events[0].source, "foundry-broken-handler-metric")
+        self.assertAlmostEqual(events[0].elapsed_seconds, 5.0)
+
+        terminal_log_path = self.write_log(
+            partial_lines
+            + [
+                "[FAIL: panic: assertion failed (0x01)] "
+                "test/recon/CryticToFoundry.sol:CryticToFoundry::unknown_handler"
+            ]
+        )
+        terminal_events = analyze.parse_foundry_log(
+            terminal_log_path, "run-1", "i-1", "foundry-git-test"
+        )
+
+        self.assertEqual([event.event for event in terminal_events], ["unknown_handler"])
+        self.assertEqual(terminal_events[0].source, "foundry-handler-summary")
+        self.assertAlmostEqual(terminal_events[0].elapsed_seconds, 5.0)
+
+    def test_terminal_summary_dedupes_standardized_canary_selector(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"failure","failure_type":"handler_assertion",'
+                '"target":"0x7fa9385be102ac3eac297483dd6233d62b3e1496",'
+                '"selector":"0xf24a44c9","reason":"assertion failed"}',
+                '{"timestamp":105,"event":"pulse","contract":"CryticToFoundry",'
+                '"metrics":{"broken_invariants":0,"broken_assertions":1}}',
+                "[FAIL: assertion failed] "
+                "test/recon/CryticToFoundry.sol:CryticToFoundry::"
+                "assert_canary_ASSERTION_CANARY",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+
+        self.assertEqual(
+            [event.event for event in events],
+            ["assert_canary_ASSERTION_CANARY"],
+        )
+        self.assertEqual(events[0].source, "foundry-handler-selector")
+        self.assertAlmostEqual(events[0].elapsed_seconds, 0.0)
 
     def test_parses_legacy_foundry_failure_records(self):
         log_path = self.write_log(
