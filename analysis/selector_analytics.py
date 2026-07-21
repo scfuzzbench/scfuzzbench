@@ -26,7 +26,10 @@ from Crypto.Hash import keccak
 
 SCHEMA_VERSION = 1
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
-MAX_INSTANCE_ARTIFACT_BYTES = 512 * 1024 * 1024
+# Four-hour Medusa corpora can legitimately exceed 512 MiB. Keep a finite
+# aggregate ceiling while allowing ten individually bounded artifacts' worth
+# of decompressed corpus data per instance.
+MAX_INSTANCE_ARTIFACT_BYTES = 640 * 1024 * 1024
 MAX_ARTIFACT_FILES = 20_000
 MAX_DISCOVERED_ENTRIES = 100_000
 MAX_TRAVERSAL_DEPTH = 32
