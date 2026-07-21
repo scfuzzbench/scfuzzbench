@@ -49,6 +49,13 @@ FOUNDRY_RESULT_NAME_RE = re.compile(r"(?:\[[^\]]+\]\s+)?([A-Za-z_][A-Za-z0-9_]*)
 FOUNDRY_HANDLER_SUMMARY_RE = re.compile(
     r"\[FAIL[^\]]*\]\s+\S+:([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)"
 )
+# Standardized assertion-path canary used by every benchmark harness. Its entry
+# is keccak256("assert_canary_ASSERTION_CANARY(uint256)")[:4]. Foundry's mid-run
+# handler-assertion event reports only that ABI selector; the function name is
+# otherwise unavailable until the graceful end-of-run summary.
+FOUNDRY_HANDLER_SELECTOR_NAMES = {
+    "0xf24a44c9": "assert_canary_ASSERTION_CANARY",
+}
 # Invariant entries in the end-of-run summary are bare names with no parens or
 # path prefix: "[FAIL: ] invariant_canary", "[FAIL: panic: ... (0x12)] invariant_x".
 # FOUNDRY_FAIL_LINE_RE requires a "(" and the handler regex requires "::", so
@@ -630,13 +637,17 @@ def extract_foundry_failure(payload: Dict[str, Any]) -> Tuple[Optional[str], Opt
         return None, None, None
 
     if str(payload.get("event") or "").strip() == "failure":
-        # Handler-assertion failure events (foundry-rs/foundry#15689) carry no
-        # function name — only the harness contract *address* in `target` and a
-        # 4-byte `selector`. Naming by address would collapse every handler bug
-        # into one identity and double-count against the end-of-run summary
-        # (which names them properly), so leave these unnamed here: identity
-        # still comes from the summary plus the broken_assertions pulse counts.
+        # Handler-assertion failure events (foundry-rs/foundry#15689) carry the
+        # harness contract address and a 4-byte selector, but no function name.
+        # Resolve only the suite-wide standardized canary selector so
+        # preliminary snapshots can attribute that health check. All unknown
+        # selectors stay unnamed and retain the broken_assertions pulse plus
+        # end-of-run summary path below.
         if str(payload.get("failure_type") or "").strip() == "handler_assertion":
+            selector = str(payload.get("selector") or "").strip().lower()
+            handler_name = FOUNDRY_HANDLER_SELECTOR_NAMES.get(selector)
+            if handler_name:
+                return handler_name, ts_value, "foundry-handler-selector"
             return None, ts_value, None
         # Prefer the per-invariant identity so distinct invariant failures are
         # counted as distinct bugs. The `target` field is the harness contract
