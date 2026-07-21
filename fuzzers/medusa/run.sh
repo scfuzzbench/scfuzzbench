@@ -55,9 +55,10 @@ run_medusa_with_effective_config() (
     exit 1
   fi
 
-  # Shrinking is performed inline by the worker that found a failure. Keep its
-  # exploration-budget cost equal to the other benchmark legs, independently
-  # of the separate background corpus-pruning control above.
+  # Shrinking is performed inline by the worker that found a failure. Use the
+  # same numeric tool-native limit as the other benchmark legs, independently
+  # of the separate background corpus-pruning control above. The algorithms
+  # and work performed by one tool-native iteration are not equivalent.
   local medusa_shrink_limit="${MEDUSA_SHRINK_LIMIT-1}"
   if ! [[ "${medusa_shrink_limit}" =~ ^[0-9]+$ ]]; then
     log "Invalid MEDUSA_SHRINK_LIMIT='${medusa_shrink_limit}'; expected a non-negative integer."
@@ -67,6 +68,44 @@ run_medusa_with_effective_config() (
   if ! command -v python3 >/dev/null 2>&1; then
     log "python3 is required to create the effective Medusa config."
     exit 1
+  fi
+
+  # The generated config must remain the only --config value. Medusa accepts
+  # duplicates and the last value wins, so an unchecked extra argument could
+  # bypass both shrink-limit and pruning normalization. Parse quoting without
+  # shell evaluation before creating or launching with the effective config.
+  local -a medusa_extra_args=()
+  if [[ -n "${MEDUSA_EXTRA_ARGS:-}" ]]; then
+    mapfile -d '' -t medusa_extra_args < <(
+      python3 - "${MEDUSA_EXTRA_ARGS}" <<'PY'
+import shlex
+import sys
+
+try:
+    args = shlex.split(sys.argv[1], comments=False, posix=True)
+except ValueError as exc:
+    print(f"Invalid MEDUSA_EXTRA_ARGS: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+
+for arg in args:
+    sys.stdout.buffer.write(arg.encode() + b"\0")
+PY
+    )
+    local parser_pid
+    parser_pid=$!
+    if ! wait "${parser_pid}"; then
+      log "MEDUSA_EXTRA_ARGS must use valid shell-style quoting."
+      exit 1
+    fi
+    local extra_arg
+    for extra_arg in "${medusa_extra_args[@]}"; do
+      case "${extra_arg}" in
+        --config|--config=*)
+          log "MEDUSA_EXTRA_ARGS may not override the generated --config."
+          exit 1
+          ;;
+      esac
+    done
   fi
 
   local medusa_source_config=""
@@ -161,10 +200,8 @@ sys.stdout.write('\\n')
   if [[ -n "${MEDUSA_WORKERS:-}" ]]; then
     cmd+=(--workers "${MEDUSA_WORKERS}")
   fi
-  if [[ -n "${MEDUSA_EXTRA_ARGS:-}" ]]; then
-    local -a extra_args=()
-    read -r -a extra_args <<< "${MEDUSA_EXTRA_ARGS}"
-    cmd+=("${extra_args[@]}")
+  if ((${#medusa_extra_args[@]} > 0)); then
+    cmd+=("${medusa_extra_args[@]}")
   fi
   cmd+=(--corpus-dir "${SCFUZZBENCH_CORPUS_DIR}")
 

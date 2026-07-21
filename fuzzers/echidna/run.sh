@@ -137,7 +137,17 @@ PY
     esac
     if [[ "${arg}" == "--shrink-limit" || "${arg}" == --shrink-limit=* ]]; then
       if [[ ! "${shrink_limit_value}" =~ ^[0-9]+$ ]]; then
-        log "ECHIDNA_EXTRA_ARGS --shrink-limit must be a non-negative integer."
+        log "ECHIDNA_EXTRA_ARGS --shrink-limit must be a non-negative integer in [0, 9223372036854775807]."
+        exit 1
+      fi
+      if ! python3 - "${shrink_limit_value}" <<'PY'
+import sys
+
+if int(sys.argv[1]) > 2**63 - 1:
+    raise SystemExit(1)
+PY
+      then
+        log "ECHIDNA_EXTRA_ARGS --shrink-limit must be a non-negative integer in [0, 9223372036854775807]."
         exit 1
       fi
     fi

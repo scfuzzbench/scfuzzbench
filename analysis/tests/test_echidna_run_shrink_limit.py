@@ -141,6 +141,22 @@ class EchidnaRunShrinkLimitTests(unittest.TestCase):
                 self.assertIn("--server", args)
                 self.assertIn("3000", args)
 
+    def test_accepts_pinned_amd64_int_maximum(self):
+        maximum = str(2**63 - 1)
+
+        args = self.run_main_command(extra_args=f"--shrink-limit {maximum}")
+
+        self.assertEqual(self.shrink_limit_values(args), [maximum])
+
+    def test_rejects_values_above_pinned_amd64_int_maximum(self):
+        for value in (str(2**63), "9" * 200):
+            with self.subTest(value=value):
+                result, args = self.run_script(extra_args=f"--shrink-limit {value}")
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(args, [])
+                self.assertIn("[0, 9223372036854775807]", result.stderr)
+
     def test_shell_quoting_preserves_one_argument_without_evaluation(self):
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "injected"

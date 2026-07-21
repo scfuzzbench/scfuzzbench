@@ -116,7 +116,17 @@ PY
     esac
     if [[ "${arg}" == "--shrink-limit" || "${arg}" == --shrink-limit=* ]]; then
       if [[ ! "${shrink_limit_value}" =~ ^[0-9]+$ ]]; then
-        log "RECON_EXTRA_ARGS --shrink-limit must be a non-negative integer."
+        log "RECON_EXTRA_ARGS --shrink-limit must be a non-negative integer in [0, 2147483647]."
+        exit 1
+      fi
+      if ! python3 - "${shrink_limit_value}" <<'PY'
+import sys
+
+if int(sys.argv[1]) > 2**31 - 1:
+    raise SystemExit(1)
+PY
+      then
+        log "RECON_EXTRA_ARGS --shrink-limit must be a non-negative integer in [0, 2147483647]."
         exit 1
       fi
     fi
@@ -125,8 +135,8 @@ PY
 fi
 
 # Recon's CLI value overrides shrinkLimit from the shared Echidna-format target
-# config. Match the other benchmark legs' worker-local shrinking budget unless
-# the operator explicitly requested a different non-comparative experiment.
+# config. Match the other benchmark legs' numeric tool-native limit unless the
+# operator explicitly requested a different non-comparative experiment.
 if ((shrink_limit_overridden == 0)); then
   cmd+=(--shrink-limit 1)
 fi

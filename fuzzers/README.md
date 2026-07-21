@@ -43,7 +43,7 @@ Notes:
   the canonical `echidna` command without a legacy alias and records
   `tool_provenance.json`.
 - In `property` mode, the runner rewrites `prefix: "invariant_"` to `prefix: "echidna_"` inside the config file so global properties are treated like assertions.
-- The runner passes `--shrink-limit 1` by default, overriding `shrinkLimit` in target configs so shrinking cannot consume a large part of the campaign budget. Set one non-negative `--shrink-limit` in `ECHIDNA_EXTRA_ARGS` for an explicit operator override. Extra arguments support shell-style quoting, but are parsed without shell evaluation.
+- The runner passes `--shrink-limit 1` by default, overriding `shrinkLimit` in target configs so shrinking cannot consume a large part of the campaign budget. Set one integer in `[0, 9223372036854775807]` in `ECHIDNA_EXTRA_ARGS` for an explicit operator override on the pinned amd64 runner. Extra arguments support shell-style quoting, but are parsed without shell evaluation.
 - By default, the runner appends `+RTS -A1g -RTS` to reduce GC overhead on multicore instances.
 - In pinned Echidna 2.3.1, the fuzzing worker that finds a failure also performs its shrinking inline before returning to fuzzing; there is no separate background minimizer. `shrinkLimit` bounds this worker-local work and is configured independently of Medusa corpus pruning.
 
@@ -60,10 +60,11 @@ Notes:
 - In `property` mode, rewrites `prefix: "invariant_"` to `prefix: "echidna_"` in config for global property compatibility.
 - The runner passes `--shrink-limit 1` by default, overriding both Recon's
   built-in limit and `shrinkLimit` in the target's Echidna-format config. Set
-  one non-negative `--shrink-limit` in `RECON_EXTRA_ARGS` for an explicit
-  operator override. The `ECHIDNA_EXTRA_ARGS` compatibility fallback has the
-  same validation. Extra arguments support shell-style quoting without shell
-  evaluation.
+  one integer in `[0, 2147483647]` in `RECON_EXTRA_ARGS` for an explicit
+  operator override. This bound avoids overflow in Recon 0.4.6's signed
+  shrink-progress counter. The `ECHIDNA_EXTRA_ARGS` compatibility fallback has
+  the same validation. Extra arguments support shell-style quoting without
+  shell evaluation.
 
 ## Medusa
 
@@ -74,7 +75,7 @@ Environment variables:
 - `MEDUSA_CONFIG` (optional; defaults to `medusa.json` when present)
 - `MEDUSA_WORKERS`, `MEDUSA_CORPUS_DIR` (repo-relative), `MEDUSA_EXTRA_ARGS`
 - `MEDUSA_PRUNE_FREQUENCY` (non-negative minutes; defaults to `0`, which disables the background corpus-pruner goroutine)
-- `MEDUSA_SHRINK_LIMIT` (non-negative iterations; defaults to `1`)
+- `MEDUSA_SHRINK_LIMIT` (`uint64` iterations; defaults to `1`)
 
 Notes:
 - The pinned Medusa 1.4.1 release controls pruning through
@@ -85,7 +86,9 @@ Notes:
   re-enable periodic pruning for a non-comparative experiment.
 - The same temporary config sets `fuzzing.shrinkLimit` to
   `MEDUSA_SHRINK_LIMIT`, overriding the target config without modifying it.
-  Shrinking and corpus pruning are separate controls.
+  Shrinking and corpus pruning are separate controls. `MEDUSA_EXTRA_ARGS` is
+  parsed with shell-style quoting but without shell evaluation, and may not
+  contain another `--config` because the generated config is authoritative.
 
 Source mode verifies that the ref still resolves to the requested full commit,
 checks digest and size against official Go metadata, stream-extracts with
@@ -99,7 +102,7 @@ Environment variables:
 - `FOUNDRY_VERSION` or (`FOUNDRY_GIT_REPO` + `FOUNDRY_GIT_REF`)
 - `FOUNDRY_THREADS` (defaults to `SCFUZZBENCH_WORKERS`, passes `--threads` to `forge test`)
 - `FOUNDRY_TEST_ARGS` (passed to `forge test`; scfuzzbench adds `--invariant-workers auto` unless this includes an explicit `--invariant-workers` value)
-- `FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT` (non-negative invariant shrink attempts; defaults to `1`)
+- `FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT` (`uint32` invariant shrink attempts; defaults to `1`)
 - `FOUNDRY_CORPUS_DIR` (optional repo-relative path beneath the cloned target)
 - `SCFUZZBENCH_FOUNDRY_KEEP_CORPUS` (`0` or `1`; preserves the invariant corpus when enabled)
 - `SCFUZZBENCH_FOUNDRY_SOURCE_PATCH` (path to the digest-verified throughput pulse patch; cloud and `scripts/local-run.sh` set this automatically for the default pinned source)
@@ -116,10 +119,11 @@ patched.
 
 ## Comparable inline shrinking
 
-Comparative runs give every supported fuzzer one inline shrink attempt per
-finding. Echidna and Recon receive `--shrink-limit 1`, Medusa receives
+Comparative runs set every supported fuzzer's tool-native numeric shrink limit
+to `1`. Echidna and Recon receive `--shrink-limit 1`, Medusa receives
 `fuzzing.shrinkLimit: 1` in its temporary effective config, and Foundry receives
-`FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=1`. The algorithms are tool-specific, but
-all four values bound candidate replays performed by the worker handling a
-finding before exploration continues. Per-tool non-negative overrides are for
-intentional non-comparative experiments.
+`FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=1`. This aligns the configured number, not
+the algorithms, candidate replay count, or CPU work. In particular, one Recon
+shrink iteration may generate and evaluate a parallel batch of candidates.
+Per-tool overrides within the pinned tool's numeric domain are for intentional
+non-comparative experiments.

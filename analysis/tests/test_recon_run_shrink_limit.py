@@ -149,6 +149,22 @@ class ReconRunShrinkLimitTests(unittest.TestCase):
                 self.assertIn("--test-limit", args)
                 self.assertIn("99", args)
 
+    def test_accepts_pinned_i32_maximum(self):
+        maximum = str(2**31 - 1)
+
+        args = self.run_main_command(extra_args=f"--shrink-limit {maximum}")
+
+        self.assertEqual(self.shrink_limit_values(args), [maximum])
+
+    def test_rejects_values_above_pinned_i32_maximum(self):
+        for value in (str(2**31), str(2**64), "9" * 200):
+            with self.subTest(value=value):
+                result, args = self.run_script(extra_args=f"--shrink-limit {value}")
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(args, [])
+                self.assertIn("[0, 2147483647]", result.stderr)
+
     def test_echidna_extra_args_fallback_preserves_explicit_override(self):
         args = self.run_main_command(
             echidna_fallback_args="--test-limit 99 --shrink-limit 6"

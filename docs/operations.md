@@ -423,15 +423,19 @@ keeps the credential out of shell history. Medusa source mode uses
 `--medusa-git-repo`, `--medusa-git-ref`, `--medusa-git-commit`, and optionally
 the two `--medusa-go-*` overrides.
 
-Comparative runs default every fuzzer to one inline shrink attempt, overriding
-target configuration: Echidna and Recon use `--shrink-limit 1`, Medusa's
-temporary config uses `fuzzing.shrinkLimit: 1`, and Foundry uses
-`FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=1`. Intentional non-comparative experiments
-can set one non-negative override through `ECHIDNA_EXTRA_ARGS`,
-`RECON_EXTRA_ARGS`, `MEDUSA_SHRINK_LIMIT`, or
+Comparative runs default every fuzzer's tool-native numeric shrink limit to
+`1`, overriding target configuration: Echidna and Recon use
+`--shrink-limit 1`, Medusa's temporary config uses `fuzzing.shrinkLimit: 1`,
+and Foundry uses `FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=1`. This does not imply
+equal algorithms, candidate replay counts, or CPU work; one Recon iteration may
+evaluate a parallel batch of candidates. Intentional non-comparative
+experiments can set one override within the pinned tool's numeric domain
+through `ECHIDNA_EXTRA_ARGS`, `RECON_EXTRA_ARGS`, `MEDUSA_SHRINK_LIMIT`, or
 `FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT`, respectively. Echidna and Recon extra
 arguments support shell-style quoting without shell evaluation; malformed
 quoting and duplicate shrink-limit options fail before the fuzzer starts.
+Medusa extra arguments use the same safe quoting behavior and reject
+`--config` so they cannot replace the generated effective config.
 
 ### How it works
 

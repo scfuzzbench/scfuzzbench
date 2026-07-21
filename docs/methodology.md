@@ -85,7 +85,7 @@ is not modified. Operators can explicitly set `MEDUSA_PRUNE_FREQUENCY` to a
 positive minute interval for non-comparative experiments.
 
 All four pinned fuzzers perform failure shrinking inline with campaign work.
-Comparative runs normalize that work to one candidate replay per finding:
+Comparative runs normalize the configured tool-native numeric limit to `1`:
 
 | Fuzzer | Effective comparative control |
 | --- | --- |
@@ -94,11 +94,12 @@ Comparative runs normalize that work to one candidate replay per finding:
 | Medusa 1.4.1 | `fuzzing.shrinkLimit: 1` |
 | Foundry (`foundry_git_ref`) | `FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=1` |
 
-The algorithms are not identical, but each control bounds candidate executions
-performed while the finding's worker is unavailable for further exploration.
-Runner controls override target configuration so a target cannot silently
-consume a different share of the fixed campaign budget. This is independent
-of Medusa's background corpus-pruning policy.
+This is numeric configuration parity, not replay-count or CPU-work parity. The
+tools use different shrink algorithms and meanings for an attempt or iteration;
+notably, one Recon iteration may generate and evaluate a parallel batch of
+candidates. Runner controls override target configuration so a target cannot
+silently select a different numeric limit. This is independent of Medusa's
+background corpus-pruning policy.
 
 Instances are intentionally one-shot:
 

@@ -86,7 +86,8 @@ fi
 # stuck shrinking, ignored SIGINT through the grace period, and were SIGKILLed
 # without printing the end-of-run summary (losing every finding). The benchmark
 # measures time-to-discovery, not reproducer minimality. Match every other
-# benchmark leg's one-attempt worker-local budget unless explicitly overridden.
+# benchmark leg's numeric tool-native limit unless explicitly overridden; the
+# algorithms and work performed by one tool-native attempt are not equivalent.
 foundry_shrink_run_limit="${FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT-1}"
 if ! python3 - "${foundry_shrink_run_limit}" <<'PY'
 import sys

@@ -82,6 +82,7 @@ class MedusaRunConfigTests(unittest.TestCase):
         config_relative_path: str | None = "configs/medusa.json",
         prune_frequency: str | None = None,
         shrink_limit: str | None = None,
+        extra_args: str | None = None,
         workers: str | None = None,
         run_mode: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], Path, dict | None, list[str]]:
@@ -113,12 +114,15 @@ class MedusaRunConfigTests(unittest.TestCase):
         )
         env.pop("MEDUSA_PRUNE_FREQUENCY", None)
         env.pop("MEDUSA_SHRINK_LIMIT", None)
+        env.pop("MEDUSA_EXTRA_ARGS", None)
         if config_relative_path is not None:
             env["MEDUSA_CONFIG"] = config_relative_path
         if prune_frequency is not None:
             env["MEDUSA_PRUNE_FREQUENCY"] = prune_frequency
         if shrink_limit is not None:
             env["MEDUSA_SHRINK_LIMIT"] = shrink_limit
+        if extra_args is not None:
+            env["MEDUSA_EXTRA_ARGS"] = extra_args
         if workers is not None:
             env["MEDUSA_WORKERS"] = workers
         if run_mode is not None:
@@ -131,6 +135,9 @@ class MedusaRunConfigTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+        log_path = log_dir / "log.txt"
+        if log_path.exists():
+            completed.stderr += log_path.read_text(encoding="utf-8")
 
         effective = None
         effective_path = log_dir / "effective-medusa.json"
@@ -266,6 +273,61 @@ class MedusaRunConfigTests(unittest.TestCase):
             self.assertFalse(marker.exists())
             self.assertIsNone(effective)
             self.assertEqual(args, [])
+
+    def test_unrelated_quoted_extra_args_are_preserved(self):
+        rpc_url = "https://rpc.example/path with space"
+        completed, _, effective, args = self.run_medusa(
+            source_config={"fuzzing": {}},
+            extra_args=f'--rpc-url "{rpc_url}" -vv',
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(args[args.index("--rpc-url") + 1], rpc_url)
+        self.assertIn("-vv", args)
+        self.assertEqual(effective["fuzzing"]["shrinkLimit"], 1)
+
+    def test_extra_args_cannot_override_generated_config(self):
+        for extra_args in (
+            "--config configs/alternate.json",
+            "--config=configs/alternate.json",
+            "'--config=configs/alternate.json'",
+        ):
+            with self.subTest(extra_args=extra_args):
+                completed, _, effective, args = self.run_medusa(
+                    source_config={"fuzzing": {"shrinkLimit": 100000}},
+                    extra_args=extra_args,
+                )
+
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIsNone(effective)
+                self.assertEqual(args, [])
+                self.assertIn("may not override", completed.stderr)
+
+    def test_malformed_extra_args_fail_before_medusa_runs(self):
+        completed, _, effective, args = self.run_medusa(
+            source_config={"fuzzing": {}},
+            extra_args='--rpc-url "https://rpc.example',
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIsNone(effective)
+        self.assertEqual(args, [])
+        self.assertIn("Invalid MEDUSA_EXTRA_ARGS", completed.stderr)
+        self.assertIn("No closing quotation", completed.stderr)
+
+    def test_extra_args_are_not_shell_evaluated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "injected"
+            literal = f"$(touch {marker})"
+            completed, _, effective, args = self.run_medusa(
+                source_config={"fuzzing": {}},
+                extra_args=f'--rpc-url "{literal}"',
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertFalse(marker.exists())
+            self.assertEqual(args[args.index("--rpc-url") + 1], literal)
+            self.assertEqual(effective["fuzzing"]["shrinkLimit"], 1)
 
     def test_invalid_source_config_is_cleaned_up_before_medusa_runs(self):
         completed, _, effective, args = self.run_medusa(source_config=[])
