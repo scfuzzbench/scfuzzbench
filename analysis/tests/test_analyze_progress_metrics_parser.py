@@ -40,7 +40,98 @@ class ProgressMetricsParserTests(unittest.TestCase):
         self.assertAlmostEqual(sample.coverage_proxy, 537.0)
         self.assertAlmostEqual(sample.corpus_size, 137.0)
         self.assertIsNone(sample.favored_items)
-        self.assertAlmostEqual(sample.failure_rate, 15.0 / 762.0)
+        self.assertIsNone(sample.failure_rate)
+
+    def test_omits_medusa_native_failure_callback_ratio(self):
+        log_path = self.write_log(
+            [
+                "fuzz: elapsed: 3s, calls: 100 (33/sec), seq/s: 10, branches hit: 50, corpus: 12, failures: 23/18, gas/s: 1000",
+                "fuzz: elapsed: 6s, calls: 200 (33/sec), seq/s: 11, branches hit: 55, corpus: 13, failures: 15/762, gas/s: 1100",
+            ]
+        )
+
+        samples = analyze.parse_progress_metrics_log(
+            log_path,
+            "run-1",
+            "i-1",
+            "medusa-vtest",
+            include_coverage=True,
+        )
+
+        self.assertEqual(len(samples), 2)
+        self.assertIsNone(samples[0].failure_rate)
+        self.assertAlmostEqual(samples[0].seq_per_second, 10.0)
+        self.assertAlmostEqual(samples[0].coverage_proxy, 50.0)
+        self.assertAlmostEqual(samples[0].corpus_size, 12.0)
+        self.assertIsNone(samples[1].failure_rate)
+
+    def test_parses_bounded_non_medusa_failure_rate_from_text(self):
+        self.assertAlmostEqual(
+            analyze.parse_failure_rate_from_text(
+                "failures: 1/4",
+                fuzzer="other",
+            ),
+            0.25,
+        )
+        self.assertIsNone(
+            analyze.parse_failure_rate_from_text(
+                "failures: 5/4",
+                fuzzer="other",
+            )
+        )
+        self.assertIsNone(
+            analyze.parse_failure_rate_from_text(
+                "failures: 1/0",
+                fuzzer="other",
+            )
+        )
+
+    def test_medusa_summary_omits_native_failure_callback_ratio(self):
+        log_path = self.write_log(
+            [
+                "fuzz: elapsed: 3s, seq/s: 10, branches hit: 50, corpus: 12, failures: 23/18",
+                "fuzz: elapsed: 6s, seq/s: 11, branches hit: 55, corpus: 13, failures: 15/762",
+            ]
+        )
+        samples = analyze.parse_progress_metrics_log(
+            log_path,
+            "run-1",
+            "i-1",
+            "medusa-vtest",
+            include_coverage=True,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "progress_metrics_summary.csv"
+            analyze.write_progress_metrics_summary_csv(samples, out_path)
+            with out_path.open("r", newline="") as handle:
+                row = next(csv.DictReader(handle))
+
+        self.assertEqual(row["fuzzer"], "medusa")
+        self.assertEqual(row["seqps_runs"], "1")
+        self.assertEqual(row["coverage_runs"], "1")
+        self.assertEqual(row["corpus_runs"], "1")
+        self.assertEqual(row["failure_rate_runs"], "0")
+        self.assertEqual(row["failure_rate_p50"], "")
+
+    def test_rejects_out_of_range_json_failure_rates(self):
+        for payload in (
+            {"failure_rate": -0.1},
+            {"failure_rate": 1.1},
+            {"failed_current": 23, "failed_total": 18},
+        ):
+            with self.subTest(payload=payload):
+                values = analyze.parse_progress_metrics_from_payload(
+                    payload,
+                    fuzzer="medusa",
+                )
+                self.assertIsNone(values[4])
+
+        values = analyze.parse_progress_metrics_from_payload(
+            {"failure_rate": 0.25},
+            fuzzer="medusa",
+        )
+        self.assertAlmostEqual(values[4], 0.25)
 
     def test_parses_echidna_progress_metrics_from_actual_status_lines(self):
         log_path = self.write_log(
