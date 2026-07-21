@@ -17,6 +17,18 @@ def _instance(summary, fuzzer):
     return next(item for item in summary["instances"] if item["fuzzer"] == fuzzer)
 
 
+class _ReportedSizeBytes(bytes):
+    """Tiny JSON payload with a controllable length for byte-limit tests."""
+
+    def __new__(cls, payload, reported_size):
+        value = super().__new__(cls, payload)
+        value.reported_size = reported_size
+        return value
+
+    def __len__(self):
+        return self.reported_size
+
+
 class SelectorAnalyticsTests(unittest.TestCase):
     def test_parses_all_four_real_corpus_shapes_and_deduplicates_sequences(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -385,6 +397,72 @@ class SelectorAnalyticsTests(unittest.TestCase):
                     for finding in summary["health_findings"]
                 )
             )
+
+    def test_instance_byte_limit_accepts_boundary_and_stops_above_it(self):
+        def analyze(artifact_count):
+            with tempfile.TemporaryDirectory() as tmp:
+                call_sequences = (
+                    Path(tmp)
+                    / "i-aaaa-medusa-v1.4.1"
+                    / "medusa"
+                    / "call_sequences"
+                )
+                call_sequences.mkdir(parents=True)
+                payloads = {}
+                for index in range(artifact_count):
+                    path = call_sequences / f"{index:02d}.json"
+                    path.write_text("[]\n", encoding="utf-8")
+                    payload = json.dumps(
+                        [{"call": {"data": f"0x{index:08x}"}}]
+                    ).encode("utf-8")
+                    payloads[path] = _ReportedSizeBytes(
+                        payload, selector_analytics.MAX_ARTIFACT_BYTES
+                    )
+
+                with mock.patch.object(
+                    selector_analytics,
+                    "_read_json_artifact",
+                    side_effect=lambda path: payloads[path],
+                ):
+                    _, summary = selector_analytics.analyze_selector_artifacts(
+                        corpus_dir=Path(tmp),
+                        logs_dir=None,
+                    )
+                return _instance(summary, "medusa")
+
+        exact = analyze(10)
+        self.assertEqual("available", exact["status"])
+        self.assertEqual(10, exact["parsed_sequences"])
+        self.assertEqual(0, exact["limit_violations"])
+        self.assertEqual(
+            selector_analytics.MAX_INSTANCE_ARTIFACT_BYTES,
+            exact["processed_artifact_bytes"],
+        )
+
+        over = analyze(11)
+        self.assertEqual("partial", over["status"])
+        self.assertEqual(10, over["parsed_sequences"])
+        self.assertEqual(1, over["limit_violations"])
+        self.assertEqual(
+            selector_analytics.MAX_INSTANCE_ARTIFACT_BYTES,
+            over["processed_artifact_bytes"],
+        )
+        self.assertIn(
+            str(selector_analytics.MAX_INSTANCE_ARTIFACT_BYTES),
+            "\n".join(over["warnings"]),
+        )
+
+    def test_per_artifact_byte_limit_remains_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exact = Path(tmp) / "exact.json"
+            exact.write_bytes(b"[]")
+            over = Path(tmp) / "over.json"
+            over.write_bytes(b"[]\n")
+
+            with mock.patch.object(selector_analytics, "MAX_ARTIFACT_BYTES", 2):
+                self.assertEqual(b"[]", selector_analytics._read_json_artifact(exact))
+                with self.assertRaises(selector_analytics.ArtifactTooLarge):
+                    selector_analytics._read_json_artifact(over)
 
     def test_symlinked_artifacts_are_not_followed(self):
         with tempfile.TemporaryDirectory() as tmp:
