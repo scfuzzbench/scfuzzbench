@@ -70,10 +70,11 @@ run_medusa_with_effective_config() (
     exit 1
   fi
 
-  # The generated config must remain the only --config value. Medusa accepts
-  # duplicates and the last value wins, so an unchecked extra argument could
-  # bypass both shrink-limit and pruning normalization. Parse quoting without
-  # shell evaluation before creating or launching with the effective config.
+  # The generated config must remain the only --config value, and the appended
+  # corpus directory must remain an option. Medusa accepts duplicate configs
+  # with the last value winning, while -- would terminate option parsing. Parse
+  # quoting without shell evaluation before creating or launching with the
+  # effective config.
   local -a medusa_extra_args=()
   if [[ -n "${MEDUSA_EXTRA_ARGS:-}" ]]; then
     mapfile -d '' -t medusa_extra_args < <(
@@ -100,6 +101,10 @@ PY
     local extra_arg
     for extra_arg in "${medusa_extra_args[@]}"; do
       case "${extra_arg}" in
+        --)
+          log "MEDUSA_EXTRA_ARGS may not contain the -- option terminator."
+          exit 1
+          ;;
         --config|--config=*)
           log "MEDUSA_EXTRA_ARGS may not override the generated --config."
           exit 1

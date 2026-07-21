@@ -117,6 +117,10 @@ PY
 
   for ((arg_index = 0; arg_index < ${#extra_args[@]}; arg_index++)); do
     arg="${extra_args[arg_index]}"
+    if [[ "${arg}" == "--" ]]; then
+      log "ECHIDNA_EXTRA_ARGS may not contain the -- option terminator."
+      exit 1
+    fi
     case "${arg}" in
       --shrink-limit)
         if ((shrink_limit_overridden == 1)); then

@@ -315,6 +315,22 @@ class MedusaRunConfigTests(unittest.TestCase):
         self.assertIn("Invalid MEDUSA_EXTRA_ARGS", completed.stderr)
         self.assertIn("No closing quotation", completed.stderr)
 
+    def test_option_terminator_fails_before_medusa_runs(self):
+        for extra_args in ("--", "-- --rpc-url https://rpc.example"):
+            with self.subTest(extra_args=extra_args):
+                completed, _, effective, args = self.run_medusa(
+                    source_config={"fuzzing": {}},
+                    extra_args=extra_args,
+                )
+
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIsNone(effective)
+                self.assertEqual(args, [])
+                self.assertIn(
+                    "MEDUSA_EXTRA_ARGS may not contain the -- option terminator",
+                    completed.stderr,
+                )
+
     def test_extra_args_are_not_shell_evaluated(self):
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "injected"

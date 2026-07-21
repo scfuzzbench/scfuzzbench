@@ -433,9 +433,11 @@ experiments can set one override within the pinned tool's numeric domain
 through `ECHIDNA_EXTRA_ARGS`, `RECON_EXTRA_ARGS`, `MEDUSA_SHRINK_LIMIT`, or
 `FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT`, respectively. Echidna and Recon extra
 arguments support shell-style quoting without shell evaluation; malformed
-quoting and duplicate shrink-limit options fail before the fuzzer starts.
+quoting, duplicate shrink-limit options, and bare `--` option terminators fail
+before the fuzzer starts.
 Medusa extra arguments use the same safe quoting behavior and reject
-`--config` so they cannot replace the generated effective config.
+`--config` and bare `--` option terminators so they cannot replace the
+generated effective config or disable the appended corpus directory.
 
 ### How it works
 

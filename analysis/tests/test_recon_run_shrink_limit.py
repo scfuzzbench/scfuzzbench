@@ -201,6 +201,32 @@ class ReconRunShrinkLimitTests(unittest.TestCase):
         self.assertIn("Invalid RECON_EXTRA_ARGS", result.stderr)
         self.assertIn("No closing quotation", result.stderr)
 
+    def test_option_terminator_fails_before_launch(self):
+        for extra_args in ("--", "-- --shrink-limit 7"):
+            with self.subTest(extra_args=extra_args):
+                result, args = self.run_script(extra_args=extra_args)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(args, [])
+                self.assertIn(
+                    "RECON_EXTRA_ARGS may not contain the -- option terminator",
+                    result.stderr,
+                )
+
+    def test_option_terminator_in_echidna_fallback_fails_before_launch(self):
+        for fallback_args in ("--", "-- --shrink-limit 7"):
+            with self.subTest(fallback_args=fallback_args):
+                result, args = self.run_script(
+                    echidna_fallback_args=fallback_args
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(args, [])
+                self.assertIn(
+                    "RECON_EXTRA_ARGS may not contain the -- option terminator",
+                    result.stderr,
+                )
+
     def test_invalid_or_duplicate_shrink_limit_fails_before_launch(self):
         cases = (
             ("--shrink-limit", "non-negative integer"),

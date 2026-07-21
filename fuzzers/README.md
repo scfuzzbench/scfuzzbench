@@ -43,7 +43,7 @@ Notes:
   the canonical `echidna` command without a legacy alias and records
   `tool_provenance.json`.
 - In `property` mode, the runner rewrites `prefix: "invariant_"` to `prefix: "echidna_"` inside the config file so global properties are treated like assertions.
-- The runner passes `--shrink-limit 1` by default, overriding `shrinkLimit` in target configs so shrinking cannot consume a large part of the campaign budget. Set one integer in `[0, 9223372036854775807]` in `ECHIDNA_EXTRA_ARGS` for an explicit operator override on the pinned amd64 runner. Extra arguments support shell-style quoting, but are parsed without shell evaluation.
+- The runner passes `--shrink-limit 1` by default, overriding `shrinkLimit` in target configs so shrinking cannot consume a large part of the campaign budget. Set one integer in `[0, 9223372036854775807]` in `ECHIDNA_EXTRA_ARGS` for an explicit operator override on the pinned amd64 runner. Extra arguments support shell-style quoting, but are parsed without shell evaluation. A bare `--` option terminator is rejected so the runner's appended arguments remain effective.
 - By default, the runner appends `+RTS -A1g -RTS` to reduce GC overhead on multicore instances.
 - In pinned Echidna 2.3.1, the fuzzing worker that finds a failure also performs its shrinking inline before returning to fuzzing; there is no separate background minimizer. `shrinkLimit` bounds this worker-local work and is configured independently of Medusa corpus pruning.
 
@@ -64,7 +64,8 @@ Notes:
   operator override. This bound avoids overflow in Recon 0.4.6's signed
   shrink-progress counter. The `ECHIDNA_EXTRA_ARGS` compatibility fallback has
   the same validation. Extra arguments support shell-style quoting without
-  shell evaluation.
+  shell evaluation. A bare `--` option terminator is rejected so the runner's
+  appended arguments remain effective.
 
 ## Medusa
 
@@ -89,6 +90,8 @@ Notes:
   Shrinking and corpus pruning are separate controls. `MEDUSA_EXTRA_ARGS` is
   parsed with shell-style quoting but without shell evaluation, and may not
   contain another `--config` because the generated config is authoritative.
+  A bare `--` option terminator is rejected so the runner's appended corpus
+  directory remains effective.
 
 Source mode verifies that the ref still resolves to the requested full commit,
 checks digest and size against official Go metadata, stream-extracts with
