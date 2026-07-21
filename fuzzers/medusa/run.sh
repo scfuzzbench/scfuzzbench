@@ -55,6 +55,15 @@ run_medusa_with_effective_config() (
     exit 1
   fi
 
+  # Shrinking is performed inline by the worker that found a failure. Keep its
+  # exploration-budget cost equal to the other benchmark legs, independently
+  # of the separate background corpus-pruning control above.
+  local medusa_shrink_limit="${MEDUSA_SHRINK_LIMIT-1}"
+  if ! [[ "${medusa_shrink_limit}" =~ ^[0-9]+$ ]]; then
+    log "Invalid MEDUSA_SHRINK_LIMIT='${medusa_shrink_limit}'; expected a non-negative integer."
+    exit 1
+  fi
+
   if ! command -v python3 >/dev/null 2>&1; then
     log "python3 is required to create the effective Medusa config."
     exit 1
@@ -112,6 +121,7 @@ import json
 import sys
 
 raw_frequency = sys.argv[1]
+raw_shrink_limit = sys.argv[2]
 config = json.load(sys.stdin)
 
 if not isinstance(config, dict):
@@ -124,16 +134,21 @@ if not isinstance(fuzzing, dict):
 frequency = int(raw_frequency)
 if frequency > 2**64 - 1:
     raise SystemExit('MEDUSA_PRUNE_FREQUENCY exceeds Medusa uint64 range')
+shrink_limit = int(raw_shrink_limit)
+if shrink_limit > 2**64 - 1:
+    raise SystemExit('MEDUSA_SHRINK_LIMIT exceeds Medusa uint64 range')
 fuzzing['pruneFrequency'] = frequency
+fuzzing['shrinkLimit'] = shrink_limit
 
 json.dump(config, sys.stdout, indent=2)
 sys.stdout.write('\\n')
-" "${medusa_prune_frequency}" |
+" "${medusa_prune_frequency}" "${medusa_shrink_limit}" |
     write_strict_descendant_file \
       "${medusa_effective_config}" "${repo_dir}" \
       "${SCFUZZBENCH_TARGET_ROOT_ANCHOR}" \
       "${SCFUZZBENCH_TARGET_ROOT_IDENTITY}"
   log "Medusa corpus pruning frequency: ${medusa_prune_frequency} minute(s) (0 disables the background pruner)."
+  log "Medusa inline shrink limit: ${medusa_shrink_limit}."
 
   local -a cmd=(medusa fuzz --no-color)
   cmd+=(--config "${medusa_effective_config}")

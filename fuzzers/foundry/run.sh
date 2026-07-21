@@ -85,9 +85,24 @@ fi
 # mid-shrink: on the superform leg of run 1783612049 three of four instances got
 # stuck shrinking, ignored SIGINT through the grace period, and were SIGKILLed
 # without printing the end-of-run summary (losing every finding). The benchmark
-# measures time-to-discovery, not reproducer minimality — skip shrinking unless
-# explicitly overridden.
-export FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=${FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT:-0}
+# measures time-to-discovery, not reproducer minimality. Match every other
+# benchmark leg's one-attempt worker-local budget unless explicitly overridden.
+foundry_shrink_run_limit="${FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT-1}"
+if ! python3 - "${foundry_shrink_run_limit}" <<'PY'
+import sys
+
+raw_limit = sys.argv[1]
+if not raw_limit.isascii() or not raw_limit.isdecimal():
+    raise SystemExit(1)
+if int(raw_limit) > 2**32 - 1:
+    raise SystemExit(1)
+PY
+then
+  log "FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT must be an integer in [0, 4294967295]."
+  exit 1
+fi
+export FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT="${foundry_shrink_run_limit}"
+log "Foundry inline shrink limit: ${foundry_shrink_run_limit}."
 
 # End the campaign from the inside instead of relying on SIGINT: a timed
 # campaign ([invariant] timeout) ends naturally on the campaign thread and

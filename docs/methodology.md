@@ -84,12 +84,21 @@ CPU work does not sit outside the normalized worker count. The target's config
 is not modified. Operators can explicitly set `MEDUSA_PRUNE_FREQUENCY` to a
 positive minute interval for non-comparative experiments.
 
-Pinned Echidna 2.3.1 does not spawn a separate minimization worker. Its
-[`runFuzzWorker`](https://github.com/crytic/echidna/blob/v2.3.1/lib/Echidna/Campaign.hs#L353-L418)
-performs shrinking inline on the same fuzzing worker that found the failure
-before that worker resumes fuzzing. Its `shrinkLimit` therefore bounds
-worker-local work and is configured separately; it is not a background-thread
-control and is unchanged by the Medusa pruning policy.
+All four pinned fuzzers perform failure shrinking inline with campaign work.
+Comparative runs normalize that work to one candidate replay per finding:
+
+| Fuzzer | Effective comparative control |
+| --- | --- |
+| Echidna 2.3.1 | `--shrink-limit 1` |
+| Recon 0.4.6 | `--shrink-limit 1` |
+| Medusa 1.4.1 | `fuzzing.shrinkLimit: 1` |
+| Foundry (`foundry_git_ref`) | `FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=1` |
+
+The algorithms are not identical, but each control bounds candidate executions
+performed while the finding's worker is unavailable for further exploration.
+Runner controls override target configuration so a target cannot silently
+consume a different share of the fixed campaign budget. This is independent
+of Medusa's background corpus-pruning policy.
 
 Instances are intentionally one-shot:
 

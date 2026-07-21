@@ -81,6 +81,7 @@ class MedusaRunConfigTests(unittest.TestCase):
         source_config: object | None = None,
         config_relative_path: str | None = "configs/medusa.json",
         prune_frequency: str | None = None,
+        shrink_limit: str | None = None,
         workers: str | None = None,
         run_mode: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], Path, dict | None, list[str]]:
@@ -110,10 +111,14 @@ class MedusaRunConfigTests(unittest.TestCase):
                 "MEDUSA_VERSION": "1.4.1",
             }
         )
+        env.pop("MEDUSA_PRUNE_FREQUENCY", None)
+        env.pop("MEDUSA_SHRINK_LIMIT", None)
         if config_relative_path is not None:
             env["MEDUSA_CONFIG"] = config_relative_path
         if prune_frequency is not None:
             env["MEDUSA_PRUNE_FREQUENCY"] = prune_frequency
+        if shrink_limit is not None:
+            env["MEDUSA_SHRINK_LIMIT"] = shrink_limit
         if workers is not None:
             env["MEDUSA_WORKERS"] = workers
         if run_mode is not None:
@@ -158,6 +163,7 @@ class MedusaRunConfigTests(unittest.TestCase):
         source = {
             "fuzzing": {
                 "pruneFrequency": 5,
+                "shrinkLimit": 100000,
                 "coverageEnabled": True,
                 "workers": 91,
                 "targetContracts": ["TargetA", "TargetB"],
@@ -177,6 +183,7 @@ class MedusaRunConfigTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         expected = json.loads(json.dumps(source))
         expected["fuzzing"]["pruneFrequency"] = 0
+        expected["fuzzing"]["shrinkLimit"] = 1
         self.assertEqual(effective, expected)
         self.assertIn("--workers", args)
         self.assertEqual(args[args.index("--workers") + 1], "3")
@@ -200,6 +207,17 @@ class MedusaRunConfigTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(effective["fuzzing"]["pruneFrequency"], 17)
+        self.assertEqual(effective["fuzzing"]["shrinkLimit"], 1)
+
+    def test_explicit_shrink_limit_override_is_preserved(self):
+        completed, _, effective, _ = self.run_medusa(
+            source_config={"fuzzing": {"shrinkLimit": 100000}},
+            shrink_limit="17",
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(effective["fuzzing"]["shrinkLimit"], 17)
+        self.assertEqual(effective["fuzzing"]["pruneFrequency"], 0)
 
     def test_no_source_config_still_gets_a_disabled_pruner(self):
         completed, _, effective, args = self.run_medusa(
@@ -208,7 +226,10 @@ class MedusaRunConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(effective, {"fuzzing": {"pruneFrequency": 0}})
+        self.assertEqual(
+            effective,
+            {"fuzzing": {"pruneFrequency": 0, "shrinkLimit": 1}},
+        )
         self.assertIn("--config", args)
 
     def test_invalid_prune_frequency_fails_before_medusa_runs(self):
@@ -220,6 +241,31 @@ class MedusaRunConfigTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIsNone(effective)
         self.assertEqual(args, [])
+
+    def test_invalid_shrink_limit_fails_before_medusa_runs(self):
+        for shrink_limit in ("", "-1", "1.5", "nope", str(2**64)):
+            with self.subTest(shrink_limit=shrink_limit):
+                completed, _, effective, args = self.run_medusa(
+                    source_config={"fuzzing": {}},
+                    shrink_limit=shrink_limit,
+                )
+
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIsNone(effective)
+                self.assertEqual(args, [])
+
+    def test_shrink_limit_is_not_shell_evaluated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "injected"
+            completed, _, effective, args = self.run_medusa(
+                source_config={"fuzzing": {}},
+                shrink_limit=f"$(touch {marker})",
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertFalse(marker.exists())
+            self.assertIsNone(effective)
+            self.assertEqual(args, [])
 
     def test_invalid_source_config_is_cleaned_up_before_medusa_runs(self):
         completed, _, effective, args = self.run_medusa(source_config=[])
@@ -235,7 +281,10 @@ class MedusaRunConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 23)
-        self.assertEqual(effective, {"fuzzing": {"pruneFrequency": 0}})
+        self.assertEqual(
+            effective,
+            {"fuzzing": {"pruneFrequency": 0, "shrinkLimit": 1}},
+        )
         self.assertIn("--config", args)
 
     def test_effective_config_is_cleaned_up_on_signal(self):
@@ -245,7 +294,10 @@ class MedusaRunConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 143)
-        self.assertEqual(effective, {"fuzzing": {"pruneFrequency": 0}})
+        self.assertEqual(
+            effective,
+            {"fuzzing": {"pruneFrequency": 0, "shrinkLimit": 1}},
+        )
         self.assertIn("--config", args)
 
     def test_missing_explicit_config_fails_instead_of_using_defaults(self):
