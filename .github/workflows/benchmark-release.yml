@@ -579,7 +579,7 @@ jobs:
           fi
 
       - name: Compose release body
-        if: ${{ steps.release_check.outputs.exists != 'true' }}
+        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
         id: body
         run: |
           set -euo pipefail
@@ -675,18 +675,26 @@ jobs:
 
           echo "release_body=${release_body}" >> "${GITHUB_OUTPUT}"
 
-      - name: Create GitHub release
-        if: ${{ steps.release_check.outputs.exists != 'true' }}
+      - name: Create or update GitHub release
+        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_BODY: ${{ steps.body.outputs.release_body }}
+          RELEASE_EXISTS: ${{ steps.release_check.outputs.exists }}
           RELEASE_TAG: ${{ steps.release_check.outputs.tag }}
         run: |
           set -euo pipefail
-          gh release create "${RELEASE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${RELEASE_TAG}" \
-            --notes-file "${RELEASE_BODY}"
+          if [[ "${RELEASE_EXISTS}" == "true" ]]; then
+            gh release edit "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${RELEASE_TAG}" \
+              --notes-file "${RELEASE_BODY}"
+          else
+            gh release create "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${RELEASE_TAG}" \
+              --notes-file "${RELEASE_BODY}"
+          fi
 
       - name: Close preliminary stream
         env:
