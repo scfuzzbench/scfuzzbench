@@ -117,6 +117,10 @@ PY
 
   for ((arg_index = 0; arg_index < ${#extra_args[@]}; arg_index++)); do
     arg="${extra_args[arg_index]}"
+    if [[ "${arg}" == "--" ]]; then
+      log "ECHIDNA_EXTRA_ARGS may not contain the -- option terminator."
+      exit 1
+    fi
     case "${arg}" in
       --shrink-limit)
         if ((shrink_limit_overridden == 1)); then
@@ -137,7 +141,17 @@ PY
     esac
     if [[ "${arg}" == "--shrink-limit" || "${arg}" == --shrink-limit=* ]]; then
       if [[ ! "${shrink_limit_value}" =~ ^[0-9]+$ ]]; then
-        log "ECHIDNA_EXTRA_ARGS --shrink-limit must be a non-negative integer."
+        log "ECHIDNA_EXTRA_ARGS --shrink-limit must be a non-negative integer in [0, 9223372036854775807]."
+        exit 1
+      fi
+      if ! python3 - "${shrink_limit_value}" <<'PY'
+import sys
+
+if int(sys.argv[1]) > 2**63 - 1:
+    raise SystemExit(1)
+PY
+      then
+        log "ECHIDNA_EXTRA_ARGS --shrink-limit must be a non-negative integer in [0, 9223372036854775807]."
         exit 1
       fi
     fi

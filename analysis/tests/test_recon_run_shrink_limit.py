@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[2] / "fuzzers" / "echidna" / "run.sh"
+SCRIPT = Path(__file__).resolve().parents[2] / "fuzzers" / "recon-fuzzer" / "run.sh"
 
 
 def write_common_sh(tmp_dir: Path) -> Path:
@@ -17,17 +17,17 @@ prepare_workspace() {
 }
 register_shutdown_trap() { prepare_workspace; }
 resolve_target_corpus_dir() {
-  printf '%s/%s\\n' "${SCFUZZBENCH_WORKDIR}/target" "${1:-$2}"
+  printf '%s/%s\n' "${SCFUZZBENCH_WORKDIR}/target" "${1:-$2}"
 }
 prepare_shared_seed_corpus() { :; }
 clone_target() {
-  printf 'shrinkLimit: 100000\\n' > "${SCFUZZBENCH_WORKDIR}/target/echidna.yaml"
+  printf 'shrinkLimit: 100000\n' > "${SCFUZZBENCH_WORKDIR}/target/echidna.yaml"
 }
 capture_target_workspace_anchor() { :; }
 apply_benchmark_type() { :; }
 build_target() { :; }
 set_default_worker_env() { :; }
-log() { printf '%s\\n' "$*" >> "${SCFUZZBENCH_LOG_DIR}/log.txt"; }
+log() { printf '%s\n' "$*" >> "${SCFUZZBENCH_LOG_DIR}/log.txt"; }
 require_env() {
   for name in "$@"; do
     if [[ -z "${!name:-}" ]]; then
@@ -41,9 +41,9 @@ run_with_timeout() {
   {
     printf 'RUN'
     for arg in "$@"; do
-      printf '\\t%s' "$arg"
+      printf '\t%s' "$arg"
     done
-    printf '\\n'
+    printf '\n'
   } >> "${SCFUZZBENCH_LOG_DIR}/commands.tsv"
 }
 """,
@@ -52,11 +52,12 @@ run_with_timeout() {
     return common_sh
 
 
-class EchidnaRunShrinkLimitTests(unittest.TestCase):
+class ReconRunShrinkLimitTests(unittest.TestCase):
     def run_script(
         self,
         *,
-        extra_args: str = "",
+        extra_args: str | None = None,
+        echidna_fallback_args: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
@@ -71,14 +72,16 @@ class EchidnaRunShrinkLimitTests(unittest.TestCase):
                     "SCFUZZBENCH_WORKDIR": str(work_dir),
                     "SCFUZZBENCH_LOG_DIR": str(log_dir),
                     "SCFUZZBENCH_BENCHMARK_TYPE": "property",
-                    "ECHIDNA_VERSION": "2.3.1",
+                    "RECON_VERSION": "0.4.6",
                     "ECHIDNA_CONFIG": "echidna.yaml",
                 }
             )
-            if extra_args:
-                env["ECHIDNA_EXTRA_ARGS"] = extra_args
-            else:
-                env.pop("ECHIDNA_EXTRA_ARGS", None)
+            env.pop("RECON_EXTRA_ARGS", None)
+            env.pop("ECHIDNA_EXTRA_ARGS", None)
+            if extra_args is not None:
+                env["RECON_EXTRA_ARGS"] = extra_args
+            if echidna_fallback_args is not None:
+                env["ECHIDNA_EXTRA_ARGS"] = echidna_fallback_args
 
             result = subprocess.run(
                 ["bash", str(SCRIPT)],
@@ -88,7 +91,7 @@ class EchidnaRunShrinkLimitTests(unittest.TestCase):
                 check=False,
             )
             commands_path = log_dir / "commands.tsv"
-            args = []
+            args: list[str] = []
             if commands_path.exists():
                 line = commands_path.read_text(encoding="utf-8").splitlines()[0]
                 args = line.split("\t")[1:]
@@ -100,13 +103,18 @@ class EchidnaRunShrinkLimitTests(unittest.TestCase):
     def run_main_command(
         self,
         *,
-        extra_args: str = "",
+        extra_args: str | None = None,
+        echidna_fallback_args: str | None = None,
     ) -> list[str]:
-        result, args = self.run_script(extra_args=extra_args)
+        result, args = self.run_script(
+            extra_args=extra_args,
+            echidna_fallback_args=echidna_fallback_args,
+        )
         result.check_returncode()
         return args
 
-    def shrink_limit_values(self, args: list[str]) -> list[str]:
+    @staticmethod
+    def shrink_limit_values(args: list[str]) -> list[str]:
         values = []
         for index, arg in enumerate(args):
             if arg == "--shrink-limit":
@@ -123,39 +131,54 @@ class EchidnaRunShrinkLimitTests(unittest.TestCase):
         self.assertIn("echidna.yaml", args)
 
     def test_unrelated_extra_args_keep_default(self):
-        args = self.run_main_command(extra_args="--server 3000")
+        args = self.run_main_command(extra_args="--test-limit 1000000000")
 
         self.assertEqual(self.shrink_limit_values(args), ["1"])
-        self.assertIn("--server", args)
-        self.assertIn("3000", args)
+        self.assertIn("--test-limit", args)
+        self.assertIn("1000000000", args)
 
-    def test_explicit_extra_args_override_replaces_default(self):
+    def test_explicit_override_replaces_default(self):
         for extra_args in (
-            "--server 3000 --shrink-limit 7",
-            "--server 3000 --shrink-limit=7",
+            "--test-limit 99 --shrink-limit 7",
+            "--test-limit 99 --shrink-limit=7",
         ):
             with self.subTest(extra_args=extra_args):
                 args = self.run_main_command(extra_args=extra_args)
 
                 self.assertEqual(self.shrink_limit_values(args), ["7"])
-                self.assertIn("--server", args)
-                self.assertIn("3000", args)
+                self.assertIn("--test-limit", args)
+                self.assertIn("99", args)
 
-    def test_accepts_pinned_amd64_int_maximum(self):
-        maximum = str(2**63 - 1)
+    def test_accepts_pinned_i32_maximum(self):
+        maximum = str(2**31 - 1)
 
         args = self.run_main_command(extra_args=f"--shrink-limit {maximum}")
 
         self.assertEqual(self.shrink_limit_values(args), [maximum])
 
-    def test_rejects_values_above_pinned_amd64_int_maximum(self):
-        for value in (str(2**63), "9" * 200):
+    def test_rejects_values_above_pinned_i32_maximum(self):
+        for value in (str(2**31), str(2**64), "9" * 200):
             with self.subTest(value=value):
                 result, args = self.run_script(extra_args=f"--shrink-limit {value}")
 
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(args, [])
-                self.assertIn("[0, 9223372036854775807]", result.stderr)
+                self.assertIn("[0, 2147483647]", result.stderr)
+
+    def test_echidna_extra_args_fallback_preserves_explicit_override(self):
+        args = self.run_main_command(
+            echidna_fallback_args="--test-limit 99 --shrink-limit 6"
+        )
+
+        self.assertEqual(self.shrink_limit_values(args), ["6"])
+
+    def test_recon_extra_args_take_precedence_over_echidna_fallback(self):
+        args = self.run_main_command(
+            extra_args="--shrink-limit 4",
+            echidna_fallback_args="--shrink-limit 6",
+        )
+
+        self.assertEqual(self.shrink_limit_values(args), ["4"])
 
     def test_shell_quoting_preserves_one_argument_without_evaluation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -171,11 +194,11 @@ class EchidnaRunShrinkLimitTests(unittest.TestCase):
             self.assertEqual(self.shrink_limit_values(args), ["0"])
 
     def test_malformed_quoting_fails_before_launch(self):
-        result, args = self.run_script(extra_args='--server "3000')
+        result, args = self.run_script(extra_args='--test-limit "99')
 
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(args, [])
-        self.assertIn("Invalid ECHIDNA_EXTRA_ARGS", result.stderr)
+        self.assertIn("Invalid RECON_EXTRA_ARGS", result.stderr)
         self.assertIn("No closing quotation", result.stderr)
 
     def test_option_terminator_fails_before_launch(self):
@@ -186,7 +209,21 @@ class EchidnaRunShrinkLimitTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(args, [])
                 self.assertIn(
-                    "ECHIDNA_EXTRA_ARGS may not contain the -- option terminator",
+                    "RECON_EXTRA_ARGS may not contain the -- option terminator",
+                    result.stderr,
+                )
+
+    def test_option_terminator_in_echidna_fallback_fails_before_launch(self):
+        for fallback_args in ("--", "-- --shrink-limit 7"):
+            with self.subTest(fallback_args=fallback_args):
+                result, args = self.run_script(
+                    echidna_fallback_args=fallback_args
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(args, [])
+                self.assertIn(
+                    "RECON_EXTRA_ARGS may not contain the -- option terminator",
                     result.stderr,
                 )
 

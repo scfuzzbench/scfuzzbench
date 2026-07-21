@@ -38,6 +38,10 @@ def write_common_sh(
         f"""
 prepare_workspace() {{
   mkdir -p "${{SCFUZZBENCH_WORKDIR}}/target" "${{SCFUZZBENCH_LOG_DIR}}"
+  cat > "${{SCFUZZBENCH_WORKDIR}}/target/foundry.toml" <<'TOML'
+[invariant]
+shrink_run_limit = 100000
+TOML
   SCFUZZBENCH_LOG_ROOT_ANCHOR="${{SCFUZZBENCH_LOG_DIR}}"
   SCFUZZBENCH_LOG_ROOT_IDENTITY="test-log-anchor"
 }}
@@ -73,6 +77,8 @@ append_runner_command_log() {{
 upload_results() {{ {upload_body}; }}
 run_with_timeout() {{
   log_file=$1
+  printf '%s\n' "${{FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT-UNSET}}" \
+    > "${{SCFUZZBENCH_LOG_DIR}}/foundry-shrink-run-limit.txt"
   {{
     printf 'RUN'
 {timeout_line}
@@ -106,6 +112,7 @@ class FoundryRunShowmapArgsTests(unittest.TestCase):
                     "FOUNDRY_LABEL": "foundry-master",
                 }
             )
+            env.pop("FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT", None)
             if foundry_test_args:
                 env["FOUNDRY_TEST_ARGS"] = foundry_test_args
 
@@ -131,6 +138,82 @@ class FoundryRunShowmapArgsTests(unittest.TestCase):
                 else:
                     workers_idx = args.index("--invariant-workers")
                     self.assertEqual(args[workers_idx + 1], "4")
+
+    def run_with_shrink_limit(
+        self, shrink_limit: str | None = None
+    ) -> tuple[subprocess.CompletedProcess[bytes], str | None, list[str]]:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        tmp_dir = Path(tmp.name)
+        log_dir = tmp_dir / "logs"
+        work_dir = tmp_dir / "work"
+        common_sh = write_common_sh(tmp_dir)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "SCFUZZBENCH_COMMON_SH": str(common_sh),
+                "SCFUZZBENCH_WORKDIR": str(work_dir),
+                "SCFUZZBENCH_LOG_DIR": str(log_dir),
+                "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS": "1",
+                "FOUNDRY_LABEL": "foundry-master",
+            }
+        )
+        env.pop("FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT", None)
+        if shrink_limit is not None:
+            env["FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT"] = shrink_limit
+
+        completed = subprocess.run(["bash", str(SCRIPT)], env=env, check=False)
+        captured_path = log_dir / "foundry-shrink-run-limit.txt"
+        captured = None
+        if captured_path.exists():
+            captured = captured_path.read_text(encoding="utf-8").strip()
+        commands_path = log_dir / "commands.tsv"
+        commands = []
+        if commands_path.exists():
+            commands = commands_path.read_text(encoding="utf-8").splitlines()
+        return completed, captured, commands
+
+    def test_inline_shrink_limit_defaults_to_one(self):
+        completed, captured, commands = self.run_with_shrink_limit()
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(captured, "1")
+        self.assertNotEqual(commands, [])
+
+    def test_explicit_inline_shrink_limit_override_is_preserved(self):
+        for shrink_limit in ("0", "7", str(2**32 - 1)):
+            with self.subTest(shrink_limit=shrink_limit):
+                completed, captured, commands = self.run_with_shrink_limit(
+                    shrink_limit
+                )
+
+                self.assertEqual(completed.returncode, 0)
+                self.assertEqual(captured, shrink_limit)
+                self.assertNotEqual(commands, [])
+
+    def test_invalid_inline_shrink_limit_fails_before_forge_runs(self):
+        for shrink_limit in ("", "-1", "1.5", "nope", str(2**32)):
+            with self.subTest(shrink_limit=shrink_limit):
+                completed, captured, commands = self.run_with_shrink_limit(
+                    shrink_limit
+                )
+
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIsNone(captured)
+                self.assertEqual(commands, [])
+
+    def test_inline_shrink_limit_is_not_shell_evaluated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "injected"
+            completed, captured, commands = self.run_with_shrink_limit(
+                f"$(touch {marker})"
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertFalse(marker.exists())
+            self.assertIsNone(captured)
+            self.assertEqual(commands, [])
 
     def test_showmap_replay_keeps_test_args_but_uses_script_showmap_args(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -55,9 +55,62 @@ run_medusa_with_effective_config() (
     exit 1
   fi
 
+  # Shrinking is performed inline by the worker that found a failure. Use the
+  # same numeric tool-native limit as the other benchmark legs, independently
+  # of the separate background corpus-pruning control above. The algorithms
+  # and work performed by one tool-native iteration are not equivalent.
+  local medusa_shrink_limit="${MEDUSA_SHRINK_LIMIT-1}"
+  if ! [[ "${medusa_shrink_limit}" =~ ^[0-9]+$ ]]; then
+    log "Invalid MEDUSA_SHRINK_LIMIT='${medusa_shrink_limit}'; expected a non-negative integer."
+    exit 1
+  fi
+
   if ! command -v python3 >/dev/null 2>&1; then
     log "python3 is required to create the effective Medusa config."
     exit 1
+  fi
+
+  # The generated config must remain the only --config value, and the appended
+  # corpus directory must remain an option. Medusa accepts duplicate configs
+  # with the last value winning, while -- would terminate option parsing. Parse
+  # quoting without shell evaluation before creating or launching with the
+  # effective config.
+  local -a medusa_extra_args=()
+  if [[ -n "${MEDUSA_EXTRA_ARGS:-}" ]]; then
+    mapfile -d '' -t medusa_extra_args < <(
+      python3 - "${MEDUSA_EXTRA_ARGS}" <<'PY'
+import shlex
+import sys
+
+try:
+    args = shlex.split(sys.argv[1], comments=False, posix=True)
+except ValueError as exc:
+    print(f"Invalid MEDUSA_EXTRA_ARGS: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+
+for arg in args:
+    sys.stdout.buffer.write(arg.encode() + b"\0")
+PY
+    )
+    local parser_pid
+    parser_pid=$!
+    if ! wait "${parser_pid}"; then
+      log "MEDUSA_EXTRA_ARGS must use valid shell-style quoting."
+      exit 1
+    fi
+    local extra_arg
+    for extra_arg in "${medusa_extra_args[@]}"; do
+      case "${extra_arg}" in
+        --)
+          log "MEDUSA_EXTRA_ARGS may not contain the -- option terminator."
+          exit 1
+          ;;
+        --config|--config=*)
+          log "MEDUSA_EXTRA_ARGS may not override the generated --config."
+          exit 1
+          ;;
+      esac
+    done
   fi
 
   local medusa_source_config=""
@@ -112,6 +165,7 @@ import json
 import sys
 
 raw_frequency = sys.argv[1]
+raw_shrink_limit = sys.argv[2]
 config = json.load(sys.stdin)
 
 if not isinstance(config, dict):
@@ -124,16 +178,21 @@ if not isinstance(fuzzing, dict):
 frequency = int(raw_frequency)
 if frequency > 2**64 - 1:
     raise SystemExit('MEDUSA_PRUNE_FREQUENCY exceeds Medusa uint64 range')
+shrink_limit = int(raw_shrink_limit)
+if shrink_limit > 2**64 - 1:
+    raise SystemExit('MEDUSA_SHRINK_LIMIT exceeds Medusa uint64 range')
 fuzzing['pruneFrequency'] = frequency
+fuzzing['shrinkLimit'] = shrink_limit
 
 json.dump(config, sys.stdout, indent=2)
 sys.stdout.write('\\n')
-" "${medusa_prune_frequency}" |
+" "${medusa_prune_frequency}" "${medusa_shrink_limit}" |
     write_strict_descendant_file \
       "${medusa_effective_config}" "${repo_dir}" \
       "${SCFUZZBENCH_TARGET_ROOT_ANCHOR}" \
       "${SCFUZZBENCH_TARGET_ROOT_IDENTITY}"
   log "Medusa corpus pruning frequency: ${medusa_prune_frequency} minute(s) (0 disables the background pruner)."
+  log "Medusa inline shrink limit: ${medusa_shrink_limit}."
 
   local -a cmd=(medusa fuzz --no-color)
   cmd+=(--config "${medusa_effective_config}")
@@ -146,10 +205,8 @@ sys.stdout.write('\\n')
   if [[ -n "${MEDUSA_WORKERS:-}" ]]; then
     cmd+=(--workers "${MEDUSA_WORKERS}")
   fi
-  if [[ -n "${MEDUSA_EXTRA_ARGS:-}" ]]; then
-    local -a extra_args=()
-    read -r -a extra_args <<< "${MEDUSA_EXTRA_ARGS}"
-    cmd+=("${extra_args[@]}")
+  if ((${#medusa_extra_args[@]} > 0)); then
+    cmd+=("${medusa_extra_args[@]}")
   fi
   cmd+=(--corpus-dir "${SCFUZZBENCH_CORPUS_DIR}")
 

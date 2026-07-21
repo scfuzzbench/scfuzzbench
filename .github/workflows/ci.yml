@@ -131,6 +131,9 @@ jobs:
             analysis.tests.test_shared_seed_corpus \
             analysis.tests.test_preliminary_snapshot \
             analysis.tests.test_preliminary_runner_shell \
+            analysis.tests.test_echidna_run_shrink_limit \
+            analysis.tests.test_recon_run_shrink_limit \
+            analysis.tests.test_foundry_run_showmap_args \
             analysis.tests.test_medusa_run_config
 
       - name: Validate benchmark manifests
