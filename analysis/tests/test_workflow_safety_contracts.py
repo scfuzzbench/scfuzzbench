@@ -508,12 +508,13 @@ exit "${{status}}"
 
     def test_force_reanalysis_refreshes_existing_release_notes(self):
         release = job_blocks(workflow("benchmark-release.yml"))["release"]
-        condition = (
-            "if: ${{ steps.supersession.outputs.superseded != 'true' "
-            "&& steps.release_check.outputs.blocked != 'true' "
-            "&& (steps.release_check.outputs.exists != 'true' "
-            "|| inputs.force_reanalyze == 'true') }}"
-        )
+        condition = "if: ${{ steps.gate.outputs.analyze == 'true' }}"
+        gate = release[
+            release.index("- name: Compute release gate") :
+            release.index("- name: Setup Python")
+        ]
+        self.assertIn('"${RELEASE_EXISTS}" != "true"', gate)
+        self.assertIn('"${FORCE_REANALYZE}" == "true"', gate)
         compose = release[
             release.index("- name: Compose release body") :
             release.index("- name: Create or update GitHub release")
@@ -548,15 +549,27 @@ exit "${{status}}"
                 '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${GH_CALLS}"\n'
             )
             fake_gh.chmod(0o755)
+            # The publish body re-checks the supersession marker via
+            # `python3 scripts/benchmark_run_state.py check-superseded`;
+            # stub it to report an absent marker.
+            fake_python = temp / "python3"
+            fake_python.write_text(
+                '#!/usr/bin/env bash\n'
+                'printf \'{"detail": "", "status": "absent"}\\n\'\n'
+            )
+            fake_python.chmod(0o755)
             release_body.write_text("fresh report\n")
             env = os.environ.copy()
             env.update(
                 {
+                    "BENCHMARK_UUID": "a" * 32,
                     "GH_CALLS": str(calls),
                     "GITHUB_REPOSITORY": "owner/repo",
                     "PATH": f"{temp}:{env['PATH']}",
                     "RELEASE_BODY": str(release_body),
                     "RELEASE_TAG": "canonical-tag",
+                    "RUN_ID": "gh-1-1",
+                    "SCFUZZBENCH_BUCKET": "bucket",
                 }
             )
 
@@ -593,10 +606,12 @@ exit "${{status}}"
         discover = blocks["discover"]
         release = blocks["release"]
 
-        # Both the manual dispatch path and hourly auto-discovery must
-        # consult the supersession marker before emitting a matrix entry.
-        self.assertEqual(2, discover.count("superseded_status("))
+        # The manual dispatch path validates marker content; the hourly
+        # auto-discovery excludes on marker presence from a single listing
+        # (fail closed) before emitting a matrix entry.
+        self.assertEqual(1, discover.count("superseded_status("))
         self.assertIn("Refusing to release", discover)
+        self.assertIn("SUPERSEDED_KEY_RE", discover)
         self.assertIn("Skipping superseded run", discover)
 
         # The release job re-checks the marker (a re-run of an old workflow
@@ -606,21 +621,41 @@ exit "${{status}}"
             release.index("- name: Check supersession marker"),
             release.index("- name: Check for existing release"),
         )
+        self.assertIn("check-superseded", release)
         self.assertIn("--json isDraft,isPrerelease", release)
-        guard = (
-            "steps.supersession.outputs.superseded != 'true' "
-            "&& steps.release_check.outputs.blocked != 'true'"
-        )
+        self.assertNotIn("--latest", release)
+
+        # Every step after the gate is gated on its outputs, so a future
+        # step cannot silently bypass the supersession/blocked guard.
+        gate_index = release.index("- name: Compute release gate")
+        tail = release[gate_index:]
+        step_starts = [
+            match.start()
+            for match in re.finditer(r"(?m)^      - name: ", tail)
+        ][1:]
+        for index, start in enumerate(step_starts):
+            end = (
+                step_starts[index + 1]
+                if index + 1 < len(step_starts)
+                else len(tail)
+            )
+            step = tail[start:end]
+            with self.subTest(step=step[:60]):
+                self.assertIn("steps.gate.outputs.", step)
+
+        # Publish and stream closure re-check the marker at the last
+        # responsible moment (the analysis above can run for a long time).
         publish = release[
             release.index("- name: Create or update GitHub release") :
             release.index("- name: Close preliminary stream")
         ]
-        self.assertIn(guard, publish)
+        self.assertIn("check-superseded", publish)
+        self.assertIn("skipping release publish", publish)
         close_stream = release[
             release.index("- name: Close preliminary stream") :
         ]
-        self.assertIn(guard, close_stream)
-        self.assertNotIn("--latest", release)
+        self.assertIn("check-superseded", close_stream)
+        self.assertIn("steps.gate.outputs.proceed", close_stream)
 
     def test_supersede_workflow_validates_identity_before_credentials(self):
         contents = workflow("benchmark-supersede.yml")

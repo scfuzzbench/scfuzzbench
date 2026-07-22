@@ -532,8 +532,8 @@ class GenerateDocsSiteTests(unittest.TestCase):
                 "bucket", [marker_key], profile=None
             )
         self.assertIn((run_id, uuid), excluded)
-        self.assertIn("malformed", excluded[(run_id, uuid)])
         self.assertEqual(1, len(warnings))
+        self.assertIn("fail closed", warnings[0])
 
         with mock.patch.object(module, "aws_text", return_value="not json"):
             excluded, warnings = module.collect_superseded_runs(

@@ -28,8 +28,8 @@ from analysis.trial_run import (  # noqa: E402
 )
 from scripts.benchmark_run_state import (  # noqa: E402
     SUPERSEDED_KEY_RE,
+    classify_superseded_marker,
     run_started_at_epoch,
-    validate_superseded_marker,
 )
 from scripts.preliminary_results import (  # noqa: E402
     ANALYSIS_META_RE,
@@ -973,15 +973,16 @@ def collect_superseded_runs(
             raw = aws_text(
                 ["s3", "cp", f"s3://{bucket}/{key}", "-"], profile=profile
             )
-            marker = validate_superseded_marker(
-                json.loads(raw), run_id=run_id, benchmark_uuid=benchmark_uuid
+            status, detail = classify_superseded_marker(
+                raw, run_id=run_id, benchmark_uuid=benchmark_uuid
             )
-            excluded[(run_id, benchmark_uuid)] = str(marker["reason"])
         except Exception as exc:
-            excluded[(run_id, benchmark_uuid)] = f"malformed supersession marker: {exc}"
+            status, detail = "malformed", f"marker could not be read: {exc}"
+        excluded[(run_id, benchmark_uuid)] = detail
+        if status != "superseded":
             warnings.append(
                 f"WARNING: supersession marker {key} is invalid; excluding the "
-                f"run anyway (fail closed): {exc}"
+                f"run anyway (fail closed): {detail}"
             )
     return excluded, warnings
 

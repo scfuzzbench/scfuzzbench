@@ -357,23 +357,33 @@ gh workflow run "Benchmark Supersede" --ref main \
   -f reason="why the run is not comparable" \
   -f replacement_issue=<issue-number> -f replacement_run_id=<replacement-run>
 
-# Restore (removes the marker after printing it for the audit trail)
+# Restore (archives the marker to run-state/supersessions/, then removes it;
+# re-promotes a demoted prerelease back to a full release by default)
 gh workflow run "Benchmark Supersede" --ref main \
   -f action=restore -f run_id=<run_id> -f benchmark_uuid=<uuid>
 ```
 
+Restore is the inverse of supersede: it deletes the marker and, unless
+`-f promote_release=false` is passed, re-promotes a release that supersession
+demoted to prerelease (drafts are never touched). If re-promotion was skipped
+or failed, run `gh release edit <tag> --prerelease=false` manually — the
+release workflow deliberately never edits or promotes draft/prerelease tags.
+
 If the run never received a canonical release, pass
 `-f close_preliminary=true` with `action=supersede` to close its preliminary
 stream with a `superseded-without-canonical-release` finalization marker
-(`finalized.json` with `superseded: true` and no canonical release tag). This
-fails if the stream was already finalized with a canonical release; that is
-intentional — investigate before overriding history.
+(`finalized.json` with `superseded: true` and no canonical release tag). For a
+run that was already superseded, use `action=close-preliminary` instead. A
+later canonical release converges: the release workflow tolerates an existing
+valid finalization marker of either form.
 
 The marker write is `If-None-Match` immutable: superseding an already
 superseded run fails, and restoring requires an explicit `restore` dispatch,
-which prints the removed marker into the workflow log for auditability. Raw
-logs, corpus, analysis artifacts, tags, and releases are never deleted by
-supersession; only discovery and indexing are affected.
+which archives the removed marker to an immutable
+`run-state/supersessions/<run_id>/<uuid>/restored-<epoch>.json` tombstone (and
+prints it in the workflow log), so supersession history survives log
+retention. Raw logs, corpus, analysis artifacts, tags, and releases are never
+deleted by supersession; only discovery and indexing are affected.
 
 ## Remote State Backend
 

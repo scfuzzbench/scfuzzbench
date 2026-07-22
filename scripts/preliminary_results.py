@@ -1223,13 +1223,32 @@ def mark_finalized(
         run_id=run_id,
         benchmark_uuid=benchmark_uuid,
     )
+    key = f"{prefix}/finalized.json"
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "finalized.json"
         path.write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        key = f"{prefix}/finalized.json"
-        put_immutable(bucket=bucket, key=key, source=path)
+        try:
+            put_immutable(bucket=bucket, key=key, source=path)
+        except Exception:
+            # The stream may already be closed in the other mode (e.g. a
+            # superseded-form marker written before the run was restored and
+            # canonically released). Any valid marker closes the stream, so
+            # converge instead of failing every subsequent release run.
+            existing = json.loads(
+                subprocess.check_output(
+                    ["aws", "s3", "cp", f"s3://{bucket}/{key}", "-"], text=True
+                )
+            )
+            validate_finalized_marker(
+                existing, run_id=run_id, benchmark_uuid=benchmark_uuid
+            )
+            print(
+                f"preliminary stream for {run_id}/{benchmark_uuid} is already "
+                "closed by an existing valid finalization marker; keeping it",
+                file=sys.stderr,
+            )
     return key
 
 

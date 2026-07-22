@@ -131,6 +131,48 @@ class FinalizedMarkerTests(unittest.TestCase):
         self.assertEqual("superseded by #258", payload["superseded_reference"])
         self.assertIs(True, payload["preliminary_stream_closed"])
 
+    def test_mark_finalized_converges_on_existing_valid_marker(self):
+        # A superseded-form marker written before a restore must not wedge
+        # the later canonical closure: any valid marker closes the stream.
+        module = self.module
+        existing = self.base_marker(
+            canonical_release_tag=None,
+            superseded=True,
+            superseded_reference="superseded by #258",
+        )
+        with mock.patch.object(
+            module, "put_immutable", side_effect=RuntimeError("divergent")
+        ), mock.patch.object(
+            module.subprocess,
+            "check_output",
+            return_value=json.dumps(existing),
+        ):
+            key = module.mark_finalized(
+                bucket="bucket",
+                run_id=self.RUN_ID,
+                benchmark_uuid=self.UUID,
+                canonical_tag=f"scfuzzbench-{self.UUID}-{self.RUN_ID}",
+            )
+        self.assertEqual(
+            f"preliminary/{self.RUN_ID}/{self.UUID}/finalized.json", key
+        )
+
+        forged = self.base_marker(canonical_release_tag="forged")
+        with mock.patch.object(
+            module, "put_immutable", side_effect=RuntimeError("divergent")
+        ), mock.patch.object(
+            module.subprocess,
+            "check_output",
+            return_value=json.dumps(forged),
+        ):
+            with self.assertRaises(ValueError):
+                module.mark_finalized(
+                    bucket="bucket",
+                    run_id=self.RUN_ID,
+                    benchmark_uuid=self.UUID,
+                    canonical_tag=f"scfuzzbench-{self.UUID}-{self.RUN_ID}",
+                )
+
     def test_mark_finalized_writes_canonical_payload(self):
         module = self.module
         captured = {}

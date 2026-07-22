@@ -1680,24 +1680,44 @@ class SupersessionMarkerTests(unittest.TestCase):
                     "bucket", self.RUN_ID, self.UUID
                 )
 
-    def test_cmd_restore_superseded_deletes_marker_and_prints_audit(self):
+    def test_cmd_restore_superseded_archives_then_deletes_marker(self):
         module = self.module
         deleted = []
+        archived = []
         with mock.patch.object(
             module, "_s3_object_text_if_exists", return_value='{"audit": 1}'
         ), mock.patch.object(
             module,
             "_s3_delete_object",
             side_effect=lambda bucket, key: deleted.append((bucket, key)),
+        ), mock.patch.object(
+            module,
+            "_s3_put_json_immutable",
+            side_effect=lambda bucket, key, payload: archived.append(
+                (key, payload)
+            ),
         ), mock.patch("builtins.print") as printer:
             args = mock.Mock(
-                bucket="bucket", run_id=self.RUN_ID, benchmark_uuid=self.UUID
+                bucket="bucket",
+                run_id=self.RUN_ID,
+                benchmark_uuid=self.UUID,
+                now_epoch=1_800_000_777,
             )
             self.assertEqual(0, module.cmd_restore_superseded(args))
         self.assertEqual(
             [("bucket", f"runs/{self.RUN_ID}/{self.UUID}/superseded.json")],
             deleted,
         )
+        # The tombstone must be written before the marker is deleted so the
+        # audit trail survives even a mid-restore failure.
+        self.assertEqual(1, len(archived))
+        archive_key, archive_payload = archived[0]
+        self.assertEqual(
+            f"run-state/supersessions/{self.RUN_ID}/{self.UUID}/"
+            "restored-1800000777.json",
+            archive_key,
+        )
+        self.assertEqual({"audit": 1}, archive_payload["marker"])
         printed = "\n".join(
             str(call.args[0]) for call in printer.call_args_list if call.args
         )
@@ -1724,9 +1744,35 @@ class SupersessionMarkerTests(unittest.TestCase):
                 return_value=("superseded", "reason"),
             ), mock.patch("builtins.print"):
                 self.assertEqual(0, module.cmd_check_superseded(args))
-            self.assertIn(
-                "superseded_status=superseded", output.read_text()
-            )
+            written = output.read_text()
+            self.assertIn("superseded_status=superseded", written)
+            self.assertIn("superseded=true", written)
+
+    def test_put_json_immutable_converges_on_identical_content(self):
+        module = self.module
+        payload = {"schema": "x"}
+        body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        failed = mock.Mock(returncode=1, stderr="PreconditionFailed")
+        with mock.patch.object(
+            module.subprocess, "run", return_value=failed
+        ), mock.patch.object(
+            module,
+            "_aws_json",
+            return_value={"Metadata": {"sha256": digest}},
+        ):
+            module._s3_put_json_immutable("bucket", "runs/x/y/z.json", payload)
+        with mock.patch.object(
+            module.subprocess, "run", return_value=failed
+        ), mock.patch.object(
+            module,
+            "_aws_json",
+            return_value={"Metadata": {"sha256": "0" * 64}},
+        ):
+            with self.assertRaises(ValueError):
+                module._s3_put_json_immutable(
+                    "bucket", "runs/x/y/z.json", payload
+                )
 
 
 if __name__ == "__main__":

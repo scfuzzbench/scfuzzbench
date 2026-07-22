@@ -1101,6 +1101,7 @@ def _s3_put_json_immutable(bucket: str, key: str, payload: dict[str, Any]) -> No
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "payload.json"
         _write_json(source, payload)
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
         result = subprocess.run(
             [
                 "aws",
@@ -1114,6 +1115,8 @@ def _s3_put_json_immutable(bucket: str, key: str, payload: dict[str, Any]) -> No
                 str(source),
                 "--if-none-match",
                 "*",
+                "--metadata",
+                f"sha256={digest}",
                 "--content-type",
                 "application/json",
             ],
@@ -1122,9 +1125,16 @@ def _s3_put_json_immutable(bucket: str, key: str, payload: dict[str, Any]) -> No
             check=False,
         )
     if result.returncode != 0:
+        # Converge when a retry raced our own successful write.
+        try:
+            head = _aws_json("s3api", "head-object", "--bucket", bucket, "--key", key)
+        except Exception:
+            head = {}
+        if str(head.get("Metadata", {}).get("sha256", "")) == digest:
+            return
         raise ValueError(
             f"failed to write immutable s3://{bucket}/{key} "
-            f"(an object may already exist): {(result.stderr or '').strip()}"
+            f"(a divergent object may already exist): {(result.stderr or '').strip()}"
         )
 
 
@@ -1135,19 +1145,15 @@ def _s3_delete_object(bucket: str, key: str) -> None:
     )
 
 
-def superseded_status(
-    bucket: str, run_id: str, benchmark_uuid: str
+def classify_superseded_marker(
+    raw: str, *, run_id: str, benchmark_uuid: str
 ) -> tuple[str, str]:
-    """Classify a run as "absent", "superseded", or "malformed".
+    """Classify raw marker text as ("superseded", reason) or ("malformed", why).
 
     Malformed markers fail closed: the run stays excluded from release and
     docs discovery until an operator restores or rewrites the marker.
     """
 
-    key = superseded_marker_key(run_id, benchmark_uuid)
-    raw = _s3_object_text_if_exists(bucket, key)
-    if raw is None:
-        return "absent", ""
     try:
         marker = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -1159,6 +1165,20 @@ def superseded_status(
     except ValueError as exc:
         return "malformed", str(exc)
     return "superseded", str(marker["reason"])
+
+
+def superseded_status(
+    bucket: str, run_id: str, benchmark_uuid: str
+) -> tuple[str, str]:
+    """Classify a run as "absent", "superseded", or "malformed"."""
+
+    key = superseded_marker_key(run_id, benchmark_uuid)
+    raw = _s3_object_text_if_exists(bucket, key)
+    if raw is None:
+        return "absent", ""
+    return classify_superseded_marker(
+        raw, run_id=run_id, benchmark_uuid=benchmark_uuid
+    )
 
 
 def cmd_identity(args: argparse.Namespace) -> int:
@@ -1649,6 +1669,23 @@ def cmd_restore_superseded(args: argparse.Namespace) -> int:
         raise ValueError(
             f"run {run_id}/{benchmark_uuid} has no supersession marker to restore"
         )
+    # Durable audit trail: archive the marker before deleting it so the
+    # supersession history outlives workflow-log retention.
+    restored_epoch = args.now_epoch or int(time.time())
+    archive_key = (
+        f"run-state/supersessions/{run_id}/{benchmark_uuid}/"
+        f"restored-{restored_epoch}.json"
+    )
+    try:
+        archived = json.loads(raw)
+    except json.JSONDecodeError:
+        archived = {"malformed_marker_text": raw}
+    _s3_put_json_immutable(
+        args.bucket,
+        archive_key,
+        {"restored_at_epoch": restored_epoch, "marker": archived},
+    )
+    print(f"Archived supersession marker to s3://{args.bucket}/{archive_key}")
     print(f"Removing supersession marker s3://{args.bucket}/{key}:")
     print(raw.rstrip("\n"))
     _s3_delete_object(args.bucket, key)
@@ -1659,9 +1696,11 @@ def cmd_check_superseded(args: argparse.Namespace) -> int:
     run_id = validate_run_id(args.run_id)
     benchmark_uuid = validate_benchmark_uuid(args.benchmark_uuid)
     status, detail = superseded_status(args.bucket, run_id, benchmark_uuid)
+    superseded = "true" if status != "absent" else "false"
     if args.github_output:
         with Path(args.github_output).open("a") as output:
             output.write(f"superseded_status={status}\n")
+            output.write(f"superseded={superseded}\n")
     print(json.dumps({"status": status, "detail": detail}, sort_keys=True))
     return 0
 
@@ -1752,6 +1791,7 @@ def build_parser() -> argparse.ArgumentParser:
     restore_superseded.add_argument("--bucket", required=True)
     restore_superseded.add_argument("--run-id", required=True)
     restore_superseded.add_argument("--benchmark-uuid", required=True)
+    restore_superseded.add_argument("--now-epoch", type=int, default=0)
     restore_superseded.set_defaults(func=cmd_restore_superseded)
 
     check_superseded = subparsers.add_parser("check-superseded")

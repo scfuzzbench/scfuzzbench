@@ -16,6 +16,7 @@ on:
           - status
           - supersede
           - restore
+          - close-preliminary
         default: status
       run_id:
         description: "Run ID (e.g. gh-29816663987-1)."
@@ -40,8 +41,13 @@ on:
         required: false
         type: boolean
         default: true
+      promote_release:
+        description: "Re-promote a prerelease back to a full release when restoring (restore only)."
+        required: false
+        type: boolean
+        default: true
       close_preliminary:
-        description: "Close the preliminary stream as superseded-without-canonical-release (supersede only; fails if the stream is already finalized)."
+        description: "Close the preliminary stream as superseded-without-canonical-release (supersede only; use action close-preliminary for an already-superseded run)."
         required: false
         type: boolean
         default: false
@@ -161,25 +167,46 @@ jobs:
         run: |
           set -euo pipefail
           tag="scfuzzbench-${BENCHMARK_UUID}-${RUN_ID}"
-          if release_json=$(gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json isPrerelease 2>/dev/null); then
+          # Distinguish "no release" from an API failure: a swallowed error
+          # here would leave a withdrawn run fully published with no signal.
+          stderr_file=$(mktemp)
+          if release_json=$(gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json isPrerelease 2>"${stderr_file}"); then
             if [[ "$(jq -r '.isPrerelease' <<<"${release_json}")" == "true" ]]; then
               echo "Release ${tag} is already a prerelease."
             else
               gh release edit "${tag}" --repo "${GITHUB_REPOSITORY}" --prerelease
               echo "Demoted release ${tag} to prerelease."
             fi
-          else
+          elif grep -qi "release not found" "${stderr_file}"; then
             echo "No GitHub release exists for ${tag}; nothing to demote."
+          else
+            echo "Failed to query release ${tag}:" >&2
+            cat "${stderr_file}" >&2
+            exit 1
           fi
 
       - name: Close preliminary stream as superseded
-        if: ${{ inputs.action == 'supersede' && inputs.close_preliminary }}
+        if: ${{ (inputs.action == 'supersede' && inputs.close_preliminary) || inputs.action == 'close-preliminary' }}
         run: |
           set -euo pipefail
           if [[ -n "${REPLACEMENT_ISSUE}" ]]; then
             reference="#${REPLACEMENT_ISSUE}"
           else
             reference="${REPLACEMENT_RUN_ID}"
+          fi
+          if [[ -z "${reference}" ]]; then
+            echo "A replacement_issue or replacement_run_id is required to close the preliminary stream." >&2
+            exit 1
+          fi
+          if [[ "${ACTION}" == "close-preliminary" ]]; then
+            status=$(python3 scripts/benchmark_run_state.py check-superseded \
+              --bucket "${SCFUZZBENCH_BUCKET}" \
+              --run-id "${RUN_ID}" \
+              --benchmark-uuid "${BENCHMARK_UUID}" | jq -r '.status')
+            if [[ "${status}" == "absent" ]]; then
+              echo "Run is not superseded; close its stream via a canonical release or supersede it first." >&2
+              exit 1
+            fi
           fi
           python3 scripts/preliminary_results.py mark-finalized \
             --bucket "${SCFUZZBENCH_BUCKET}" \
@@ -195,6 +222,31 @@ jobs:
             --bucket "${SCFUZZBENCH_BUCKET}" \
             --run-id "${RUN_ID}" \
             --benchmark-uuid "${BENCHMARK_UUID}"
+
+      - name: Re-promote restored GitHub release
+        if: ${{ inputs.action == 'restore' && inputs.promote_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="scfuzzbench-${BENCHMARK_UUID}-${RUN_ID}"
+          stderr_file=$(mktemp)
+          if release_json=$(gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json isPrerelease,isDraft 2>"${stderr_file}"); then
+            if [[ "$(jq -r '.isDraft' <<<"${release_json}")" == "true" ]]; then
+              echo "Release ${tag} is a draft; leaving it for the operator."
+            elif [[ "$(jq -r '.isPrerelease' <<<"${release_json}")" == "true" ]]; then
+              gh release edit "${tag}" --repo "${GITHUB_REPOSITORY}" --prerelease=false
+              echo "Re-promoted release ${tag} to a full release."
+            else
+              echo "Release ${tag} is already a full release."
+            fi
+          elif grep -qi "release not found" "${stderr_file}"; then
+            echo "No GitHub release exists for ${tag}; the hourly release workflow will publish it."
+          else
+            echo "Failed to query release ${tag}:" >&2
+            cat "${stderr_file}" >&2
+            exit 1
+          fi
 
       - name: Trigger docs refresh
         if: ${{ inputs.action != 'status' }}
