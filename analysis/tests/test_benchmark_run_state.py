@@ -1,7 +1,9 @@
+import hashlib
 import importlib.util
 import json
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1434,6 +1436,297 @@ class BenchmarkRunStateTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             self.module.run_started_at_epoch("gh-123-1", {})
+
+
+class SupersessionMarkerTests(unittest.TestCase):
+    RUN_ID = "gh-29816663987-1"
+    UUID = "f" * 32
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module()
+
+    def marker(self, **overrides):
+        payload = {
+            "schema": self.module.SUPERSEDED_SCHEMA,
+            "run_id": self.RUN_ID,
+            "benchmark_uuid": self.UUID,
+            "reason": "shrink-limit controls were not comparable across fuzzers",
+            "replacement_issue": 258,
+            "superseded_at_epoch": 1_800_000_000,
+            "scfuzzbench_commit": "a" * 40,
+            "manifest_sha256": "b" * 64,
+        }
+        payload.update(overrides)
+        return {key: value for key, value in payload.items() if value is not None}
+
+    def test_valid_marker_passes_validation(self):
+        marker = self.marker(replacement_run_id="gh-29835806118-1")
+        self.assertIs(
+            marker,
+            self.module.validate_superseded_marker(
+                marker, run_id=self.RUN_ID, benchmark_uuid=self.UUID
+            ),
+        )
+
+    def test_marker_key_is_pinned_to_run_identity(self):
+        self.assertEqual(
+            f"runs/{self.RUN_ID}/{self.UUID}/superseded.json",
+            self.module.superseded_marker_key(self.RUN_ID, self.UUID),
+        )
+        with self.assertRaises(ValueError):
+            self.module.superseded_marker_key("../escape", self.UUID)
+
+    def test_invalid_markers_are_rejected(self):
+        cases = {
+            "wrong schema": self.marker(schema="scfuzzbench-run-superseded/v2"),
+            "unknown key": self.marker(operator_note="x"),
+            "run mismatch": self.marker(run_id="gh-1-1"),
+            "uuid mismatch": self.marker(benchmark_uuid="0" * 32),
+            "empty reason": self.marker(reason="   "),
+            "oversized reason": self.marker(reason="x" * 2001),
+            "missing replacement": self.marker(replacement_issue=None),
+            "self replacement": self.marker(replacement_run_id=self.RUN_ID),
+            "boolean issue": self.marker(replacement_issue=True),
+            "zero issue": self.marker(replacement_issue=0),
+            "negative epoch": self.marker(superseded_at_epoch=-5),
+            "boolean epoch": self.marker(superseded_at_epoch=True),
+            "short commit": self.marker(scfuzzbench_commit="abc123"),
+            "bad manifest sha": self.marker(manifest_sha256="Z" * 64),
+            "not a dict": ["schema"],
+        }
+        for label, marker in cases.items():
+            with self.subTest(label=label):
+                with self.assertRaises(ValueError):
+                    self.module.validate_superseded_marker(
+                        marker, run_id=self.RUN_ID, benchmark_uuid=self.UUID
+                    )
+
+    def test_superseded_status_classifies_marker_states(self):
+        module = self.module
+        with mock.patch.object(
+            module, "_s3_object_text_if_exists", return_value=None
+        ):
+            self.assertEqual(
+                ("absent", ""),
+                module.superseded_status("bucket", self.RUN_ID, self.UUID),
+            )
+        with mock.patch.object(
+            module,
+            "_s3_object_text_if_exists",
+            return_value=json.dumps(self.marker()),
+        ):
+            status, detail = module.superseded_status(
+                "bucket", self.RUN_ID, self.UUID
+            )
+            self.assertEqual("superseded", status)
+            self.assertIn("shrink-limit", detail)
+        with mock.patch.object(
+            module, "_s3_object_text_if_exists", return_value="not json"
+        ):
+            status, detail = module.superseded_status(
+                "bucket", self.RUN_ID, self.UUID
+            )
+            self.assertEqual("malformed", status)
+        forged = json.dumps(self.marker(run_id="gh-1-1"))
+        with mock.patch.object(
+            module, "_s3_object_text_if_exists", return_value=forged
+        ):
+            status, detail = module.superseded_status(
+                "bucket", self.RUN_ID, self.UUID
+            )
+            self.assertEqual("malformed", status)
+            self.assertIn("run_id", detail)
+
+    def test_superseded_status_propagates_transport_failures(self):
+        # A transient S3 failure must fail discovery loudly instead of being
+        # read as "not superseded" and republishing the run.
+        with mock.patch.object(
+            self.module,
+            "_s3_object_text_if_exists",
+            side_effect=RuntimeError("transport"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.module.superseded_status("bucket", self.RUN_ID, self.UUID)
+
+    def test_cmd_supersede_writes_validated_immutable_marker(self):
+        module = self.module
+        manifest_raw = json.dumps({"run_id": self.RUN_ID})
+        puts = []
+        args = mock.Mock(
+            bucket="bucket",
+            run_id=self.RUN_ID,
+            benchmark_uuid=self.UUID,
+            reason="not comparable",
+            replacement_run_id="",
+            replacement_issue="258",
+            scfuzzbench_commit="a" * 40,
+            now_epoch=1_800_000_123,
+        )
+        with mock.patch.object(
+            module, "superseded_status", return_value=("absent", "")
+        ), mock.patch.object(
+            module, "_read_superseded_run_manifest", return_value=manifest_raw
+        ), mock.patch.object(
+            module,
+            "_s3_put_json_immutable",
+            side_effect=lambda bucket, key, payload: puts.append(
+                (bucket, key, payload)
+            ),
+        ), mock.patch("builtins.print"):
+            self.assertEqual(0, module.cmd_supersede(args))
+        (bucket, key, payload) = puts[0]
+        self.assertEqual("bucket", bucket)
+        self.assertEqual(
+            f"runs/{self.RUN_ID}/{self.UUID}/superseded.json", key
+        )
+        self.assertEqual(258, payload["replacement_issue"])
+        self.assertNotIn("replacement_run_id", payload)
+        self.assertEqual(1_800_000_123, payload["superseded_at_epoch"])
+        self.assertEqual(
+            hashlib.sha256(manifest_raw.encode("utf-8")).hexdigest(),
+            payload["manifest_sha256"],
+        )
+
+    def test_cmd_supersede_refuses_existing_or_malformed_marker(self):
+        for status in ("superseded", "malformed"):
+            with self.subTest(status=status):
+                args = mock.Mock(
+                    bucket="bucket",
+                    run_id=self.RUN_ID,
+                    benchmark_uuid=self.UUID,
+                    reason="again",
+                    replacement_run_id="",
+                    replacement_issue="258",
+                    scfuzzbench_commit="a" * 40,
+                    now_epoch=1,
+                )
+                with mock.patch.object(
+                    self.module,
+                    "superseded_status",
+                    return_value=(status, "detail"),
+                ):
+                    with self.assertRaises(ValueError):
+                        self.module.cmd_supersede(args)
+
+    def test_cmd_supersede_requires_a_replacement(self):
+        args = mock.Mock(
+            bucket="bucket",
+            run_id=self.RUN_ID,
+            benchmark_uuid=self.UUID,
+            reason="no replacement given",
+            replacement_run_id="",
+            replacement_issue="",
+            scfuzzbench_commit="a" * 40,
+            now_epoch=1,
+        )
+        with mock.patch.object(
+            self.module, "superseded_status", return_value=("absent", "")
+        ), mock.patch.object(
+            self.module,
+            "_read_superseded_run_manifest",
+            return_value="{}",
+        ):
+            with self.assertRaises(ValueError):
+                self.module.cmd_supersede(args)
+
+    def test_read_superseded_run_manifest_requires_consistent_copies(self):
+        module = self.module
+
+        def reader(values):
+            def read(_bucket, key):
+                return values.get(key)
+
+            return read
+
+        logs_key = f"logs/{self.RUN_ID}/{self.UUID}/manifest.json"
+        runs_key = f"runs/{self.RUN_ID}/{self.UUID}/manifest.json"
+        same = json.dumps({"run_id": self.RUN_ID})
+        with mock.patch.object(
+            module,
+            "_s3_object_text_if_exists",
+            side_effect=reader({logs_key: same, runs_key: same}),
+        ):
+            self.assertEqual(
+                same,
+                module._read_superseded_run_manifest(
+                    "bucket", self.RUN_ID, self.UUID
+                ),
+            )
+        with mock.patch.object(
+            module,
+            "_s3_object_text_if_exists",
+            side_effect=reader({logs_key: same, runs_key: "{}"}),
+        ):
+            with self.assertRaises(ValueError):
+                module._read_superseded_run_manifest(
+                    "bucket", self.RUN_ID, self.UUID
+                )
+        with mock.patch.object(
+            module, "_s3_object_text_if_exists", side_effect=reader({})
+        ):
+            with self.assertRaises(ValueError):
+                module._read_superseded_run_manifest(
+                    "bucket", self.RUN_ID, self.UUID
+                )
+        mismatched = json.dumps({"run_id": "gh-1-1"})
+        with mock.patch.object(
+            module,
+            "_s3_object_text_if_exists",
+            side_effect=reader({logs_key: mismatched}),
+        ):
+            with self.assertRaises(ValueError):
+                module._read_superseded_run_manifest(
+                    "bucket", self.RUN_ID, self.UUID
+                )
+
+    def test_cmd_restore_superseded_deletes_marker_and_prints_audit(self):
+        module = self.module
+        deleted = []
+        with mock.patch.object(
+            module, "_s3_object_text_if_exists", return_value='{"audit": 1}'
+        ), mock.patch.object(
+            module,
+            "_s3_delete_object",
+            side_effect=lambda bucket, key: deleted.append((bucket, key)),
+        ), mock.patch("builtins.print") as printer:
+            args = mock.Mock(
+                bucket="bucket", run_id=self.RUN_ID, benchmark_uuid=self.UUID
+            )
+            self.assertEqual(0, module.cmd_restore_superseded(args))
+        self.assertEqual(
+            [("bucket", f"runs/{self.RUN_ID}/{self.UUID}/superseded.json")],
+            deleted,
+        )
+        printed = "\n".join(
+            str(call.args[0]) for call in printer.call_args_list if call.args
+        )
+        self.assertIn('{"audit": 1}', printed)
+        with mock.patch.object(
+            module, "_s3_object_text_if_exists", return_value=None
+        ):
+            with self.assertRaises(ValueError):
+                module.cmd_restore_superseded(args)
+
+    def test_cmd_check_superseded_reports_status(self):
+        module = self.module
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "github-output"
+            args = mock.Mock(
+                bucket="bucket",
+                run_id=self.RUN_ID,
+                benchmark_uuid=self.UUID,
+                github_output=str(output),
+            )
+            with mock.patch.object(
+                module,
+                "superseded_status",
+                return_value=("superseded", "reason"),
+            ), mock.patch("builtins.print"):
+                self.assertEqual(0, module.cmd_check_superseded(args))
+            self.assertIn(
+                "superseded_status=superseded", output.read_text()
+            )
 
 
 if __name__ == "__main__":

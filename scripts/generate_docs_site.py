@@ -26,7 +26,11 @@ from analysis.trial_run import (  # noqa: E402
     MIN_RUNS_PER_FUZZER,
     format_trial_run_warning,
 )
-from scripts.benchmark_run_state import run_started_at_epoch  # noqa: E402
+from scripts.benchmark_run_state import (  # noqa: E402
+    SUPERSEDED_KEY_RE,
+    run_started_at_epoch,
+    validate_superseded_marker,
+)
 from scripts.preliminary_results import (  # noqa: E402
     ANALYSIS_META_RE,
     FINALIZED_KEY_RE,
@@ -730,6 +734,7 @@ def generate_preliminary_pages(
     docs_dir: Path,
     now: int,
     generated_at: str,
+    superseded_runs: set[tuple[str, str]] | None = None,
 ) -> None:
     keys = list_keys(bucket, "preliminary/", profile=profile)
     run_keys = sorted(key for key in keys if PRELIMINARY_RUN_KEY_RE.fullmatch(key))
@@ -792,6 +797,8 @@ def generate_preliminary_pages(
             print(f"WARNING: skipping malformed preliminary manifest {key}: {exc}", file=sys.stderr)
             continue
         if not manifest["preliminary"]["enabled"] or (run_id, uuid) in finalized:
+            continue
+        if superseded_runs and (run_id, uuid) in superseded_runs:
             continue
         deadline = manifest["run_started_at_epoch"] + int(
             manifest["timeout_hours"] * 3600
@@ -946,6 +953,39 @@ def generate_preliminary_pages(
         )
 
 
+def collect_superseded_runs(
+    bucket: str, keys: list[str], *, profile: str | None
+) -> tuple[dict[tuple[str, str], str], list[str]]:
+    """Map (run_id, benchmark_uuid) to the reason each run is excluded.
+
+    Malformed markers fail closed: the run is excluded either way, so a
+    corrupted marker can never resurface a superseded run in the docs.
+    """
+
+    excluded: dict[tuple[str, str], str] = {}
+    warnings: list[str] = []
+    for key in sorted(keys):
+        match = SUPERSEDED_KEY_RE.fullmatch(key)
+        if not match:
+            continue
+        run_id, benchmark_uuid = match.group(1), match.group(2)
+        try:
+            raw = aws_text(
+                ["s3", "cp", f"s3://{bucket}/{key}", "-"], profile=profile
+            )
+            marker = validate_superseded_marker(
+                json.loads(raw), run_id=run_id, benchmark_uuid=benchmark_uuid
+            )
+            excluded[(run_id, benchmark_uuid)] = str(marker["reason"])
+        except Exception as exc:
+            excluded[(run_id, benchmark_uuid)] = f"malformed supersession marker: {exc}"
+            warnings.append(
+                f"WARNING: supersession marker {key} is invalid; excluding the "
+                f"run anyway (fail closed): {exc}"
+            )
+    return excluded, warnings
+
+
 @dataclass(frozen=True)
 class Run:
     run_id: str
@@ -1005,9 +1045,21 @@ def main() -> int:
         )
     print(f"Matched {len(candidates)} run manifest keys")
 
+    superseded_runs, superseded_warnings = collect_superseded_runs(
+        bucket, keys, profile=profile
+    )
+    for warning in superseded_warnings:
+        print(warning, file=sys.stderr)
+
     # Load manifests + filter complete runs.
     complete_runs: list[Run] = []
     for run_id, benchmark_uuid, manifest_key in sorted(candidates, reverse=True):
+        if (run_id, benchmark_uuid) in superseded_runs:
+            print(
+                f"Excluding superseded run {run_id}/{benchmark_uuid}: "
+                f"{superseded_runs[(run_id, benchmark_uuid)]}"
+            )
+            continue
         try:
             raw = aws_text(["s3", "cp", f"s3://{bucket}/{manifest_key}", "-"], profile=profile)
             manifest = json.loads(raw)
@@ -1066,6 +1118,7 @@ def main() -> int:
         docs_dir=docs_dir,
         now=now,
         generated_at=generated_at,
+        superseded_runs=set(superseded_runs),
     )
 
     # Build compile-time EC2 pricing table for the Start Benchmark page.

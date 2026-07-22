@@ -119,7 +119,8 @@ jobs:
             analysis.tests.test_analyze_summary \
             analysis.tests.test_benchmark_run_state \
             analysis.tests.test_workflow_safety_contracts \
-            analysis.tests.test_generate_docs_site
+            analysis.tests.test_generate_docs_site \
+            analysis.tests.test_preliminary_finalized_marker
 
       - name: Run runner filesystem and bootstrap regressions
         run: |

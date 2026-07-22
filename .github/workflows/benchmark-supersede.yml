@@ -1,0 +1,205 @@
+name: Benchmark Supersede
+
+# Operator workflow: mark a published or publishable benchmark run as
+# superseded so scheduled release discovery and docs discovery skip it, or
+# restore a previously superseded run. The marker is an immutable, validated
+# S3 object at runs/<run_id>/<benchmark_uuid>/superseded.json.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Operation to perform."
+        required: true
+        type: choice
+        options:
+          - status
+          - supersede
+          - restore
+        default: status
+      run_id:
+        description: "Run ID (e.g. gh-29816663987-1)."
+        required: true
+      benchmark_uuid:
+        description: "Benchmark UUID (32 hex characters)."
+        required: true
+      reason:
+        description: "Why the run is superseded (required for supersede)."
+        required: false
+        default: ""
+      replacement_run_id:
+        description: "Run ID that replaces this run (optional)."
+        required: false
+        default: ""
+      replacement_issue:
+        description: "Issue number documenting the replacement (optional)."
+        required: false
+        default: ""
+      demote_release:
+        description: "Demote an existing GitHub release for this run to prerelease (supersede only)."
+        required: false
+        type: boolean
+        default: true
+      close_preliminary:
+        description: "Close the preliminary stream as superseded-without-canonical-release (supersede only; fails if the stream is already finalized)."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  authorize-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require trusted main ref
+        env:
+          GITHUB_REF_VALUE: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_VALUE}" != "refs/heads/main" ]]; then
+            echo "Privileged benchmark workflows may run only from refs/heads/main." >&2
+            exit 1
+          fi
+
+  supersede:
+    needs: authorize-main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ACTION: ${{ inputs.action }}
+      AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || 'us-east-1' }}
+      BENCHMARK_UUID: ${{ inputs.benchmark_uuid }}
+      REPLACEMENT_ISSUE: ${{ inputs.replacement_issue }}
+      REPLACEMENT_RUN_ID: ${{ inputs.replacement_run_id }}
+      RUN_ID: ${{ inputs.run_id }}
+      SCFUZZBENCH_BUCKET: ${{ secrets.SCFUZZBENCH_BUCKET }}
+      SUPERSEDE_REASON: ${{ inputs.reason }}
+    steps:
+      - name: Revalidate identity before credentials
+        run: |
+          set -euo pipefail
+          if [[ ! "${RUN_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$ ]]; then
+            echo "Invalid run_id." >&2
+            exit 1
+          fi
+          if [[ ! "${BENCHMARK_UUID}" =~ ^[0-9a-f]{32}$ ]]; then
+            echo "Invalid benchmark_uuid." >&2
+            exit 1
+          fi
+          if [[ -n "${REPLACEMENT_RUN_ID}" && ! "${REPLACEMENT_RUN_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$ ]]; then
+            echo "Invalid replacement_run_id." >&2
+            exit 1
+          fi
+          if [[ -n "${REPLACEMENT_ISSUE}" && ! "${REPLACEMENT_ISSUE}" =~ ^[0-9]{1,9}$ ]]; then
+            echo "Invalid replacement_issue." >&2
+            exit 1
+          fi
+          if [[ "${ACTION}" == "supersede" && -z "${SUPERSEDE_REASON// /}" ]]; then
+            echo "A non-empty reason is required to supersede a run." >&2
+            exit 1
+          fi
+
+      - name: Checkout trusted main source
+        timeout-minutes: 5
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          url="https://codeload.github.com/${REPO}/tar.gz/${SHA}"
+          curl -fsSL "${url}" -o repo.tar.gz
+          topdir="$(tar -tzf repo.tar.gz | sed -n '1p' | cut -d/ -f1)"
+          tar -xzf repo.tar.gz
+          shopt -s dotglob
+          mv "${topdir}"/* .
+          rm -rf "${topdir}" repo.tar.gz
+
+      - name: Configure AWS credentials (keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Report supersession status
+        if: ${{ inputs.action == 'status' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py check-superseded \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${RUN_ID}" \
+            --benchmark-uuid "${BENCHMARK_UUID}"
+
+      - name: Write supersession marker
+        if: ${{ inputs.action == 'supersede' }}
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          args=(
+            --bucket "${SCFUZZBENCH_BUCKET}"
+            --run-id "${RUN_ID}"
+            --benchmark-uuid "${BENCHMARK_UUID}"
+            --reason "${SUPERSEDE_REASON}"
+            --scfuzzbench-commit "${SHA}"
+          )
+          if [[ -n "${REPLACEMENT_RUN_ID}" ]]; then
+            args+=(--replacement-run-id "${REPLACEMENT_RUN_ID}")
+          fi
+          if [[ -n "${REPLACEMENT_ISSUE}" ]]; then
+            args+=(--replacement-issue "${REPLACEMENT_ISSUE}")
+          fi
+          python3 scripts/benchmark_run_state.py supersede "${args[@]}"
+
+      - name: Demote existing GitHub release to prerelease
+        if: ${{ inputs.action == 'supersede' && inputs.demote_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="scfuzzbench-${BENCHMARK_UUID}-${RUN_ID}"
+          if release_json=$(gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json isPrerelease 2>/dev/null); then
+            if [[ "$(jq -r '.isPrerelease' <<<"${release_json}")" == "true" ]]; then
+              echo "Release ${tag} is already a prerelease."
+            else
+              gh release edit "${tag}" --repo "${GITHUB_REPOSITORY}" --prerelease
+              echo "Demoted release ${tag} to prerelease."
+            fi
+          else
+            echo "No GitHub release exists for ${tag}; nothing to demote."
+          fi
+
+      - name: Close preliminary stream as superseded
+        if: ${{ inputs.action == 'supersede' && inputs.close_preliminary }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${REPLACEMENT_ISSUE}" ]]; then
+            reference="#${REPLACEMENT_ISSUE}"
+          else
+            reference="${REPLACEMENT_RUN_ID}"
+          fi
+          python3 scripts/preliminary_results.py mark-finalized \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${RUN_ID}" \
+            --benchmark-uuid "${BENCHMARK_UUID}" \
+            --superseded-reference "superseded by ${reference}"
+
+      - name: Restore superseded run
+        if: ${{ inputs.action == 'restore' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py restore-superseded \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${RUN_ID}" \
+            --benchmark-uuid "${BENCHMARK_UUID}"
+
+      - name: Trigger docs refresh
+        if: ${{ inputs.action != 'status' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh workflow run "Docs Site" --repo "${GITHUB_REPOSITORY}" --ref main

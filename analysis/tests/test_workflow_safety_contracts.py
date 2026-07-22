@@ -101,6 +101,7 @@ class WorkflowSafetyContractTests(unittest.TestCase):
             },
             "docs.yml": {"build", "deploy"},
             "s3-inspect.yml": {"inspect"},
+            "benchmark-supersede.yml": {"supersede"},
         }
         for filename, names in privileged_jobs.items():
             contents = workflow(filename)
@@ -508,8 +509,10 @@ exit "${{status}}"
     def test_force_reanalysis_refreshes_existing_release_notes(self):
         release = job_blocks(workflow("benchmark-release.yml"))["release"]
         condition = (
-            "if: ${{ steps.release_check.outputs.exists != 'true' "
-            "|| inputs.force_reanalyze == 'true' }}"
+            "if: ${{ steps.supersession.outputs.superseded != 'true' "
+            "&& steps.release_check.outputs.blocked != 'true' "
+            "&& (steps.release_check.outputs.exists != 'true' "
+            "|| inputs.force_reanalyze == 'true') }}"
         )
         compose = release[
             release.index("- name: Compose release body") :
@@ -583,6 +586,59 @@ exit "${{status}}"
                         f"--notes-file {release_body}",
                         invocation[0],
                     )
+
+    def test_release_discovery_and_publish_honor_supersession(self):
+        contents = workflow("benchmark-release.yml")
+        blocks = job_blocks(contents)
+        discover = blocks["discover"]
+        release = blocks["release"]
+
+        # Both the manual dispatch path and hourly auto-discovery must
+        # consult the supersession marker before emitting a matrix entry.
+        self.assertEqual(2, discover.count("superseded_status("))
+        self.assertIn("Refusing to release", discover)
+        self.assertIn("Skipping superseded run", discover)
+
+        # The release job re-checks the marker (a re-run of an old workflow
+        # can carry a stale matrix) and never edits draft/prerelease tags.
+        self.assertIn("- name: Check supersession marker", release)
+        self.assertLess(
+            release.index("- name: Check supersession marker"),
+            release.index("- name: Check for existing release"),
+        )
+        self.assertIn("--json isDraft,isPrerelease", release)
+        guard = (
+            "steps.supersession.outputs.superseded != 'true' "
+            "&& steps.release_check.outputs.blocked != 'true'"
+        )
+        publish = release[
+            release.index("- name: Create or update GitHub release") :
+            release.index("- name: Close preliminary stream")
+        ]
+        self.assertIn(guard, publish)
+        close_stream = release[
+            release.index("- name: Close preliminary stream") :
+        ]
+        self.assertIn(guard, close_stream)
+        self.assertNotIn("--latest", release)
+
+    def test_supersede_workflow_validates_identity_before_credentials(self):
+        contents = workflow("benchmark-supersede.yml")
+        blocks = job_blocks(contents)
+        supersede = blocks["supersede"]
+        self.assertLess(
+            supersede.index("Revalidate identity before credentials"),
+            supersede.index("Configure AWS credentials"),
+        )
+        for command in ("check-superseded", "supersede", "restore-superseded"):
+            self.assertIn(command, supersede)
+        self.assertIn("mark-finalized", supersede)
+        self.assertIn("--superseded-reference", supersede)
+        self.assertIn("--prerelease", supersede)
+        self.assertNotIn("--latest", supersede)
+        for body in run_bodies(contents):
+            with self.subTest(body=body[:80]):
+                self.assertNotIn("${{", body)
 
 
 if __name__ == "__main__":

@@ -322,6 +322,59 @@ a new Actions attempt); it receives a new immutable run ID and state key.
 For local-only Terraform use, set a distinct `TF_VAR_run_id` and
 `TF_VAR_run_started_at_epoch` before initializing its dedicated backend key.
 
+## Supersede A Benchmark Run
+
+When a completed run must not be published or ranked (for example its controls
+were later found to be non-comparable and a replacement run exists), mark it
+superseded instead of deleting its release: deletion is not durable because the
+hourly Benchmark Release workflow rediscovers and republishes any complete run.
+
+Supersession is recorded as a validated, immutable S3 marker at
+`runs/<run_id>/<benchmark_uuid>/superseded.json`
+(schema `scfuzzbench-run-superseded/v1`). The marker carries the run identity,
+a reason, a replacement run ID and/or replacement issue number, the marking
+commit, and the SHA-256 of the run's manifest, so it cannot be silently
+retargeted. Effects while the marker exists:
+
+- Scheduled and manual release discovery skip the run; manual dispatch fails
+  loudly instead of publishing.
+- The release job never edits or promotes an existing draft or prerelease tag.
+- The docs site excludes the run from the runs index, benchmark pages,
+  preliminary pages, and `/runs/latest`.
+- A malformed or forged marker fails closed: the run stays excluded until an
+  operator restores or rewrites the marker.
+
+Operate it through the **Benchmark Supersede** workflow (main-only dispatch):
+
+```bash
+# Inspect
+gh workflow run "Benchmark Supersede" --ref main \
+  -f action=status -f run_id=<run_id> -f benchmark_uuid=<uuid>
+
+# Mark superseded (demotes an existing release to prerelease by default)
+gh workflow run "Benchmark Supersede" --ref main \
+  -f action=supersede -f run_id=<run_id> -f benchmark_uuid=<uuid> \
+  -f reason="why the run is not comparable" \
+  -f replacement_issue=<issue-number> -f replacement_run_id=<replacement-run>
+
+# Restore (removes the marker after printing it for the audit trail)
+gh workflow run "Benchmark Supersede" --ref main \
+  -f action=restore -f run_id=<run_id> -f benchmark_uuid=<uuid>
+```
+
+If the run never received a canonical release, pass
+`-f close_preliminary=true` with `action=supersede` to close its preliminary
+stream with a `superseded-without-canonical-release` finalization marker
+(`finalized.json` with `superseded: true` and no canonical release tag). This
+fails if the stream was already finalized with a canonical release; that is
+intentional — investigate before overriding history.
+
+The marker write is `If-None-Match` immutable: superseding an already
+superseded run fails, and restoring requires an explicit `restore` dispatch,
+which prints the removed marker into the workflow log for auditability. Raw
+logs, corpus, analysis artifacts, tags, and releases are never deleted by
+supersession; only discovery and indexing are affected.
+
 ## Remote State Backend
 
 1. Create backend resources:

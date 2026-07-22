@@ -497,5 +497,103 @@ class GenerateDocsSiteTests(unittest.TestCase):
                 generated_at="now",
             )
 
+    def test_superseded_markers_exclude_runs_and_fail_closed(self):
+        module = load_generate_docs_site()
+        run_id = "gh-29816663987-1"
+        uuid = "f" * 32
+        marker_key = f"runs/{run_id}/{uuid}/superseded.json"
+        valid_marker = {
+            "schema": "scfuzzbench-run-superseded/v1",
+            "run_id": run_id,
+            "benchmark_uuid": uuid,
+            "reason": "shrink parity",
+            "replacement_issue": 258,
+            "superseded_at_epoch": 1_800_000_000,
+            "scfuzzbench_commit": "a" * 40,
+            "manifest_sha256": "b" * 64,
+        }
+
+        with mock.patch.object(
+            module, "aws_text", return_value=json.dumps(valid_marker)
+        ):
+            excluded, warnings = module.collect_superseded_runs(
+                "bucket",
+                [marker_key, f"runs/{run_id}/{uuid}/manifest.json"],
+                profile=None,
+            )
+        self.assertEqual({(run_id, uuid): "shrink parity"}, excluded)
+        self.assertEqual([], warnings)
+
+        forged = {**valid_marker, "run_id": "gh-1-1"}
+        with mock.patch.object(
+            module, "aws_text", return_value=json.dumps(forged)
+        ):
+            excluded, warnings = module.collect_superseded_runs(
+                "bucket", [marker_key], profile=None
+            )
+        self.assertIn((run_id, uuid), excluded)
+        self.assertIn("malformed", excluded[(run_id, uuid)])
+        self.assertEqual(1, len(warnings))
+
+        with mock.patch.object(module, "aws_text", return_value="not json"):
+            excluded, warnings = module.collect_superseded_runs(
+                "bucket", [marker_key], profile=None
+            )
+        self.assertIn((run_id, uuid), excluded)
+        self.assertEqual(1, len(warnings))
+
+        with mock.patch.object(
+            module, "aws_text", side_effect=RuntimeError("transport")
+        ):
+            excluded, warnings = module.collect_superseded_runs(
+                "bucket", [marker_key], profile=None
+            )
+        self.assertIn((run_id, uuid), excluded)
+
+        with mock.patch.object(module, "aws_text") as aws_text:
+            excluded, warnings = module.collect_superseded_runs(
+                "bucket", [f"runs/{run_id}/{uuid}/manifest.json"], profile=None
+            )
+        aws_text.assert_not_called()
+        self.assertEqual({}, excluded)
+
+    def test_preliminary_pages_skip_superseded_runs(self):
+        module = load_generate_docs_site()
+        run_id = "gh-24680-1"
+        uuid = "b" * 32
+        run_key = f"preliminary/{run_id}/{uuid}/run.json"
+        manifest = {
+            "schema": "scfuzzbench-preliminary-run/v1",
+            "run_id": run_id,
+            "benchmark_uuid": uuid,
+            "run_started_at_epoch": 1_800_000_000,
+            "timeout_hours": 4,
+            "instances_per_fuzzer": 1,
+            "fuzzer_keys": ["foundry"],
+            "preliminary": {"enabled": True, "interval_seconds": 3600},
+        }
+
+        def payload(_bucket, key, *, profile, max_bytes, expected_sha256=""):
+            del key, profile, max_bytes, expected_sha256
+            return json.dumps(manifest)
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            module, "list_keys", return_value=[run_key]
+        ), mock.patch.object(
+            module, "preliminary_text", side_effect=payload
+        ):
+            docs = Path(tmp)
+            module.generate_preliminary_pages(
+                bucket="bucket",
+                region="us-east-1",
+                profile=None,
+                docs_dir=docs,
+                now=manifest["run_started_at_epoch"] + 3600,
+                generated_at="2027-01-15 10:05:00Z",
+                superseded_runs={(run_id, uuid)},
+            )
+            self.assertFalse((docs / "preliminary" / run_id / uuid).exists())
+
+
 if __name__ == "__main__":
     unittest.main()
