@@ -254,6 +254,25 @@ def validate_finalized_marker(
         raise ValueError("finalization benchmark_uuid does not match its key")
     if marker.get("preliminary_stream_closed") is not True:
         raise ValueError("finalization marker does not close the preliminary stream")
+    if marker.get("superseded") is True:
+        # Superseded runs may close their preliminary stream without ever
+        # receiving a canonical release.
+        if marker.get("canonical_release_tag") not in (None, ""):
+            raise ValueError(
+                "superseded finalization marker must not claim a canonical "
+                "release tag"
+            )
+        reference = marker.get("superseded_reference")
+        if (
+            not isinstance(reference, str)
+            or not reference.strip()
+            or len(reference) > 200
+        ):
+            raise ValueError(
+                "superseded finalization marker requires a superseded_reference "
+                "of at most 200 characters"
+            )
+        return marker
     expected_tag = f"scfuzzbench-{benchmark_uuid}-{run_id}"
     if marker.get("canonical_release_tag") != expected_tag:
         raise ValueError("finalization marker has an unexpected canonical release tag")
@@ -1177,28 +1196,59 @@ def publish_tree(*, bucket: str, source: Path) -> str:
 
 
 def mark_finalized(
-    *, bucket: str, run_id: str, benchmark_uuid: str, canonical_tag: str
+    *,
+    bucket: str,
+    run_id: str,
+    benchmark_uuid: str,
+    canonical_tag: str = "",
+    superseded_reference: str = "",
 ) -> str:
+    if bool(canonical_tag) == bool(superseded_reference):
+        raise ValueError(
+            "exactly one of canonical_tag or superseded_reference is required"
+        )
     prefix = run_prefix(run_id, benchmark_uuid)
     payload = {
         "schema": FINALIZED_SCHEMA,
         "run_id": run_id,
         "benchmark_uuid": benchmark_uuid,
-        "canonical_release_tag": canonical_tag,
+        "canonical_release_tag": canonical_tag or None,
         "preliminary_stream_closed": True,
     }
+    if superseded_reference:
+        payload["superseded"] = True
+        payload["superseded_reference"] = superseded_reference
     validate_finalized_marker(
         payload,
         run_id=run_id,
         benchmark_uuid=benchmark_uuid,
     )
+    key = f"{prefix}/finalized.json"
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "finalized.json"
         path.write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        key = f"{prefix}/finalized.json"
-        put_immutable(bucket=bucket, key=key, source=path)
+        try:
+            put_immutable(bucket=bucket, key=key, source=path)
+        except Exception:
+            # The stream may already be closed in the other mode (e.g. a
+            # superseded-form marker written before the run was restored and
+            # canonically released). Any valid marker closes the stream, so
+            # converge instead of failing every subsequent release run.
+            existing = json.loads(
+                subprocess.check_output(
+                    ["aws", "s3", "cp", f"s3://{bucket}/{key}", "-"], text=True
+                )
+            )
+            validate_finalized_marker(
+                existing, run_id=run_id, benchmark_uuid=benchmark_uuid
+            )
+            print(
+                f"preliminary stream for {run_id}/{benchmark_uuid} is already "
+                "closed by an existing valid finalization marker; keeping it",
+                file=sys.stderr,
+            )
     return key
 
 
@@ -1262,7 +1312,8 @@ def main() -> int:
     finalized.add_argument("--bucket", required=True)
     finalized.add_argument("--run-id", required=True)
     finalized.add_argument("--benchmark-uuid", required=True)
-    finalized.add_argument("--canonical-tag", required=True)
+    finalized.add_argument("--canonical-tag", default="")
+    finalized.add_argument("--superseded-reference", default="")
 
     args = parser.parse_args()
     if args.command == "write-run-manifest":
@@ -1359,6 +1410,7 @@ def main() -> int:
                 run_id=args.run_id,
                 benchmark_uuid=args.benchmark_uuid,
                 canonical_tag=args.canonical_tag,
+                superseded_reference=args.superseded_reference,
             )
         )
     return 0

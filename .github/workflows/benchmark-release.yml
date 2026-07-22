@@ -124,6 +124,7 @@ jobs:
           import json
           import os
           from scripts.benchmark_run_state import (
+              superseded_status,
               validate_benchmark_hours,
               validate_benchmark_uuid,
               validate_run_id,
@@ -135,6 +136,18 @@ jobs:
               ),
               "run_id": validate_run_id(os.environ["RUN_ID"]),
           }
+          status, detail = superseded_status(
+              os.environ["SCFUZZBENCH_BUCKET"],
+              entry["run_id"],
+              entry["benchmark_uuid"],
+          )
+          if status != "absent":
+              raise SystemExit(
+                  f"Refusing to release {entry['run_id']}/"
+                  f"{entry['benchmark_uuid']}: run is superseded "
+                  f"({status}): {detail}. Restore the marker via the "
+                  "Benchmark Supersede workflow before publishing."
+              )
           report_budget = os.environ.get("REPORT_BUDGET_HOURS", "").strip()
           if report_budget:
               entry["report_budget_hours"] = validate_benchmark_hours(
@@ -152,8 +165,11 @@ jobs:
           import json
           import os
           import subprocess
+          import sys
           import time
           from scripts.benchmark_run_state import (
+              SUPERSEDED_KEY_RE,
+              list_s3_keys,
               validate_benchmark_hours,
               validate_benchmark_uuid,
               validate_run_id,
@@ -162,6 +178,15 @@ jobs:
           bucket = os.environ["SCFUZZBENCH_BUCKET"]
           grace = int(os.environ.get("GRACE_SECONDS", "3600"))
           now = int(time.time())
+
+          # One paginated listing answers "is any run superseded" for the
+          # whole hour; marker presence excludes fail-closed (the release
+          # job re-validates marker content before publishing).
+          superseded = set()
+          for key in list_s3_keys(bucket, "runs/"):
+              marker_match = SUPERSEDED_KEY_RE.fullmatch(key)
+              if marker_match:
+                  superseded.add((marker_match.group(1), marker_match.group(2)))
 
           def aws(*args: str) -> str:
               return subprocess.check_output(["aws", *args], text=True)
@@ -228,6 +253,13 @@ jobs:
                   if run_start <= 0:
                       continue
                   if now >= run_start + int(timeout_hours * 3600) + grace:
+                      if (run_id, benchmark_uuid) in superseded:
+                          print(
+                              f"Skipping superseded run {run_id}/"
+                              f"{benchmark_uuid}",
+                              file=sys.stderr,
+                          )
+                          continue
                       runs.append(
                           {
                               "benchmark_uuid": benchmark_uuid,
@@ -305,6 +337,16 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Check supersession marker
+        id: supersession
+        run: |
+          set -euo pipefail
+          python3 scripts/benchmark_run_state.py check-superseded \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${RUN_ID}" \
+            --benchmark-uuid "${BENCHMARK_UUID}" \
+            --github-output "${GITHUB_OUTPUT}"
+
       - name: Check for existing release
         id: release_check
         env:
@@ -312,25 +354,59 @@ jobs:
         run: |
           set -euo pipefail
           tag="scfuzzbench-${BENCHMARK_UUID}-${RUN_ID}"
-          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+          if release_json=$(gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json isDraft,isPrerelease 2>/dev/null); then
             echo "exists=true" >> "${GITHUB_OUTPUT}"
+            is_draft=$(jq -r '.isDraft' <<<"${release_json}")
+            is_prerelease=$(jq -r '.isPrerelease' <<<"${release_json}")
+            if [[ "${is_draft}" == "true" || "${is_prerelease}" == "true" ]]; then
+              echo "Existing release ${tag} is a draft or prerelease; it will never be edited or promoted by automation." >&2
+              echo "blocked=true" >> "${GITHUB_OUTPUT}"
+            else
+              echo "blocked=false" >> "${GITHUB_OUTPUT}"
+            fi
           else
             echo "exists=false" >> "${GITHUB_OUTPUT}"
+            echo "blocked=false" >> "${GITHUB_OUTPUT}"
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 
+      - name: Compute release gate
+        id: gate
+        env:
+          BLOCKED: ${{ steps.release_check.outputs.blocked }}
+          FORCE_REANALYZE: ${{ inputs.force_reanalyze }}
+          RELEASE_EXISTS: ${{ steps.release_check.outputs.exists }}
+          SUPERSEDED: ${{ steps.supersession.outputs.superseded }}
+        run: |
+          set -euo pipefail
+          proceed=false
+          analyze=false
+          if [[ "${SUPERSEDED}" != "true" && "${BLOCKED}" != "true" ]]; then
+            proceed=true
+            if [[ "${RELEASE_EXISTS}" != "true" || "${FORCE_REANALYZE}" == "true" ]]; then
+              analyze=true
+            fi
+          fi
+          if [[ "${proceed}" != "true" ]]; then
+            echo "Release gate closed (superseded=${SUPERSEDED}, blocked=${BLOCKED}); skipping all release steps."
+          fi
+          {
+            echo "proceed=${proceed}"
+            echo "analyze=${analyze}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Setup Python
-        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
+        if: ${{ steps.gate.outputs.analyze == 'true' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install analysis dependencies
-        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
+        if: ${{ steps.gate.outputs.analyze == 'true' }}
         run: make analysis-venv
 
       - name: Fetch manifest
-        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
+        if: ${{ steps.gate.outputs.analyze == 'true' }}
         id: manifest
         env:
           REPORT_BUDGET_HOURS: ${{ matrix.report_budget_hours }}
@@ -387,7 +463,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Run analysis
-        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
+        if: ${{ steps.gate.outputs.analyze == 'true' }}
         env:
           BUCKET: ${{ env.SCFUZZBENCH_BUCKET }}
           RUN_ID: ${{ matrix.run_id }}
@@ -403,7 +479,7 @@ jobs:
           make results-analyze-all
 
       - name: Collect analysis artifacts
-        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
+        if: ${{ steps.gate.outputs.analyze == 'true' }}
         run: |
           set -euo pipefail
           dest_root="${{ steps.manifest.outputs.dest_root }}"
@@ -475,7 +551,7 @@ jobs:
           cp "${dest_root}/data/"*.csv "${analysis_dir}/data/" || true
 
       - name: Build release bundles
-        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
+        if: ${{ steps.gate.outputs.analyze == 'true' }}
         id: bundles
         run: |
           set -euo pipefail
@@ -503,7 +579,7 @@ jobs:
           echo "release_dir=${release_dir}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload analysis artifacts to S3
-        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
+        if: ${{ steps.gate.outputs.analyze == 'true' }}
         run: |
           set -euo pipefail
           analysis_dir="${{ steps.manifest.outputs.analysis_dir }}"
@@ -579,7 +655,7 @@ jobs:
           fi
 
       - name: Compose release body
-        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
+        if: ${{ steps.gate.outputs.analyze == 'true' }}
         id: body
         run: |
           set -euo pipefail
@@ -676,7 +752,7 @@ jobs:
           echo "release_body=${release_body}" >> "${GITHUB_OUTPUT}"
 
       - name: Create or update GitHub release
-        if: ${{ steps.release_check.outputs.exists != 'true' || inputs.force_reanalyze == 'true' }}
+        if: ${{ steps.gate.outputs.analyze == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_BODY: ${{ steps.body.outputs.release_body }}
@@ -684,6 +760,16 @@ jobs:
           RELEASE_TAG: ${{ steps.release_check.outputs.tag }}
         run: |
           set -euo pipefail
+          # Re-check at the last responsible moment: the marker may have been
+          # written while the multi-minute analysis above was running.
+          status=$(python3 scripts/benchmark_run_state.py check-superseded \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${RUN_ID}" \
+            --benchmark-uuid "${BENCHMARK_UUID}" | jq -r '.status')
+          if [[ "${status}" != "absent" ]]; then
+            echo "Run was superseded (${status}) after discovery; skipping release publish."
+            exit 0
+          fi
           if [[ "${RELEASE_EXISTS}" == "true" ]]; then
             gh release edit "${RELEASE_TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
@@ -697,10 +783,19 @@ jobs:
           fi
 
       - name: Close preliminary stream
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CANONICAL_TAG: ${{ steps.release_check.outputs.tag }}
         run: |
           set -euo pipefail
+          status=$(python3 scripts/benchmark_run_state.py check-superseded \
+            --bucket "${SCFUZZBENCH_BUCKET}" \
+            --run-id "${RUN_ID}" \
+            --benchmark-uuid "${BENCHMARK_UUID}" | jq -r '.status')
+          if [[ "${status}" != "absent" ]]; then
+            echo "Run was superseded (${status}) after discovery; not closing the preliminary stream with a canonical tag."
+            exit 0
+          fi
           python3 scripts/preliminary_results.py mark-finalized \
             --bucket "${SCFUZZBENCH_BUCKET}" \
             --run-id "${RUN_ID}" \
