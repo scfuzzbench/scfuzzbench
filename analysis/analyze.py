@@ -1015,6 +1015,12 @@ def parse_throughput_log(
     first_abs_ts: Optional[float] = None
     last_elapsed: Optional[float] = None
     previous_key: Optional[Tuple[float, Optional[float], Optional[float]]] = None
+    # Previous cumulative tx-count observation, used to derive an *instantaneous*
+    # interval rate (delta count / delta time) for text logs that report a running
+    # total instead of a tx rate (Echidna/Recon "fuzzing: N/M"). Gas is already
+    # reported as a rate ("gas/s: ...") and is read directly, so it needs no state.
+    prev_tx_count: Optional[float] = None
+    prev_tx_elapsed: Optional[float] = None
 
     with path.open("r", errors="ignore") as handle:
         for line in handle:
@@ -1061,7 +1067,7 @@ def parse_throughput_log(
                 gas_rate = nonnegative_metric(
                     parse_rate_from_text(clean_line, GAS_RATE_PATTERNS)
                 )
-                if elapsed_seconds is not None and elapsed_seconds > 0.0:
+                if elapsed_seconds is not None:
                     tx_count = nonnegative_metric(
                         parse_count_from_text(clean_line, TEXT_TX_COUNT_PATTERNS)
                     )
@@ -1069,9 +1075,24 @@ def parse_throughput_log(
                         parse_count_from_text(clean_line, TEXT_GAS_COUNT_PATTERNS)
                     )
                     if tx_rate is None and tx_count is not None:
-                        tx_rate = tx_count / elapsed_seconds
-                        source = "text-cumulative"
-                    if gas_rate is None and gas_count is not None:
+                        # Instantaneous rate over the interval since the previous
+                        # status line: (delta cumulative count) / (delta time).
+                        # The first observation has no predecessor, so it only
+                        # seeds the baseline below; every later line reports its
+                        # own interval rather than a running average from t=0.
+                        if (
+                            prev_tx_count is not None
+                            and prev_tx_elapsed is not None
+                            and elapsed_seconds > prev_tx_elapsed
+                            and tx_count >= prev_tx_count
+                        ):
+                            tx_rate = (tx_count - prev_tx_count) / (
+                                elapsed_seconds - prev_tx_elapsed
+                            )
+                            source = "text-interval"
+                        prev_tx_count = tx_count
+                        prev_tx_elapsed = elapsed_seconds
+                    if gas_rate is None and gas_count is not None and elapsed_seconds > 0.0:
                         gas_rate = gas_count / elapsed_seconds
                         source = "text-cumulative"
                 if tx_rate is not None or gas_rate is not None:
