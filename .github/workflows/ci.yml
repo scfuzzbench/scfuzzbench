@@ -117,6 +117,7 @@ jobs:
         run: |
           python -m unittest \
             analysis.tests.test_analyze_summary \
+            analysis.tests.test_analyze_throughput_parser \
             analysis.tests.test_benchmark_run_state \
             analysis.tests.test_resolve_tool_versions \
             analysis.tests.test_workflow_safety_contracts \
