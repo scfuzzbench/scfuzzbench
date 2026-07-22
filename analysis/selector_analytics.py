@@ -310,7 +310,7 @@ def _recon_abi_type(value: Any) -> Optional[str]:
         return "address"
     if tag == "Bool":
         return "bool"
-    # Recon v0.4.6 serializes alloy DynSolValue::FixedBytes as
+    # Recon serializes alloy DynSolValue::FixedBytes as
     # {"FixedBytes": [<32-byte word>, <declared size>]} and dynamic Bytes as
     # {"Bytes": [<byte>, ...]}. Do not infer a fixed width from byte values.
     if tag == "FixedBytes" and isinstance(contents, list) and len(contents) == 2:

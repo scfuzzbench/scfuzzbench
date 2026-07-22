@@ -77,21 +77,28 @@ Runner lifecycle is defined in `infrastructure/user_data.sh.tftpl` and `fuzzers/
 - Collect host metrics periodically into `runner_metrics.csv` (enabled by default).
 - Upload artifacts to S3, then self-shutdown.
 
-Medusa's pinned 1.4.1 release normally starts a separate corpus-pruner
+Medusa's release normally starts a separate corpus-pruner
 goroutine every five minutes when coverage is enabled. Comparative runs set
 `fuzzing.pruneFrequency` to `0` in a temporary working config so this auxiliary
 CPU work does not sit outside the normalized worker count. The target's config
 is not modified. Operators can explicitly set `MEDUSA_PRUNE_FREQUENCY` to a
 positive minute interval for non-comparative experiments.
 
-All four pinned fuzzers perform failure shrinking inline with campaign work.
+Echidna, Medusa, and Recon are installed from their latest published upstream
+release, resolved at dispatch time (`scripts/resolve_tool_versions.py`) and
+pinned into each run's manifest so the run stays reproducible. An explicit
+version in the benchmark request overrides resolution. Foundry is exempt: it is
+built from the master commit pinned in `foundry_git_ref` because the invariant
+features the benchmark measures are ahead of every Foundry release.
+
+All four fuzzers perform failure shrinking inline with campaign work.
 Comparative runs normalize the configured tool-native numeric limit to `1`:
 
 | Fuzzer | Effective comparative control |
 | --- | --- |
-| Echidna 2.3.1 | `--shrink-limit 1` |
-| Recon 0.4.6 | `--shrink-limit 1` |
-| Medusa 1.4.1 | `fuzzing.shrinkLimit: 1` |
+| Echidna | `--shrink-limit 1` |
+| Recon | `--shrink-limit 1` |
+| Medusa | `fuzzing.shrinkLimit: 1` |
 | Foundry (`foundry_git_ref`) | `FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=1` |
 
 This is numeric configuration parity, not replay-count or CPU-work parity. The
