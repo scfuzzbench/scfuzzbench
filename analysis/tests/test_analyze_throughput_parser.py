@@ -31,7 +31,7 @@ class ThroughputParserTests(unittest.TestCase):
         self.assertAlmostEqual(samples[0].tx_per_second, 20486.0)
         self.assertAlmostEqual(samples[0].gas_per_second, 4500638777.0)
 
-    def test_parses_echidna_gasps_and_derives_txps_from_actual_status_lines(self):
+    def test_parses_echidna_gasps_and_derives_instantaneous_txps(self):
         log_path = self.write_log(
             [
                 "[2026-02-24 14:35:10.44] [status] tests: 4/14, fuzzing: 7098/50000, values: [], cov: 4474, corpus: 9, shrinking: W2:1247/5000(4) W1:3851/5000(2) W0:1666/5000(4), gas/s: 12935790057",
@@ -42,11 +42,17 @@ class ThroughputParserTests(unittest.TestCase):
         samples = analyze.parse_throughput_log(log_path, "run-1", "i-1", "echidna-vtest")
         self.assertEqual(len(samples), 2)
         self.assertEqual(samples[0].fuzzer, "echidna")
+        # First status line has no predecessor, so it only reports the direct
+        # gas/s rate and seeds the tx baseline; no interval tx/s is derived yet.
         self.assertIsNone(samples[0].tx_per_second)
         self.assertAlmostEqual(samples[0].gas_per_second, 12935790057.0)
-        self.assertEqual(samples[1].source, "text-cumulative")
+        # Second line derives an instantaneous rate over the interval:
+        # (16822 - 7098) transactions / 3.01 s.
+        self.assertEqual(samples[1].source, "text-interval")
         self.assertAlmostEqual(samples[1].elapsed_seconds, 3.01)
-        self.assertAlmostEqual(samples[1].tx_per_second, 16822.0 / 3.01, places=4)
+        self.assertAlmostEqual(
+            samples[1].tx_per_second, (16822.0 - 7098.0) / 3.01, places=4
+        )
         self.assertAlmostEqual(samples[1].gas_per_second, 16646929823.0)
 
     def test_foundry_actual_invariant_lines_do_not_emit_throughput(self):
