@@ -45,7 +45,7 @@ Notes:
 - In `property` mode, the runner rewrites `prefix: "invariant_"` to `prefix: "echidna_"` inside the config file so global properties are treated like assertions.
 - The runner passes `--shrink-limit 1` by default, overriding `shrinkLimit` in target configs so shrinking cannot consume a large part of the campaign budget. Set one integer in `[0, 9223372036854775807]` in `ECHIDNA_EXTRA_ARGS` for an explicit operator override on the pinned amd64 runner. Extra arguments support shell-style quoting, but are parsed without shell evaluation. A bare `--` option terminator is rejected so the runner's appended arguments remain effective.
 - By default, the runner appends `+RTS -A1g -RTS` to reduce GC overhead on multicore instances.
-- In pinned Echidna 2.3.1, the fuzzing worker that finds a failure also performs its shrinking inline before returning to fuzzing; there is no separate background minimizer. `shrinkLimit` bounds this worker-local work and is configured independently of Medusa corpus pruning.
+- In Echidna, the fuzzing worker that finds a failure also performs its shrinking inline before returning to fuzzing; there is no separate background minimizer. `shrinkLimit` bounds this worker-local work and is configured independently of Medusa corpus pruning.
 
 ## Recon Fuzzer
 
@@ -61,7 +61,7 @@ Notes:
 - The runner passes `--shrink-limit 1` by default, overriding both Recon's
   built-in limit and `shrinkLimit` in the target's Echidna-format config. Set
   one integer in `[0, 2147483647]` in `RECON_EXTRA_ARGS` for an explicit
-  operator override. This bound avoids overflow in Recon 0.4.6's signed
+  operator override. This bound avoids overflow in Recon's signed
   shrink-progress counter. The `ECHIDNA_EXTRA_ARGS` compatibility fallback has
   the same validation. Extra arguments support shell-style quoting without
   shell evaluation. A bare `--` option terminator is rejected so the runner's
@@ -79,8 +79,8 @@ Environment variables:
 - `MEDUSA_SHRINK_LIMIT` (`uint64` iterations; defaults to `1`)
 
 Notes:
-- The pinned Medusa 1.4.1 release controls pruning through
-  [`fuzzing.pruneFrequency`](https://github.com/crytic/medusa/blob/v1.4.1/docs/src/project_configuration/fuzzing_config.md#prunefrequency);
+- The Medusa release controls pruning through
+  [`fuzzing.pruneFrequency`](https://github.com/crytic/medusa/blob/master/docs/src/project_configuration/fuzzing_config.md#prunefrequency);
   it does not expose a pruning CLI flag. The runner creates a temporary working
   config beside the selected config, applies `MEDUSA_PRUNE_FREQUENCY`, and
   leaves the target's config unchanged. Set a positive value explicitly to

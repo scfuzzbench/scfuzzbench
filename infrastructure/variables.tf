@@ -124,8 +124,8 @@ variable "foundry_git_ref" {
 
 variable "echidna_version" {
   type        = string
-  description = "Pinned Echidna version."
-  default     = "2.3.1"
+  description = "Echidna release version. Cloud dispatch resolves the latest crytic/echidna release at dispatch time (scripts/resolve_tool_versions.py) and pins it into the run manifest; this default is only the local/manual fallback and tracks the latest release known at commit time."
+  default     = "2.3.2"
 }
 
 variable "echidna_ci_repo" {
@@ -207,8 +207,8 @@ variable "echidna_ci_token_kms_key_arn" {
 
 variable "medusa_version" {
   type        = string
-  description = "Pinned Medusa version."
-  default     = "1.4.1"
+  description = "Medusa release version. Cloud dispatch resolves the latest crytic/medusa release at dispatch time (scripts/resolve_tool_versions.py) and pins it into the run manifest; this default is only the local/manual fallback and tracks the latest release known at commit time."
+  default     = "1.5.1"
 }
 
 variable "medusa_git_repo" {
@@ -268,8 +268,8 @@ variable "medusa_go_sha256" {
 
 variable "recon_version" {
   type        = string
-  description = "Pinned Recon fuzzer version."
-  default     = "0.4.6"
+  description = "Recon fuzzer release version. Cloud dispatch resolves the latest Recon-Fuzz/recon-fuzzer release at dispatch time (scripts/resolve_tool_versions.py) and pins it into the run manifest; this default is only the local/manual fallback and tracks the latest release known at commit time."
+  default     = "0.4.18"
 }
 
 variable "git_token_ssm_parameter_name" {

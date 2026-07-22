@@ -43,7 +43,7 @@ set_default_worker_env MEDUSA_WORKERS
 run_medusa_with_effective_config() (
   set -euo pipefail
 
-  # Medusa 1.4.1 has no CLI flag for corpus pruning. Its
+  # Medusa has no CLI flag for corpus pruning. Its
   # `fuzzing.pruneFrequency` config value controls a separate corpus-pruner
   # goroutine, and 0 disables it. Use a working copy so benchmark fairness does
   # not depend on each target's checked-in default while leaving the target

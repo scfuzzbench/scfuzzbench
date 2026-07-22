@@ -7,8 +7,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-DEFAULT_ECHIDNA_VERSION="2.3.1"
-DEFAULT_MEDUSA_VERSION="1.4.1"
+DEFAULT_ECHIDNA_VERSION="2.3.2"
+DEFAULT_MEDUSA_VERSION="1.5.1"
 DEFAULT_MEDUSA_GO_VERSION="1.24.0"
 DEFAULT_MEDUSA_GO_SHA256="dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858"
 DEFAULT_FOUNDRY_VERSION="v1.7.1"
@@ -16,7 +16,7 @@ DEFAULT_FOUNDRY_VERSION="v1.7.1"
 # infrastructure/variables.tf (foundry_git_ref). Export FOUNDRY_GIT_REPO and
 # FOUNDRY_GIT_REF before invoking to match that build locally; the plain
 # FOUNDRY_VERSION path installs a released binary via foundryup instead.
-DEFAULT_RECON_VERSION="0.4.6"
+DEFAULT_RECON_VERSION="0.4.18"
 DEFAULT_BENCHMARK_TYPE="property"
 DEFAULT_TIMEOUT="86400"   # 24 h – same as cloud default
 DEFAULT_WORKERS=""         # empty = let common.sh pick nproc-based default

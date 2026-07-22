@@ -297,6 +297,9 @@ jobs:
       medusa_git_commit: ${{ steps.tool_sources.outputs.medusa_git_commit }}
       medusa_go_version: ${{ steps.tool_sources.outputs.medusa_go_version }}
       medusa_go_sha256: ${{ steps.tool_sources.outputs.medusa_go_sha256 }}
+      echidna_version: ${{ steps.resolve_versions.outputs.echidna_version }}
+      medusa_version: ${{ steps.resolve_versions.outputs.medusa_version }}
+      recon_version: ${{ steps.resolve_versions.outputs.recon_version }}
     steps:
       - name: Checkout (tarball)
         timeout-minutes: 5
@@ -335,6 +338,20 @@ jobs:
           python3 scripts/benchmark_run_state.py normalize-tools \
             --github-output "${GITHUB_OUTPUT}"
 
+      - name: Resolve latest tool release versions
+        id: resolve_versions
+        env:
+          ECHIDNA_VERSION: ${{ inputs.echidna_version }}
+          ECHIDNA_CI_REPO: ${{ steps.tool_sources.outputs.echidna_ci_repo }}
+          MEDUSA_VERSION: ${{ inputs.medusa_version }}
+          MEDUSA_GIT_REPO: ${{ steps.tool_sources.outputs.medusa_git_repo }}
+          RECON_VERSION: ${{ inputs.recon_version }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/resolve_tool_versions.py \
+            --github-output "${GITHUB_OUTPUT}"
+
       - name: Generate immutable run identity
         id: identity
         env:
@@ -359,7 +376,7 @@ jobs:
           FUZZERS_JSON: ${{ inputs.fuzzers_json }}
           FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
           FOUNDRY_GIT_REF: ${{ inputs.foundry_git_ref }}
-          ECHIDNA_VERSION: ${{ inputs.echidna_version }}
+          ECHIDNA_VERSION: ${{ steps.resolve_versions.outputs.echidna_version }}
           ECHIDNA_CI_REPO: ${{ steps.tool_sources.outputs.echidna_ci_repo }}
           ECHIDNA_CI_RUN_ID: ${{ steps.tool_sources.outputs.echidna_ci_run_id }}
           ECHIDNA_CI_ARTIFACT_NAME: ${{ steps.tool_sources.outputs.echidna_ci_artifact_name }}
@@ -367,13 +384,13 @@ jobs:
           ECHIDNA_CI_COMMIT: ${{ steps.tool_sources.outputs.echidna_ci_commit }}
           ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ steps.tool_sources.outputs.echidna_ci_token_ssm_parameter_name }}
           ECHIDNA_CI_TOKEN_KMS_KEY_ARN: ${{ steps.tool_sources.outputs.echidna_ci_token_kms_key_arn }}
-          MEDUSA_VERSION: ${{ inputs.medusa_version }}
+          MEDUSA_VERSION: ${{ steps.resolve_versions.outputs.medusa_version }}
           MEDUSA_GIT_REPO: ${{ steps.tool_sources.outputs.medusa_git_repo }}
           MEDUSA_GIT_REF: ${{ steps.tool_sources.outputs.medusa_git_ref }}
           MEDUSA_GIT_COMMIT: ${{ steps.tool_sources.outputs.medusa_git_commit }}
           MEDUSA_GO_VERSION: ${{ steps.tool_sources.outputs.medusa_go_version }}
           MEDUSA_GO_SHA256: ${{ steps.tool_sources.outputs.medusa_go_sha256 }}
-          RECON_VERSION: ${{ inputs.recon_version }}
+          RECON_VERSION: ${{ steps.resolve_versions.outputs.recon_version }}
           GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
           PROPERTIES_PATH: ${{ inputs.properties_path }}
           FUZZER_ENV_JSON: ${{ inputs.fuzzer_env_json }}
@@ -463,7 +480,7 @@ jobs:
         env:
           BENCHMARK_TYPE: ${{ inputs.benchmark_type }}
           CLEANUP_TFVARS_KEY: ${{ needs.prepare-run.outputs.cleanup_tfvars_key }}
-          ECHIDNA_VERSION: ${{ inputs.echidna_version }}
+          ECHIDNA_VERSION: ${{ needs.prepare-run.outputs.echidna_version }}
           ECHIDNA_CI_REPO: ${{ needs.prepare-run.outputs.echidna_ci_repo }}
           ECHIDNA_CI_RUN_ID: ${{ needs.prepare-run.outputs.echidna_ci_run_id }}
           ECHIDNA_CI_ARTIFACT_NAME: ${{ needs.prepare-run.outputs.echidna_ci_artifact_name }}
@@ -477,7 +494,7 @@ jobs:
           GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
           INSTANCE_TYPE: ${{ inputs.instance_type }}
           INSTANCES_PER_FUZZER: ${{ inputs.instances_per_fuzzer }}
-          MEDUSA_VERSION: ${{ inputs.medusa_version }}
+          MEDUSA_VERSION: ${{ needs.prepare-run.outputs.medusa_version }}
           MEDUSA_GIT_REPO: ${{ needs.prepare-run.outputs.medusa_git_repo }}
           MEDUSA_GIT_REF: ${{ needs.prepare-run.outputs.medusa_git_ref }}
           MEDUSA_GIT_COMMIT: ${{ needs.prepare-run.outputs.medusa_git_commit }}
@@ -485,7 +502,7 @@ jobs:
           MEDUSA_GO_SHA256: ${{ needs.prepare-run.outputs.medusa_go_sha256 }}
           PRELIMINARY_INTERVAL_MINUTES: ${{ inputs.preliminary_interval_minutes }}
           PROPERTIES_PATH: ${{ inputs.properties_path }}
-          RECON_VERSION: ${{ inputs.recon_version }}
+          RECON_VERSION: ${{ needs.prepare-run.outputs.recon_version }}
           RUN_ID: ${{ needs.prepare-run.outputs.run_id }}
           RUN_STARTED_AT_EPOCH: ${{ needs.prepare-run.outputs.run_started_at_epoch }}
           TARGET_COMMIT: ${{ inputs.target_commit }}
@@ -804,7 +821,7 @@ jobs:
           FUZZERS_JSON: ${{ inputs.fuzzers_json }}
           FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
           FOUNDRY_GIT_REF: ${{ inputs.foundry_git_ref }}
-          ECHIDNA_VERSION: ${{ inputs.echidna_version }}
+          ECHIDNA_VERSION: ${{ needs.prepare-run.outputs.echidna_version }}
           ECHIDNA_CI_REPO: ${{ steps.tool_sources.outputs.echidna_ci_repo }}
           ECHIDNA_CI_RUN_ID: ${{ steps.tool_sources.outputs.echidna_ci_run_id }}
           ECHIDNA_CI_ARTIFACT_NAME: ${{ steps.tool_sources.outputs.echidna_ci_artifact_name }}
@@ -812,13 +829,13 @@ jobs:
           ECHIDNA_CI_COMMIT: ${{ steps.tool_sources.outputs.echidna_ci_commit }}
           ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ steps.tool_sources.outputs.echidna_ci_token_ssm_parameter_name }}
           ECHIDNA_CI_TOKEN_KMS_KEY_ARN: ${{ steps.tool_sources.outputs.echidna_ci_token_kms_key_arn }}
-          MEDUSA_VERSION: ${{ inputs.medusa_version }}
+          MEDUSA_VERSION: ${{ needs.prepare-run.outputs.medusa_version }}
           MEDUSA_GIT_REPO: ${{ steps.tool_sources.outputs.medusa_git_repo }}
           MEDUSA_GIT_REF: ${{ steps.tool_sources.outputs.medusa_git_ref }}
           MEDUSA_GIT_COMMIT: ${{ steps.tool_sources.outputs.medusa_git_commit }}
           MEDUSA_GO_VERSION: ${{ steps.tool_sources.outputs.medusa_go_version }}
           MEDUSA_GO_SHA256: ${{ steps.tool_sources.outputs.medusa_go_sha256 }}
-          RECON_VERSION: ${{ inputs.recon_version }}
+          RECON_VERSION: ${{ needs.prepare-run.outputs.recon_version }}
           GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
           PROPERTIES_PATH: ${{ inputs.properties_path }}
           FUZZER_ENV_JSON: ${{ inputs.fuzzer_env_json }}
@@ -1101,7 +1118,7 @@ jobs:
           FUZZERS_JSON: ${{ inputs.fuzzers_json }}
           FOUNDRY_GIT_REPO: ${{ inputs.foundry_git_repo }}
           FOUNDRY_GIT_REF: ${{ inputs.foundry_git_ref }}
-          ECHIDNA_VERSION: ${{ inputs.echidna_version }}
+          ECHIDNA_VERSION: ${{ needs.prepare-run.outputs.echidna_version }}
           ECHIDNA_CI_REPO: ${{ steps.tool_sources.outputs.echidna_ci_repo }}
           ECHIDNA_CI_RUN_ID: ${{ steps.tool_sources.outputs.echidna_ci_run_id }}
           ECHIDNA_CI_ARTIFACT_NAME: ${{ steps.tool_sources.outputs.echidna_ci_artifact_name }}
@@ -1109,13 +1126,13 @@ jobs:
           ECHIDNA_CI_COMMIT: ${{ steps.tool_sources.outputs.echidna_ci_commit }}
           ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ steps.tool_sources.outputs.echidna_ci_token_ssm_parameter_name }}
           ECHIDNA_CI_TOKEN_KMS_KEY_ARN: ${{ steps.tool_sources.outputs.echidna_ci_token_kms_key_arn }}
-          MEDUSA_VERSION: ${{ inputs.medusa_version }}
+          MEDUSA_VERSION: ${{ needs.prepare-run.outputs.medusa_version }}
           MEDUSA_GIT_REPO: ${{ steps.tool_sources.outputs.medusa_git_repo }}
           MEDUSA_GIT_REF: ${{ steps.tool_sources.outputs.medusa_git_ref }}
           MEDUSA_GIT_COMMIT: ${{ steps.tool_sources.outputs.medusa_git_commit }}
           MEDUSA_GO_VERSION: ${{ steps.tool_sources.outputs.medusa_go_version }}
           MEDUSA_GO_SHA256: ${{ steps.tool_sources.outputs.medusa_go_sha256 }}
-          RECON_VERSION: ${{ inputs.recon_version }}
+          RECON_VERSION: ${{ needs.prepare-run.outputs.recon_version }}
           GIT_TOKEN_SSM_PARAMETER_NAME: ${{ inputs.git_token_ssm_parameter_name }}
           FUZZER_ENV_JSON: ${{ inputs.fuzzer_env_json }}
           PROPERTIES_PATH: ${{ inputs.properties_path }}
