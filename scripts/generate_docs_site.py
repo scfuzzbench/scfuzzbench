@@ -256,6 +256,93 @@ def run_social_description(run: Run) -> str:
     return truncate_meta_text(". ".join(parts) + ".", max_len=240)
 
 
+def github_repo_base(repo_url: str) -> str:
+    """Return a clean https://github.com/org/repo base, or "" if not GitHub."""
+    s = str(repo_url).strip().rstrip("/")
+    if s.endswith(".git"):
+        s = s[: -len(".git")]
+    for prefix in ("https://github.com/", "http://github.com/"):
+        if s.startswith(prefix) and len(s[len(prefix) :].split("/")) >= 2:
+            return s
+    return ""
+
+
+def run_metadata_lines(manifest: dict) -> list[str]:
+    """Bullet lines describing what a run tested, from its manifest.
+
+    Every line is conditional on the field being present so legacy manifests
+    render without gaps or errors.
+    """
+    m = manifest if isinstance(manifest, dict) else {}
+    lines: list[str] = []
+
+    target_repo = str(m.get("target_repo_url", "")).strip()
+    target_commit = str(m.get("target_commit", "")).strip()
+    if target_repo:
+        label = compact_repo_label(target_repo) or target_repo
+        entry = f"- Target: [`{label}`]({target_repo})"
+        if target_commit:
+            base = github_repo_base(target_repo)
+            short = shortish(target_commit, max_len=10)
+            if base:
+                entry += f" @ [`{short}`]({base}/commit/{target_commit})"
+            else:
+                entry += f" @ `{short}`"
+        lines.append(entry)
+    elif target_commit:
+        lines.append(f"- Target commit: `{shortish(target_commit, max_len=10)}`")
+
+    benchmark_type = str(m.get("benchmark_type", "")).strip()
+    if benchmark_type:
+        lines.append(f"- Benchmark type: `{benchmark_type}`")
+
+    fuzzer_keys = m.get("fuzzers")
+    if isinstance(fuzzer_keys, list):
+        fuzzers = ", ".join(
+            f"`{str(x).strip()}`" for x in fuzzer_keys if str(x).strip()
+        )
+        if fuzzers:
+            lines.append(f"- Fuzzers: {fuzzers}")
+
+    inputs = m.get("nonsecret_optional_inputs")
+    if isinstance(inputs, dict):
+        versions = []
+        for tool, key in (
+            ("echidna", "echidna_version"),
+            ("medusa", "medusa_version"),
+            ("recon", "recon_version"),
+            ("foundry", "foundry_version"),
+        ):
+            value = str(inputs.get(key, "") or "").strip()
+            if value:
+                versions.append(f"`{tool} {value}`")
+        if versions:
+            lines.append(f"- Tool versions: {', '.join(versions)}")
+
+    instance_type = str(m.get("instance_type", "")).strip()
+    instances = m.get("instances_per_fuzzer")
+    instances_text = str(instances).strip() if instances is not None else ""
+    if instance_type and instances_text:
+        lines.append(
+            f"- Instances: `{instances_text}` × `{instance_type}` per fuzzer"
+        )
+    elif instance_type:
+        lines.append(f"- Instance type: `{instance_type}`")
+
+    harness_commit = str(m.get("scfuzzbench_commit", "")).strip()
+    if harness_commit:
+        harness_repo = str(
+            m.get("github_repository", "") or "scfuzzbench/scfuzzbench"
+        ).strip()
+        short = shortish(harness_commit, max_len=10)
+        lines.append(
+            f"- Harness: [`{harness_repo}@{short}`]"
+            f"(https://github.com/{harness_repo}/commit/{harness_commit})"
+        )
+
+    return lines
+
+
 def with_social_preview_head(
     lines: list[str],
     *,
@@ -1410,6 +1497,7 @@ def main() -> int:
         lines.append(f"- Date (UTC): `{utc_ts(r.run_started_at_epoch)}`")
         lines.append(f"- Benchmark: [`{r.benchmark_uuid}`](../../../benchmarks/{r.benchmark_uuid}/)")
         lines.append(f"- Timeout: `{r.timeout_hours:g}h`")
+        lines.extend(run_metadata_lines(m))
         lines.append("")
 
         if not r.analyzed:

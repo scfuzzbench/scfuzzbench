@@ -595,5 +595,78 @@ class GenerateDocsSiteTests(unittest.TestCase):
             self.assertFalse((docs / "preliminary" / run_id / uuid).exists())
 
 
+class RunMetadataLinesTests(unittest.TestCase):
+    def test_full_manifest_renders_all_lines(self):
+        module = load_generate_docs_site()
+        manifest = {
+            "target_repo_url": "https://github.com/scfuzzbench/aave-v4-scfuzzbench",
+            "target_commit": "edd6c82721512540c8c90e7a36a4a8e19fd7bdf3",
+            "benchmark_type": "property",
+            "fuzzers": ["echidna", "medusa", "foundry", "recon-fuzzer"],
+            "nonsecret_optional_inputs": {
+                "echidna_version": "2.3.2",
+                "medusa_version": "1.5.1",
+                "recon_version": "0.4.18",
+                "medusa_go_sha256": "ignored",
+            },
+            "instance_type": "c6a.4xlarge",
+            "instances_per_fuzzer": 2,
+            "scfuzzbench_commit": "00775ce0bd3a33b7bf8e9ff213e2e7c235163220",
+            "github_repository": "scfuzzbench/scfuzzbench",
+        }
+        joined = "\n".join(module.run_metadata_lines(manifest))
+
+        self.assertIn(
+            "- Target: [`scfuzzbench/aave-v4-scfuzzbench`]"
+            "(https://github.com/scfuzzbench/aave-v4-scfuzzbench)"
+            " @ [`edd6c82721`]"
+            "(https://github.com/scfuzzbench/aave-v4-scfuzzbench"
+            "/commit/edd6c82721512540c8c90e7a36a4a8e19fd7bdf3)",
+            joined,
+        )
+        self.assertIn("- Benchmark type: `property`", joined)
+        self.assertIn(
+            "- Fuzzers: `echidna`, `medusa`, `foundry`, `recon-fuzzer`", joined
+        )
+        self.assertIn(
+            "- Tool versions: `echidna 2.3.2`, `medusa 1.5.1`, `recon 0.4.18`",
+            joined,
+        )
+        self.assertNotIn("medusa_go_sha256", joined)
+        self.assertIn("- Instances: `2` × `c6a.4xlarge` per fuzzer", joined)
+        self.assertIn(
+            "- Harness: [`scfuzzbench/scfuzzbench@00775ce0bd`]"
+            "(https://github.com/scfuzzbench/scfuzzbench"
+            "/commit/00775ce0bd3a33b7bf8e9ff213e2e7c235163220)",
+            joined,
+        )
+
+    def test_legacy_manifest_renders_nothing(self):
+        module = load_generate_docs_site()
+        self.assertEqual([], module.run_metadata_lines({}))
+        self.assertEqual([], module.run_metadata_lines({"unrelated": "x"}))
+
+    def test_non_github_target_gets_plain_commit(self):
+        module = load_generate_docs_site()
+        lines = module.run_metadata_lines(
+            {
+                "target_repo_url": "https://gitlab.com/org/repo",
+                "target_commit": "abcdef0123456789",
+            }
+        )
+        self.assertEqual(1, len(lines))
+        self.assertIn("@ `abcdef0123`", lines[0])
+        self.assertNotIn("/commit/", lines[0])
+
+    def test_partial_manifest_is_gap_free(self):
+        module = load_generate_docs_site()
+        lines = module.run_metadata_lines(
+            {"instance_type": "c6a.4xlarge", "fuzzers": ["echidna"]}
+        )
+        self.assertEqual(
+            ["- Fuzzers: `echidna`", "- Instance type: `c6a.4xlarge`"], lines
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
