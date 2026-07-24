@@ -82,7 +82,12 @@ Optional:
 12. Single-harness rule:
    - the exact same harness must run unmodified on Foundry, Echidna, Medusa, and Recon
    - no per-fuzzer shims: no `_isAssertion(...)`, no `assertionFailures` mapping, no `invariant_assertion_failure_*` wrappers, no fuzzer-conditional code paths
-13. No agent-instruction files:
+13. Fuzzer-magic signal ban:
+   - never declare or emit an `AssertionFailed` event (any signature) anywhere in the harness tree, including helper bases like a `t(bool, string)` implementation
+   - Echidna treats `AssertionFailed(...)` events as their own generic failure identity *in addition to* detecting the assert panic, so the belt-and-braces "emit + assert" pattern produces a phantom Echidna-exclusive bug named `AssertionFailed` that Foundry/Medusa/Recon can never observe (seen on the Origin Dollar and Drips targets before this rule)
+   - surface assertion failures only via a plain `assert(false)` (Panic 0x01); all four fuzzers detect it and the failure identity dedups to the calling function name
+   - the same ban applies to any other single-fuzzer magic signal (special events, fuzzer-specific sentinel calls, or cheatcode-based failure reporting)
+14. No agent-instruction files:
    - target repos must not contain `AGENTS.md`, `CLAUDE.md`, or similar agent-instruction files; they go stale and do not belong in benchmark targets
 
 ## Workflow
