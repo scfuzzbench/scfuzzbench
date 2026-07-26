@@ -55,29 +55,43 @@ extra_args=()
 if [[ -n "${FOUNDRY_TEST_ARGS:-}" ]]; then
   read -r -a extra_args <<< "${FOUNDRY_TEST_ARGS}"
 fi
+for arg in "${extra_args[@]}"; do
+  case "${arg}" in
+    --invariant-corpus-dir|--invariant-corpus-dir=*)
+      log "Set FOUNDRY_CORPUS_DIR instead of passing --invariant-corpus-dir through FOUNDRY_TEST_ARGS."
+      exit 1
+      ;;
+  esac
+done
 
-# Disable forge's corpus persistence unless a showmap/coverage run needs it.
-# At the pin the in-memory corpus grows without bound when [invariant]
-# corpus_dir is set (every benchmark target sets it): ~450MB/min on the
-# liquity leg (run 1783970022: 32GB c6a.4xlarge exhausted 48 min into the
-# campaign, box livelocked, 3 of 4 instances hard-died) and 23GB/2h on the
-# passing superform leg (run 1783961037). A/B under WSL: corpus on = 7.6GB
-# RSS in 4 min; corpus off = flat 126MB. Dropping the corpus_dir line from the
-# working-copy foundry.toml is the only reliable disable — an empty
-# FOUNDRY_INVARIANT_CORPUS_DIR is rejected by forge test's CLI mapping.
-# Showmap replays need the persisted corpus, so keep it when showmap is
-# enabled — those are opt-in foundry-only coverage runs where the memory
-# ceiling is an accepted risk. SCFUZZBENCH_FOUNDRY_KEEP_CORPUS=1 also
-# preserves it.
+# Keep Foundry's bounded invariant corpus enabled by default so comparative
+# campaigns use the same coverage-guided search mode as the other fuzzers. The
+# pinned Foundry stack evicts non-favored entries from worker memory and
+# persists interesting entries immediately. It deliberately stops before the
+# follow-up observed-call dictionary, whose separate in-memory pool is uncapped.
+#
+# Operators can still disable guidance explicitly for an A/B run. Showmap and
+# seeded-corpus runs always require persistence.
 showmap_enabled="${SCFUZZBENCH_FOUNDRY_SHOWMAP:-0}"
 showmap_enabled_lc=$(printf '%s' "${showmap_enabled}" | tr '[:upper:]' '[:lower:]')
-keep_corpus="${SCFUZZBENCH_FOUNDRY_KEEP_CORPUS:-0}"
+keep_corpus="${SCFUZZBENCH_FOUNDRY_KEEP_CORPUS:-1}"
+if [[ "${keep_corpus}" != "0" && "${keep_corpus}" != "1" ]]; then
+  log "SCFUZZBENCH_FOUNDRY_KEEP_CORPUS must be 0 or 1."
+  exit 1
+fi
 if [[ -n "${SCFUZZBENCH_SEED_CORPUS_SOURCE:-}" ]]; then
   keep_corpus=1
-  export FOUNDRY_INVARIANT_CORPUS_DIR="${SCFUZZBENCH_CORPUS_DIR}"
 fi
-if [[ "${showmap_enabled}" != "1" && "${showmap_enabled_lc}" != "true" && "${showmap_enabled_lc}" != "yes" && "${keep_corpus}" != "1" ]]; then
+if [[ "${showmap_enabled}" == "1" || "${showmap_enabled_lc}" == "true" || "${showmap_enabled_lc}" == "yes" ]]; then
+  keep_corpus=1
+fi
+if [[ "${keep_corpus}" == "1" ]]; then
+  export FOUNDRY_INVARIANT_CORPUS_DIR="${SCFUZZBENCH_CORPUS_DIR}"
+  log "Foundry coverage guidance enabled; corpus: ${SCFUZZBENCH_CORPUS_DIR}."
+else
   sed -i -E '/^[[:space:]]*corpus_dir[[:space:]]*=/d' "${repo_dir}/foundry.toml"
+  unset FOUNDRY_INVARIANT_CORPUS_DIR
+  log "Foundry coverage guidance disabled by SCFUZZBENCH_FOUNDRY_KEEP_CORPUS=0."
 fi
 
 # At the pin every newly found failure is shrunk inline (single-threaded, default

@@ -537,8 +537,9 @@ def _parse_instance(result: InstanceResult) -> None:
         if result.limit_violations:
             result.status = "malformed"
             return
-        # Foundry deliberately disables corpus persistence in the default runner.
-        # No artifact therefore means unavailable telemetry, not an observed zero.
+        # Explicit coverage-disabled and legacy Foundry runs may not persist a
+        # corpus. No artifact therefore means unavailable telemetry, not an
+        # observed zero.
         if result.engine == "foundry":
             result.status = "unavailable"
         else:
