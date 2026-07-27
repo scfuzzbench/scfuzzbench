@@ -14,18 +14,32 @@ install_slither_analyzer
 # and wastes a full --build-info recompile. recon-generate@latest needs
 # Node.js >= 20 (its commander dependency is ESM-only and better-sqlite3 ships
 # no Node 18 prebuilds), so Ubuntu's apt nodejs (18) is not enough: install
-# Node 22 from NodeSource instead.
+# a digest-pinned official Node.js archive instead.
 if ! command -v npx >/dev/null 2>&1; then
   if is_local_mode; then
     log "npx not found; install Node.js >= 20 so recon-generate is available."
   else
-    log "Installing Node.js 22 from NodeSource (recon-generate needs Node >= 20)"
-    export DEBIAN_FRONTEND=noninteractive
-    nodesource_setup=$(mktemp)
-    retry_cmd 5 10 curl -fsSL https://deb.nodesource.com/setup_22.x -o "${nodesource_setup}"
-    bash "${nodesource_setup}"
-    rm -f "${nodesource_setup}"
-    retry_cmd 5 10 apt-get install -y nodejs
+    node_version="22.23.1"
+    node_sha256="7a8cb04b4a1df4eaf432125324b81b29a088e73570a23259a8de1c65d07fc129"
+    node_archive="node-v${node_version}-linux-x64.tar.gz"
+    node_tmp_dir=$(mktemp -d)
+    node_install_root="/opt/node-v${node_version}"
+    log "Installing digest-pinned Node.js ${node_version} (recon-generate needs Node >= 20)"
+    retry_cmd 5 10 curl -fsSL \
+      "https://nodejs.org/dist/v${node_version}/${node_archive}" \
+      -o "${node_tmp_dir}/${node_archive}"
+    actual_node_sha256=$(sha256sum "${node_tmp_dir}/${node_archive}" | cut -d' ' -f1)
+    if [[ "${actual_node_sha256}" != "${node_sha256}" ]]; then
+      log "Node.js archive digest mismatch"
+      exit 1
+    fi
+    mkdir -p "${node_install_root}"
+    tar -xzf "${node_tmp_dir}/${node_archive}" \
+      -C "${node_install_root}" --strip-components=1
+    ln -sfn "${node_install_root}/bin/node" /usr/local/bin/node
+    ln -sfn "${node_install_root}/bin/npm" /usr/local/bin/npm
+    ln -sfn "${node_install_root}/bin/npx" /usr/local/bin/npx
+    rm -rf "${node_tmp_dir}"
   fi
 fi
 if command -v npx >/dev/null 2>&1; then
