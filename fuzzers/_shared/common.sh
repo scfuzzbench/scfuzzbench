@@ -2765,16 +2765,47 @@ apply_benchmark_type() {
 build_target() {
   local build_start
   build_start=$(now_epoch_seconds)
+  local build_timeout="${SCFUZZBENCH_BUILD_TIMEOUT_SECONDS:-1800}"
+  local build_kill_after="${SCFUZZBENCH_BUILD_TIMEOUT_GRACE_SECONDS:-60}"
+  if [[ ! "${build_timeout}" =~ ^[0-9]+$ ]] || (( build_timeout < 1 )); then
+    log "SCFUZZBENCH_BUILD_TIMEOUT_SECONDS must be a positive integer."
+    return 2
+  fi
+  if [[ ! "${build_kill_after}" =~ ^[0-9]+$ ]] || (( build_kill_after < 1 )); then
+    log "SCFUZZBENCH_BUILD_TIMEOUT_GRACE_SECONDS must be a positive integer."
+    return 2
+  fi
   local repo_dir="${SCFUZZBENCH_WORKDIR}/target"
   log "Building target with forge"
   pushd "${repo_dir}" >/dev/null
   if [[ ! -d "lib/forge-std" ]]; then
     log "Installing Foundry dependencies (forge install --no-commit)"
-    forge install --no-commit || true
+    local install_status=0
+    timeout --signal=TERM --kill-after="${build_kill_after}s" \
+      "${build_timeout}s" forge install --no-commit || install_status=$?
+    if [[ "${install_status}" -eq 124 || "${install_status}" -eq 137 ]]; then
+      popd >/dev/null
+      log "Foundry dependency installation exceeded the target build timeout"
+      log_duration "build_target" "${build_start}"
+      return "${install_status}"
+    fi
   fi
-  forge build
+  local build_elapsed
+  build_elapsed=$(( $(now_epoch_seconds) - build_start ))
+  local build_remaining=$(( build_timeout - build_elapsed ))
+  if (( build_remaining < 1 )); then
+    popd >/dev/null
+    log "Target build exhausted its ${build_timeout}s total timeout before forge build"
+    log_duration "build_target" "${build_start}"
+    return 124
+  fi
+  log "Running forge build with ${build_remaining}s remaining (grace ${build_kill_after}s)"
+  local build_status=0
+  timeout --signal=TERM --kill-after="${build_kill_after}s" \
+    "${build_remaining}s" forge build || build_status=$?
   popd >/dev/null
   log_duration "build_target" "${build_start}"
+  return "${build_status}"
 }
 
 run_with_timeout() {

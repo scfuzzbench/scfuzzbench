@@ -306,6 +306,67 @@ class SafePathOperationTests(unittest.TestCase):
             self.assertFalse(process_is_running(command_pid))
             self.assertFalse(process_is_running(descendant_pid))
 
+    def test_exec_tee_bounds_descendant_that_holds_stdout_after_leader_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            destination = root / "runner.log"
+            pid_file = root / "descendant.pid"
+            descendant_code = (
+                "import signal,sys,time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "while True:\n"
+                " sys.stdout.write('descendant output\\n')\n"
+                " sys.stdout.flush()\n"
+                " time.sleep(0.01)\n"
+            )
+            leader_code = (
+                "import pathlib,subprocess,sys\n"
+                f"child=subprocess.Popen([sys.executable,'-c',{descendant_code!r}])\n"
+                f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid))\n"
+                "print('leader complete',flush=True)\n"
+                "raise SystemExit(7)\n"
+            )
+            started = time.monotonic()
+            result = self.run_helper(
+                "exec-tee",
+                [
+                    *self.root_args(root),
+                    "--path",
+                    str(destination),
+                    "--",
+                    sys.executable,
+                    "-c",
+                    leader_code,
+                ],
+                timeout=10,
+            )
+            elapsed = time.monotonic() - started
+
+            self.assertEqual(7, result.returncode, result.stderr)
+            self.assertLess(elapsed, 7)
+            self.assertIn(b"leader complete\n", result.stdout)
+            self.assertIn(b"descendant output\n", result.stdout)
+            self.assertEqual(result.stdout, destination.read_bytes())
+            descendant_pid = int(pid_file.read_text(encoding="utf-8"))
+
+            def process_is_running(pid: int) -> bool:
+                stat_path = Path(f"/proc/{pid}/stat")
+                if not stat_path.exists():
+                    return False
+                try:
+                    state = stat_path.read_text(encoding="utf-8").split()[2]
+                except (FileNotFoundError, IndexError):
+                    return False
+                return state not in {"X", "Z"}
+
+            deadline = time.monotonic() + 2
+            while (
+                process_is_running(descendant_pid)
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.02)
+            self.assertFalse(process_is_running(descendant_pid))
+
     def test_exec_tee_defers_signal_from_inside_popen_until_child_is_owned(self):
         probe = r"""
 import importlib.util

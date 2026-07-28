@@ -16,6 +16,7 @@ import errno
 import json
 import os
 import secrets
+import select
 import signal
 import stat
 import struct
@@ -50,6 +51,8 @@ COPY_CHUNK_BYTES = 1024 * 1024
 DEFAULT_READ_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_WRITE_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_STREAM_MAX_BYTES = 8 * 1024 * 1024 * 1024
+EXEC_TEE_EXIT_DRAIN_SECONDS = 1.0
+EXEC_TEE_POLL_SECONDS = 0.1
 DEFAULT_ARCHIVE_MAX_FILES = 100_000
 DEFAULT_ARCHIVE_MAX_ENTRIES = 120_000
 DEFAULT_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024 * 1024
@@ -719,6 +722,24 @@ def _terminate_owned_process_group(
         pass
 
 
+def _process_exited_without_reaping(process: subprocess.Popen[bytes]) -> bool:
+    """Observe an owned leader exit while retaining its PID/PGID ownership."""
+
+    if process.returncode is not None:
+        return True
+    try:
+        result = os.waitid(
+            os.P_PID,
+            process.pid,
+            os.WEXITED | os.WNOHANG | os.WNOWAIT,
+        )
+    except ChildProcessError:
+        # Another waiter reaped the leader, so its numeric PID is no longer a
+        # safe process-group ownership token.
+        return False
+    return result is not None
+
+
 def _stream_file(
     args: argparse.Namespace,
     *,
@@ -836,7 +857,33 @@ def _stream_file(
                     reader = sys.stdin.buffer
                 read_chunk = getattr(reader, "read1", reader.read)
                 written = 0
+                leader_exit_deadline: float | None = None
                 while True:
+                    if process is not None:
+                        now = time.monotonic()
+                        if (
+                            leader_exit_deadline is None
+                            and _process_exited_without_reaping(process)
+                        ):
+                            leader_exit_deadline = (
+                                now + EXEC_TEE_EXIT_DRAIN_SECONDS
+                            )
+                        if (
+                            leader_exit_deadline is not None
+                            and now >= leader_exit_deadline
+                        ):
+                            # The command leader has exited but a descendant
+                            # still owns the output pipe. Terminate the owned
+                            # session, then close our read end even if a process
+                            # escaped the group, so final upload and shutdown
+                            # cannot remain blocked on logging.
+                            _terminate_owned_process_group(process)
+                            break
+                        readable, _, _ = select.select(
+                            [reader], [], [], EXEC_TEE_POLL_SECONDS
+                        )
+                        if not readable:
+                            continue
                     chunk = read_chunk(COPY_CHUNK_BYTES)
                     if not chunk:
                         break
