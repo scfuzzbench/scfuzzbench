@@ -130,6 +130,7 @@ jobs:
             analysis.tests.test_safe_path_ops \
             analysis.tests.test_put_manifest_once \
             analysis.tests.test_upload_pinned_file \
+            analysis.tests.test_runner_timeouts \
             analysis.tests.test_runner_filesystem_safety \
             analysis.tests.test_shared_seed_corpus \
             analysis.tests.test_preliminary_snapshot \
