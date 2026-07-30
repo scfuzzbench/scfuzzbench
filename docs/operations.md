@@ -85,8 +85,9 @@ extracted. A fixed safety ceiling rejects more than 10,000 files or more than
 1 GiB of source bytes before the live corpus is replaced. scfuzzbench does not
 translate between fuzzer corpus formats; use only a seed layout every selected
 fuzzer can consume. In particular, Foundry invariant seeds must already use
-Foundry's contract/test directory layout. An opted-in Foundry seed corpus also
-enables Foundry corpus persistence, with its existing memory tradeoff.
+Foundry's contract/test directory layout. A Foundry seed corpus keeps the
+bounded corpus enabled even when an operator requested a coverage-disabled A/B
+run.
 
 Each runner records `source`, file count, total bytes, and a deterministic
 SHA-256 tree digest plus per-file paths, sizes, and hashes in
@@ -106,21 +107,27 @@ hashes, for each file, the big-endian 64-bit path length, relative-path bytes,
 big-endian 64-bit file size, and file bytes.
 
 Foundry builds from upstream [foundry-rs/foundry](https://github.com/foundry-rs/foundry) at the commit
-pinned in `infrastructure/variables.tf` (`foundry_git_ref`). The pin must include invariant
-assertion-failure reporting ([foundry-rs/foundry#14275](https://github.com/foundry-rs/foundry/pull/14275))
-and continuous invariant campaigns with handler-bug dedup
-([foundry-rs/foundry#14482](https://github.com/foundry-rs/foundry/pull/14482)) and the tx/gas
-throughput counters from
-[foundry-rs/foundry#14266](https://github.com/foundry-rs/foundry/pull/14266). Stable releases up to
-v1.7.1 predate #14482, so keep the commit pin until a stable release ships the required behavior.
+pinned in `infrastructure/variables.tf` (`foundry_git_ref`). The pin follows the bounded-corpus stack
+through [foundry-rs/foundry#15816](https://github.com/foundry-rs/foundry/pull/15816), so non-favored
+entries are evicted from worker memory and interesting entries are persisted immediately. The pin
+deliberately precedes the uncapped in-memory observed-call dictionary in
+[foundry-rs/foundry#15817](https://github.com/foundry-rs/foundry/pull/15817). It also includes new
+corpus mutation strategies and worker search distributions, so corpus A/B results must compare
+`SCFUZZBENCH_FOUNDRY_KEEP_CORPUS=0` and `1` at this same pin rather than attributing differences
+against older Foundry revisions solely to retention. The pin also includes invariant assertion-failure
+reporting
+([foundry-rs/foundry#14275](https://github.com/foundry-rs/foundry/pull/14275)), continuous invariant
+campaigns with handler-bug dedup
+([foundry-rs/foundry#14482](https://github.com/foundry-rs/foundry/pull/14482)), and tx/gas throughput
+counters from [foundry-rs/foundry#14266](https://github.com/foundry-rs/foundry/pull/14266). Keep the
+commit pin until a stable release ships all required behavior.
 
-The pinned upstream source only writes its throughput pulse when terminal progress is disabled and
-edge coverage is enabled. Those conditions conflict with two production safeguards below.
-`fuzzers/foundry/throughput-progress.patch` therefore makes the existing pulse cadence independent
-of those display/coverage modes. The installer applies that patch only to the exact pinned commit,
-verifies its SHA-256 digest, and fails on drift. `foundry_source_patch` in each benchmark manifest
-records the patch identity. A source override that resolves away from the exact pinned commit is
-intentionally left unpatched, so its throughput availability depends on that source tree.
+The pinned source only writes its throughput pulse when terminal progress is disabled.
+`fuzzers/foundry/throughput-progress.patch` makes pulse emission independent of the progress UI, so
+the runner can retain `--show-progress` for graceful signal handling without losing machine-readable
+telemetry. The installer verifies the exact bounded-corpus commit and the patch's SHA-256 digest
+before applying it. Other source overrides remain unpatched, so their throughput availability
+depends on the selected source tree.
 
 Cloud benchmark requests do not expose `foundry_version`: setting only that release tag would be ignored while the
 non-empty git repository selects the source build. For a local release-binary run, use

@@ -95,12 +95,12 @@ class FoundryThroughputEndToEndTests(unittest.TestCase):
             workers_index = command.index("--invariant-workers")
             self.assertEqual(command[workers_index + 1], "auto")
 
-            # The memory safeguard remains active; telemetry does not require a
-            # persisted/in-memory coverage-guided corpus.
+            # The bounded corpus and throughput telemetry remain active
+            # together in the default benchmark configuration.
             foundry_toml = (work_dir / "target" / "foundry.toml").read_text(
                 encoding="utf-8"
             )
-            self.assertNotIn("corpus_dir", foundry_toml)
+            self.assertIn("corpus_dir", foundry_toml)
 
             foundry_log = log_dir / "foundry.log"
             raw_log = foundry_log.read_text(encoding="utf-8")

@@ -41,6 +41,7 @@ prepare_workspace() {{
   cat > "${{SCFUZZBENCH_WORKDIR}}/target/foundry.toml" <<'TOML'
 [invariant]
 shrink_run_limit = 100000
+corpus_dir = "corpus/foundry"
 TOML
   SCFUZZBENCH_LOG_ROOT_ANCHOR="${{SCFUZZBENCH_LOG_DIR}}"
   SCFUZZBENCH_LOG_ROOT_IDENTITY="test-log-anchor"
@@ -79,6 +80,8 @@ run_with_timeout() {{
   log_file=$1
   printf '%s\n' "${{FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT-UNSET}}" \
     > "${{SCFUZZBENCH_LOG_DIR}}/foundry-shrink-run-limit.txt"
+  printf '%s\n' "${{FOUNDRY_INVARIANT_CORPUS_DIR-UNSET}}" \
+    > "${{SCFUZZBENCH_LOG_DIR}}/foundry-corpus-dir.txt"
   {{
     printf 'RUN'
 {timeout_line}
@@ -95,6 +98,57 @@ run_with_timeout() {{
 
 
 class FoundryRunShowmapArgsTests(unittest.TestCase):
+    def run_with_corpus_mode(
+        self, keep_corpus: str | None = None
+    ) -> tuple[str, str, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            log_dir = tmp_dir / "logs"
+            work_dir = tmp_dir / "work"
+            common_sh = write_common_sh(tmp_dir)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "SCFUZZBENCH_COMMON_SH": str(common_sh),
+                    "SCFUZZBENCH_WORKDIR": str(work_dir),
+                    "SCFUZZBENCH_LOG_DIR": str(log_dir),
+                    "FOUNDRY_LABEL": "foundry-master",
+                }
+            )
+            env.pop("SCFUZZBENCH_FOUNDRY_KEEP_CORPUS", None)
+            if keep_corpus is not None:
+                env["SCFUZZBENCH_FOUNDRY_KEEP_CORPUS"] = keep_corpus
+
+            subprocess.check_call(["bash", str(SCRIPT)], env=env)
+
+            corpus_dir = (log_dir / "foundry-corpus-dir.txt").read_text(
+                encoding="utf-8"
+            )
+            config = (work_dir / "target" / "foundry.toml").read_text(
+                encoding="utf-8"
+            )
+            log = (log_dir / "log.txt").read_text(encoding="utf-8")
+            return corpus_dir.strip(), config, log
+
+    def test_coverage_guidance_is_enabled_by_default(self):
+        corpus_dir, config, log = self.run_with_corpus_mode()
+
+        self.assertTrue(corpus_dir.endswith("/target/corpus/foundry"))
+        self.assertIn('corpus_dir = "corpus/foundry"', config)
+        self.assertIn("Foundry coverage guidance enabled", log)
+
+    def test_coverage_guidance_can_be_disabled_explicitly(self):
+        corpus_dir, config, log = self.run_with_corpus_mode("0")
+
+        self.assertEqual(corpus_dir, "UNSET")
+        self.assertNotIn("corpus_dir", config)
+        self.assertIn("SCFUZZBENCH_FOUNDRY_KEEP_CORPUS=0", log)
+
+    def test_invalid_coverage_guidance_mode_is_rejected(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_with_corpus_mode("true")
+
     def run_main_command(self, foundry_test_args: str = "") -> list[str]:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
@@ -138,6 +192,15 @@ class FoundryRunShowmapArgsTests(unittest.TestCase):
                 else:
                     workers_idx = args.index("--invariant-workers")
                     self.assertEqual(args[workers_idx + 1], "4")
+
+    def test_invariant_corpus_dir_override_is_rejected(self):
+        for override in (
+            "--invariant-corpus-dir /tmp/other-corpus",
+            "--invariant-corpus-dir=/tmp/other-corpus",
+        ):
+            with self.subTest(override=override):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.run_main_command(override)
 
     def run_with_shrink_limit(
         self, shrink_limit: str | None = None

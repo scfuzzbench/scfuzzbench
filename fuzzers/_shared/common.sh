@@ -2059,16 +2059,15 @@ install_foundry() {
     commit=$(git -C "${tmp_dir}/foundry" rev-parse --short HEAD)
     commit_full=$(git -C "${tmp_dir}/foundry" rev-parse HEAD)
 
-    # Upstream PR #14266 added invariant tx/gas counters, but the pinned source
-    # only emits them when the progress UI is disabled and edge coverage is
-    # enabled. The benchmark deliberately keeps --show-progress for graceful
-    # SIGINT summaries and disables corpus persistence to avoid unbounded memory
-    # growth, so apply the narrow scfuzzbench pulse patch at the exact known pin.
-    # Explicit source-ref experiments remain unpatched and are called out in the
-    # benchmark manifest.
+    # Upstream PR #14266 added invariant tx/gas counters, but the bounded-corpus
+    # source pin only emits them when the progress UI is disabled and edge
+    # coverage is enabled. Apply the narrow scfuzzbench pulse patch at the exact
+    # known pin so --show-progress can retain its graceful signal handling
+    # without suppressing machine-readable telemetry. Other source-ref
+    # experiments remain unpatched and are called out in the benchmark manifest.
     local throughput_patch="${SCFUZZBENCH_FOUNDRY_SOURCE_PATCH:-}"
-    local throughput_patch_ref="02c05d970d2801da0aef8b82486ce84b01ede36d"
-    local throughput_patch_sha256="2ee9e69b77c8007c78c816eb9ca791684aa5ecede0651b63f86cdd2e055eb17e"
+    local throughput_patch_ref="61f4ab717410ffc858b5000a909c805de47d6c5f"
+    local throughput_patch_sha256="c2ee28de6a7c6055709bd2510e39f45c0e7f87de8e50f34d3c09dd2d9fffa8f3"
     if [[ "${commit_full}" == "${throughput_patch_ref}" ]]; then
       if [[ -z "${throughput_patch}" || ! -f "${throughput_patch}" ]]; then
         log "Missing Foundry throughput source patch for pinned commit ${throughput_patch_ref}."
