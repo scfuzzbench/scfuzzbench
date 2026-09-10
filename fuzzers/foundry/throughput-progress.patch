@@ -1,9 +1,9 @@
 diff --git a/crates/evm/evm/src/executors/invariant/mod.rs b/crates/evm/evm/src/executors/invariant/mod.rs
-index 0b0e5334e..ceb90f8a6 100644
+index 942a5bf..91d4848 100644
 --- a/crates/evm/evm/src/executors/invariant/mod.rs
 +++ b/crates/evm/evm/src/executors/invariant/mod.rs
-@@ -1589,9 +1589,13 @@ fn run_invariant_worker(
-                     };
+@@ -1544,9 +1544,13 @@ fn run_invariant_worker(
+                         if worker_count > 1 { format!("[w{}] {msg}", plan.worker_id) } else { msg };
                      progress.set_message(msg);
                  }
 -            } else if edge_coverage_enabled
