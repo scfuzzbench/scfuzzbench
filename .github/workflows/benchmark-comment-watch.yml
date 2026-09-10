@@ -1,0 +1,89 @@
+name: Benchmark Comment Watch
+
+# DRAFT. Polls the pull requests of watched fuzzer repositories for a
+# `/benchmark` comment and, for an allowlisted requester, opens a benchmark
+# request issue here in the `benchmark/01-pending` state.
+#
+# This grants no spend authority: a maintainer still applies
+# `benchmark/03-approved` before anything is provisioned. Authorization comes
+# from .github/benchmark-watch.json in this repository, never from the watched
+# repository, and the recorded requester is re-checked when the request is
+# validated.
+
+on:
+  schedule:
+    # Often enough to feel responsive, rare enough to stay well inside the
+    # API rate limit for the configured repositories.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      lookback_minutes:
+        description: "How far back to scan for comments."
+        required: false
+        default: "60"
+      dry_run:
+        description: "Resolve and report without opening any issue."
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark-comment-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Opening the request issue, and acknowledging on the source pull
+      # request, are the only writes this workflow performs.
+      issues: write
+    steps:
+      - name: Checkout (tarball)
+        timeout-minutes: 5
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          url="https://codeload.github.com/${REPO}/tar.gz/${SHA}"
+          curl -fsSL "${url}" -o repo.tar.gz
+          topdir="$(tar -tzf repo.tar.gz | sed -n '1p' | cut -d/ -f1)"
+          tar -xzf repo.tar.gz
+          shopt -s dotglob
+          mv "${topdir}"/* .
+          rm -rf "${topdir}" repo.tar.gz
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate the watch configuration
+        run: python3 scripts/external_benchmark_requests.py validate-config
+
+      - name: Scan watched pull requests
+        env:
+          # Reading public watched repositories and opening issues here. A PAT
+          # is only required to verify org membership for `requester_orgs`.
+          GITHUB_TOKEN: ${{ secrets.BENCHMARK_WATCH_TOKEN || github.token }}
+          LOOKBACK_MINUTES: ${{ inputs.lookback_minutes || '60' }}
+          # Empty on a schedule; only an explicit "false" from a manual run
+          # leaves dry-run mode. GitHub coerces null and false alike, so the
+          # decision is made in the shell rather than in an expression.
+          DRY_RUN: ${{ inputs.dry_run }}
+          REQUEST_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          scan_args=(
+            --lookback-minutes "${LOOKBACK_MINUTES}"
+            --request-repository "${REQUEST_REPOSITORY}"
+          )
+          if [[ "${DRY_RUN:-}" != "false" ]]; then
+            scan_args+=(--dry-run)
+          fi
+          python3 scripts/external_benchmark_requests.py scan "${scan_args[@]}"

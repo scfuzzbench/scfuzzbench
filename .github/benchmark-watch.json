@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "command": "/benchmark",
+  "repositories": [
+    {
+      "repo": "crytic/echidna",
+      "base": "echidna",
+      "artifact_name": "echidna-redistributable-x86_64-linux",
+      "requesters": [
+        "gustavo-grieco"
+      ],
+      "requester_orgs": [],
+      "defaults": {
+        "target_repo_url": "https://github.com/scfuzzbench/drips-fuzzing-scfuzzbench",
+        "target_commit": "c50d160ead6bf82b1d1071e853dc74da0b23f595",
+        "benchmark_type": "property",
+        "instance_type": "c6a.4xlarge",
+        "instances_per_fuzzer": 4,
+        "timeout_hours": 1,
+        "preliminary_interval_minutes": 60,
+        "properties_path": "test/recon/Properties.sol",
+        "git_token_ssm_parameter_name": "/scfuzzbench/recon/github_token",
+        "echidna_ci_token_ssm_parameter_name": "/scfuzzbench/echidna-ci-token"
+      },
+      "build_mode": "ci",
+      "baseline_ref": "master"
+    },
+    {
+      "repo": "crytic/medusa",
+      "base": "medusa",
+      "build_mode": "source",
+      "baseline_ref": "master",
+      "requesters": [],
+      "requester_orgs": [
+        "crytic"
+      ],
+      "defaults": {
+        "target_repo_url": "https://github.com/scfuzzbench/drips-fuzzing-scfuzzbench",
+        "target_commit": "c50d160ead6bf82b1d1071e853dc74da0b23f595",
+        "benchmark_type": "property",
+        "instance_type": "c6a.4xlarge",
+        "instances_per_fuzzer": 4,
+        "timeout_hours": 1,
+        "preliminary_interval_minutes": 60,
+        "properties_path": "test/recon/Properties.sol",
+        "git_token_ssm_parameter_name": "/scfuzzbench/recon/github_token",
+        "medusa_go_version": "1.24.0",
+        "medusa_go_sha256": "dea9ca38a0b852a74e81c26134671af7c0fbe65d81b0dc1c5bfe22cf7d4c8858"
+      }
+    }
+  ]
+}
