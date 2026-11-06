@@ -221,15 +221,36 @@ gh api "repos/$repo/actions/runs/$run_id/artifacts?name=$artifact" \
   --jq '.artifacts[] | {id,name,digest,expired,expires_at,size_in_bytes,workflow_run}'
 ```
 
-Store the token separately; put only its parameter name in a public benchmark
-request:
+Store the token separately in the benchmark AWS account and region; put only its
+parameter name in a public benchmark request. The name below is an example,
+not a parameter created by Terraform:
 
 ```bash
 aws ssm put-parameter \
+  --region "$AWS_REGION" \
   --name /scfuzzbench/echidna/actions_token \
   --type SecureString \
   --value "$ECHIDNA_ACTIONS_TOKEN" \
   --overwrite
+```
+
+Set the repository Actions variable `ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME` to
+the actual parameter name, then run the **Docs Site** workflow. The authenticated
+docs build checks its existence and `SecureString` type before publishing the
+name as the Start Benchmark default. If the variable is unset or verification
+fails, the site still builds with an empty default and CI requests require a
+maintainer-provided parameter name. It never publishes the token value.
+
+The launch workflow repeats this check before reserving capacity or creating
+instances, including for manually entered parameter names. Both checks need
+`ssm:GetParameter` on the exact parameter for the workflow's AWS credentials.
+They request metadata without decryption; they do not test the token's GitHub
+permissions or the future instance role's KMS access. To check a name locally:
+
+```bash
+python3 scripts/echidna_ci_credentials.py check \
+  --parameter "$ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME" \
+  --region "$AWS_REGION"
 ```
 
 Only Echidna artifact instances use the dedicated CI instance profile. It grants
