@@ -84,7 +84,7 @@ const echidnaCiRunId = ref("");
 const echidnaCiArtifactName = ref("");
 const echidnaCiArtifactSha256 = ref("");
 const echidnaCiCommit = ref("");
-const echidnaCiTokenSsmParameterName = ref("");
+const echidnaCiTokenSsmParameterName = ref("/scfuzzbench/echidna/github_token");
 const echidnaCiTokenKmsKeyArn = ref("");
 const medusaVersion = ref("");
 const medusaGitRepo = ref("");
@@ -125,15 +125,33 @@ const selectedEchidnaOptions = ref<string[]>(["release"]);
 const echidnaPullNumber = ref("");
 const echidnaBuildStatus = ref<Record<string, string>>({});
 const echidnaResolveError = ref("");
-const resolvedEchidnaBuilds = ref<ResolvedBuild[]>([]);
 
-// A CI build installs from a token-protected Actions artifact, so a request
-// using one is incomplete without the parameter holding that token.
-const echidnaNeedsToken = computed(
-  () =>
-    resolvedEchidnaBuilds.value.some((build) => build.kind === "ci") &&
-    !echidnaCiTokenSsmParameterName.value.trim()
+// Inspect the request fields so manual CI overrides also receive credentials.
+// Release-only requests must leave the entire CI input group empty.
+const echidnaCiEnabled = computed(() =>
+  [
+    echidnaCiRepo.value,
+    echidnaCiRunId.value,
+    echidnaCiArtifactName.value,
+    echidnaCiArtifactSha256.value,
+    echidnaCiCommit.value,
+  ].some((value) => value.trim()) ||
+  parsedFuzzerVariants.value.some((variant) => variant.base === "echidna" && variant.ci)
 );
+
+const echidnaTokenParameterError = computed(() => {
+  if (!echidnaCiEnabled.value) {
+    return "";
+  }
+  const parameter = echidnaCiTokenSsmParameterName.value.trim();
+  if (!parameter) {
+    return "Set the Echidna artifact token SSM parameter under advanced settings.";
+  }
+  if (parameter.length > 200 || !/^\/scfuzzbench\/[A-Za-z0-9_./-]+$/.test(parameter)) {
+    return "The Echidna artifact token parameter must be a path under /scfuzzbench/ (maximum 200 characters).";
+  }
+  return "";
+});
 
 function echidnaPresetsFor(selection: string[]): Record<string, unknown>[] {
   const presets: Record<string, unknown>[] = [];
@@ -159,7 +177,6 @@ function clearEchidnaBuildFields() {
   echidnaCiArtifactSha256.value = "";
   echidnaCiCommit.value = "";
   fuzzerVariantsJson.value = "";
-  resolvedEchidnaBuilds.value = [];
 }
 
 let echidnaResolveToken = 0;
@@ -218,7 +235,6 @@ async function resolveEchidnaSelection() {
     fuzzerVariantsJson.value = fields.fuzzer_variants.length
       ? JSON.stringify(fields.fuzzer_variants)
       : "";
-    resolvedEchidnaBuilds.value = builds;
     echidnaBuildStatus.value = status;
   } catch (error) {
     if (token !== echidnaResolveToken) {
@@ -398,8 +414,8 @@ const requestJson = computed(() => {
     echidna_ci_artifact_name: echidnaCiArtifactName.value.trim(),
     echidna_ci_artifact_sha256: echidnaCiArtifactSha256.value.trim(),
     echidna_ci_commit: echidnaCiCommit.value.trim(),
-    echidna_ci_token_ssm_parameter_name: echidnaCiTokenSsmParameterName.value.trim(),
-    echidna_ci_token_kms_key_arn: echidnaCiTokenKmsKeyArn.value.trim(),
+    echidna_ci_token_ssm_parameter_name: echidnaCiEnabled.value ? echidnaCiTokenSsmParameterName.value.trim() : "",
+    echidna_ci_token_kms_key_arn: echidnaCiEnabled.value ? echidnaCiTokenKmsKeyArn.value.trim() : "",
     medusa_version: medusaVersion.value.trim(),
     medusa_git_repo: medusaGitRepo.value.trim(),
     medusa_git_ref: medusaGitRef.value.trim(),
@@ -444,6 +460,9 @@ const issueBody = computed(() => {
 });
 
 const issueUrl = computed(() => {
+  if (echidnaTokenParameterError.value) {
+    return undefined;
+  }
   const params = new URLSearchParams();
   params.set("title", issueTitle.value);
   params.set("body", issueBody.value);
@@ -581,15 +600,21 @@ const showAdvanced = ref(false);
           <p v-if="echidnaResolveError" class="sb-start__hint sb-start__hint--error">
             {{ echidnaResolveError }}
           </p>
-          <p v-if="echidnaNeedsToken" class="sb-start__hint sb-start__hint--error">
-            A <code>master</code> or pull request build also needs
-            <code>echidna_ci_token_ssm_parameter_name</code> under advanced settings.
+          <p v-if="echidnaTokenParameterError" id="echidna-token-error" class="sb-start__hint sb-start__hint--error">
+            {{ echidnaTokenParameterError }}
           </p>
         </label>
       </div>
 
       <div class="sb-start__actions">
-        <a class="sb-start__button" :href="issueUrl" target="_blank" rel="noreferrer">
+        <a
+          class="sb-start__button"
+          :href="issueUrl"
+          :aria-disabled="echidnaTokenParameterError ? true : undefined"
+          :aria-describedby="echidnaTokenParameterError ? 'echidna-token-error' : undefined"
+          target="_blank"
+          rel="noreferrer"
+        >
           Open GitHub request issue
         </a>
 
@@ -652,7 +677,7 @@ const showAdvanced = ref(false);
               v-model="echidnaCiTokenSsmParameterName"
               class="sb-start__input"
               type="text"
-              placeholder="/scfuzzbench/echidna/actions_token"
+              placeholder="/scfuzzbench/echidna/github_token"
             />
           </label>
 

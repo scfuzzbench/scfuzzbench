@@ -177,5 +177,8 @@ jobs:
       - name: Install Node deps
         run: npm ci
 
+      - name: Test docs request generation
+        run: npm run docs:test
+
       - name: Build docs
         run: npm run docs:build

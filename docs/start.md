@@ -24,8 +24,10 @@ harness; use the manifest's pinned commit for a reproducible run.
 Echidna appears in the fuzzer list once per build: `latest`, `master`, and
 `PR` with a number. Tick two or more to compare them in a single run — commit
 SHAs, CI run IDs and artifact digests are resolved for you and written into the
-request. A `master` or pull request build additionally needs
-`echidna_ci_token_ssm_parameter_name` under advanced settings.
+request. A `master` or pull request build automatically uses
+`/scfuzzbench/echidna/github_token` as its artifact token SSM parameter. You can
+override that parameter under advanced settings. The request link is disabled
+if a CI build's parameter is empty or invalid; release-only requests omit it.
 
 <StartBenchmark />
 
