@@ -1223,6 +1223,7 @@ jobs:
             tf_args+=(-var "medusa_version=${MEDUSA_VERSION}")
           fi
           if [[ -n "${MEDUSA_GIT_REPO}" ]]; then
+            : "${MEDUSA_GIT_REF:?MEDUSA_GIT_REF is required when MEDUSA_GIT_REPO is set}"
             tf_args+=(
               -var "medusa_git_repo=${MEDUSA_GIT_REPO}"
               -var "medusa_git_ref=${MEDUSA_GIT_REF}"

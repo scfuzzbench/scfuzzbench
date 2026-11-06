@@ -81,7 +81,9 @@ jobs:
           python3 infrastructure/tests/test_bootstrap_bundle.py
 
   python:
-    runs-on: ubuntu-latest
+    # Match the Ubuntu 24.04 benchmark AMI and its GNU timeout semantics.
+    # ubuntu-latest now selects 26.04, which defaults to Rust coreutils.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout (tarball)
         timeout-minutes: 5
