@@ -65,8 +65,10 @@ const allFuzzerKeys = orderFuzzers(
     .filter((name): name is string => Boolean(name))
 );
 
-const selectableFuzzerKeys = allFuzzerKeys;
-const selectedFuzzerKeys = ref<string[]>([...allFuzzerKeys]);
+// Echidna is selected through its build options below, not this list.
+const selectedFuzzerKeys = ref<string[]>(
+  allFuzzerKeys.filter((name) => name !== "echidna")
+);
 const participatingFuzzerKeys = computed(() => {
   const selected = new Set(selectedFuzzerKeys.value);
   return allFuzzerKeys.filter((name) => selected.has(name));
@@ -96,6 +98,146 @@ const gitTokenSsmParameterName = ref("/scfuzzbench/recon/github_token");
 
 const fuzzerEnvJson = ref("");
 const fuzzerVariantsJson = ref("");
+
+// Echidna appears in the fuzzer list once per build people compare: the
+// published release, master, and a pull request. The page is static, so the
+// commit SHAs, CI run IDs and artifact digests those need are resolved from
+// the public GitHub API as soon as a build is picked.
+type ResolvedBuild = {
+  kind: string;
+  label: string;
+  version?: string;
+  run_id?: string;
+  artifact_name?: string;
+  artifact_sha256?: string;
+  commit?: string;
+  pullNumber?: number;
+};
+
+const echidnaOptions = [
+  { id: "release", label: "latest" },
+  { id: "master", label: "master" },
+  { id: "pull", label: "PR" },
+] as const;
+
+const otherFuzzerKeys = allFuzzerKeys.filter((name) => name !== "echidna");
+const selectedEchidnaOptions = ref<string[]>(["release"]);
+const echidnaPullNumber = ref("");
+const echidnaBuildStatus = ref<Record<string, string>>({});
+const echidnaResolveError = ref("");
+const resolvedEchidnaBuilds = ref<ResolvedBuild[]>([]);
+
+// A CI build installs from a token-protected Actions artifact, so a request
+// using one is incomplete without the parameter holding that token.
+const echidnaNeedsToken = computed(
+  () =>
+    resolvedEchidnaBuilds.value.some((build) => build.kind === "ci") &&
+    !echidnaCiTokenSsmParameterName.value.trim()
+);
+
+function echidnaPresetsFor(selection: string[]): Record<string, unknown>[] {
+  const presets: Record<string, unknown>[] = [];
+  if (selection.includes("release")) presets.push({ kind: "release", id: "release" });
+  if (selection.includes("master")) {
+    presets.push({ kind: "branch", ref: "master", id: "master" });
+  }
+  if (selection.includes("pull") && /^[0-9]+$/.test(echidnaPullNumber.value.trim())) {
+    presets.push({
+      kind: "pull",
+      number: Number(echidnaPullNumber.value.trim()),
+      id: "pull",
+    });
+  }
+  return presets;
+}
+
+function clearEchidnaBuildFields() {
+  echidnaVersion.value = "";
+  echidnaCiRepo.value = "";
+  echidnaCiRunId.value = "";
+  echidnaCiArtifactName.value = "";
+  echidnaCiArtifactSha256.value = "";
+  echidnaCiCommit.value = "";
+  fuzzerVariantsJson.value = "";
+  resolvedEchidnaBuilds.value = [];
+}
+
+let echidnaResolveToken = 0;
+
+async function resolveEchidnaSelection() {
+  const selection = [...selectedEchidnaOptions.value];
+  const presets = echidnaPresetsFor(selection);
+  echidnaResolveError.value = "";
+
+  if (presets.length === 0) {
+    echidnaBuildStatus.value = {};
+    clearEchidnaBuildFields();
+    return;
+  }
+  // The published release needs no lookup, so avoid spending a request on it.
+  if (presets.length === 1 && presets[0].kind === "release") {
+    echidnaBuildStatus.value = { release: "" };
+    clearEchidnaBuildFields();
+    return;
+  }
+
+  const token = ++echidnaResolveToken;
+  const pending: Record<string, string> = {};
+  for (const preset of presets) {
+    pending[String(preset.id)] = "resolving…";
+  }
+  echidnaBuildStatus.value = pending;
+
+  try {
+    const { githubApi, resolvePreset, buildRequestFields } = await import(
+      "../lib/echidna-presets.js"
+    );
+    const api = githubApi();
+    const builds: ResolvedBuild[] = [];
+    const status: Record<string, string> = {};
+    for (const preset of presets) {
+      const build = (await resolvePreset(api, preset)) as ResolvedBuild;
+      builds.push(build);
+      status[String(preset.id)] =
+        build.kind === "ci"
+          ? `${build.commit!.slice(0, 12)} · ${build.artifact_sha256!.slice(0, 12)}…`
+          : build.version!;
+    }
+    // A newer selection started while this one was in flight.
+    if (token !== echidnaResolveToken) {
+      return;
+    }
+
+    const fields = buildRequestFields(builds);
+    echidnaVersion.value = fields.echidna_version;
+    echidnaCiRepo.value = fields.echidna_ci_repo;
+    echidnaCiRunId.value = fields.echidna_ci_run_id;
+    echidnaCiArtifactName.value = fields.echidna_ci_artifact_name;
+    echidnaCiArtifactSha256.value = fields.echidna_ci_artifact_sha256;
+    echidnaCiCommit.value = fields.echidna_ci_commit;
+    fuzzerVariantsJson.value = fields.fuzzer_variants.length
+      ? JSON.stringify(fields.fuzzer_variants)
+      : "";
+    resolvedEchidnaBuilds.value = builds;
+    echidnaBuildStatus.value = status;
+  } catch (error) {
+    if (token !== echidnaResolveToken) {
+      return;
+    }
+    clearEchidnaBuildFields();
+    echidnaBuildStatus.value = {};
+    echidnaResolveError.value =
+      error instanceof Error ? error.message : String(error);
+  }
+}
+
+let echidnaResolveTimer: ReturnType<typeof setTimeout> | undefined;
+
+watch([selectedEchidnaOptions, echidnaPullNumber], () => {
+  // Typing a pull request number should not fire a request per keystroke.
+  clearTimeout(echidnaResolveTimer);
+  echidnaResolveTimer = setTimeout(resolveEchidnaSelection, 500);
+});
 
 function normalizeRepoUrl(raw: string): string {
   return raw
@@ -227,9 +369,13 @@ const fuzzerVariantKeys = computed(() =>
     .filter((key) => key.length > 0)
 );
 
-const requestedFuzzerKeys = computed(() =>
-  Array.from(new Set([...participatingFuzzerKeys.value, ...fuzzerVariantKeys.value]))
-);
+const requestedFuzzerKeys = computed(() => {
+  const keys = [...participatingFuzzerKeys.value, ...fuzzerVariantKeys.value];
+  if (selectedEchidnaOptions.value.length > 0) {
+    keys.unshift("echidna");
+  }
+  return Array.from(new Set(keys));
+});
 
 const requestJson = computed(() => {
   const payload: Record<string, unknown> = {
@@ -390,7 +536,35 @@ const showAdvanced = ref(false);
           <div class="sb-start__label">Fuzzers</div>
           <div class="sb-start__fuzzers">
             <label
-              v-for="fuzzer in selectableFuzzerKeys"
+              v-for="option in echidnaOptions"
+              :key="option.id"
+              class="sb-start__fuzzer-option"
+            >
+              <input
+                v-model="selectedEchidnaOptions"
+                class="sb-start__fuzzer-checkbox"
+                type="checkbox"
+                :value="option.id"
+              />
+              <span>
+                <code>echidna</code> ({{ option.label }})
+                <input
+                  v-if="option.id === 'pull'"
+                  v-model="echidnaPullNumber"
+                  class="sb-start__input sb-start__input--inline"
+                  type="text"
+                  inputmode="numeric"
+                  placeholder="1614"
+                  :disabled="!selectedEchidnaOptions.includes('pull')"
+                />
+                <small v-if="echidnaBuildStatus[option.id]" class="sb-start__build-note">
+                  {{ echidnaBuildStatus[option.id] }}
+                </small>
+              </span>
+            </label>
+
+            <label
+              v-for="fuzzer in otherFuzzerKeys"
               :key="fuzzer"
               class="sb-start__fuzzer-option"
             >
@@ -403,6 +577,14 @@ const showAdvanced = ref(false);
               <span><code>{{ fuzzer }}</code></span>
             </label>
           </div>
+
+          <p v-if="echidnaResolveError" class="sb-start__hint sb-start__hint--error">
+            {{ echidnaResolveError }}
+          </p>
+          <p v-if="echidnaNeedsToken" class="sb-start__hint sb-start__hint--error">
+            A <code>master</code> or pull request build also needs
+            <code>echidna_ci_token_ssm_parameter_name</code> under advanced settings.
+          </p>
         </label>
       </div>
 

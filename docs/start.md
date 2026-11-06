@@ -21,6 +21,12 @@ Every target is a fork under the [scfuzzbench GitHub org](https://github.com/scf
 upstream baseline. Compare `pre-target...main` in the target repo to inspect the
 harness; use the manifest's pinned commit for a reproducible run.
 
+Echidna appears in the fuzzer list once per build: `latest`, `master`, and
+`PR` with a number. Tick two or more to compare them in a single run — commit
+SHAs, CI run IDs and artifact digests are resolved for you and written into the
+request. A `master` or pull request build additionally needs
+`echidna_ci_token_ssm_parameter_name` under advanced settings.
+
 <StartBenchmark />
 
 ::: warning
