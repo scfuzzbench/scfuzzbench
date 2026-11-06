@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import targetManifest from "../../../benchmarks/targets.json";
 import ec2Pricing from "../generated/ec2-pricing.json";
+import benchmarkDefaults from "../generated/benchmark-defaults.json";
 
 type BenchmarkType = "property" | "optimization";
 type Ec2PricingTable = Record<string, number>;
@@ -84,7 +85,8 @@ const echidnaCiRunId = ref("");
 const echidnaCiArtifactName = ref("");
 const echidnaCiArtifactSha256 = ref("");
 const echidnaCiCommit = ref("");
-const echidnaCiTokenSsmParameterName = ref("/scfuzzbench/echidna/github_token");
+// The authenticated docs build fills this only after checking SSM metadata.
+const echidnaCiTokenSsmParameterName = ref(benchmarkDefaults.echidna_ci_token_ssm_parameter_name);
 const echidnaCiTokenKmsKeyArn = ref("");
 const medusaVersion = ref("");
 const medusaGitRepo = ref("");
@@ -145,7 +147,7 @@ const echidnaTokenParameterError = computed(() => {
   }
   const parameter = echidnaCiTokenSsmParameterName.value.trim();
   if (!parameter) {
-    return "Set the Echidna artifact token SSM parameter under advanced settings.";
+    return "Ask a maintainer for the Echidna artifact token SSM parameter name, then enter it under advanced settings. Do not enter the token itself.";
   }
   if (parameter.length > 200 || !/^\/scfuzzbench\/[A-Za-z0-9_./-]+$/.test(parameter)) {
     return "The Echidna artifact token parameter must be a path under /scfuzzbench/ (maximum 200 characters).";
@@ -677,7 +679,7 @@ const showAdvanced = ref(false);
               v-model="echidnaCiTokenSsmParameterName"
               class="sb-start__input"
               type="text"
-              placeholder="/scfuzzbench/echidna/github_token"
+              placeholder="SSM parameter name provided by a maintainer"
             />
           </label>
 

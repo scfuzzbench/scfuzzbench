@@ -7,6 +7,8 @@ import { renderToString } from "@vue/server-renderer";
 
 let server;
 let component;
+let defaults;
+const VERIFIED_PARAMETER = "/scfuzzbench/test/verified_actions_token";
 
 before(async () => {
   server = await createServer({
@@ -16,6 +18,9 @@ before(async () => {
     appType: "custom",
     logLevel: "error",
   });
+  ({ default: defaults } = await server.ssrLoadModule(
+    "/docs/.vitepress/generated/benchmark-defaults.json"
+  ));
   ({ default: component } = await server.ssrLoadModule(
     "/docs/.vitepress/components/StartBenchmark.vue"
   ));
@@ -25,7 +30,8 @@ after(async () => {
   await server?.close();
 });
 
-async function renderRequest(configure = () => {}) {
+async function renderRequest(configure = () => {}, defaultParameter = VERIFIED_PARAMETER) {
+  defaults.echidna_ci_token_ssm_parameter_name = defaultParameter;
   let payload;
   let issueUrl;
   const html = await renderToString(createSSRApp({
@@ -81,14 +87,14 @@ test("CI and release comparisons include the configured token parameter", async 
       { key: "echidna-release-2-4-0", base: "echidna", version: "2.4.0" },
     ]);
   });
-  assert.equal(result.payload.echidna_ci_token_ssm_parameter_name, "/scfuzzbench/echidna/github_token");
+  assert.equal(result.payload.echidna_ci_token_ssm_parameter_name, VERIFIED_PARAMETER);
   assert.ok(result.payload.fuzzers.includes("echidna-release-2-4-0"));
   assertRequestEnabled(result);
 });
 
 test("manually entered CI builds also receive the default parameter", async () => {
   const result = await renderRequest(selectCiBuild);
-  assert.equal(result.payload.echidna_ci_token_ssm_parameter_name, "/scfuzzbench/echidna/github_token");
+  assert.equal(result.payload.echidna_ci_token_ssm_parameter_name, VERIFIED_PARAMETER);
   assertRequestEnabled(result);
 });
 
@@ -109,6 +115,19 @@ test("clearing the token parameter blocks CI issue creation", async () => {
     state.echidnaCiTokenSsmParameterName.value = "   ";
   });
   assertRequestDisabled(result);
+});
+
+test("unavailable defaults block CI requests but allow releases and maintainer overrides", async () => {
+  const ci = await renderRequest(selectCiBuild, "");
+  assert.equal(ci.payload.echidna_ci_token_ssm_parameter_name, "");
+  assertRequestDisabled(ci);
+  assertRequestEnabled(await renderRequest(() => {}, ""));
+  const override = await renderRequest((state) => {
+    selectCiBuild(state);
+    state.echidnaCiTokenSsmParameterName.value = "/scfuzzbench/custom/actions_token";
+  }, "");
+  assert.equal(override.payload.echidna_ci_token_ssm_parameter_name, "/scfuzzbench/custom/actions_token");
+  assertRequestEnabled(override);
 });
 
 test("invalid token parameter paths block CI issue creation", async () => {

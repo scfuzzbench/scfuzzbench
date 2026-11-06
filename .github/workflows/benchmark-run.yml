@@ -488,6 +488,15 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Verify Echidna CI token parameter before provisioning
+        if: ${{ needs.prepare-run.outputs.echidna_ci_repo != '' }}
+        env:
+          ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ needs.prepare-run.outputs.echidna_ci_token_ssm_parameter_name }}
+        run: |
+          python3 scripts/echidna_ci_credentials.py check \
+            --parameter "${ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME}" \
+            --region "${AWS_REGION}"
+
       - name: Prepare recoverable run metadata
         env:
           BENCHMARK_TYPE: ${{ inputs.benchmark_type }}

@@ -50,6 +50,27 @@ def run_bodies(contents: str) -> list[str]:
 
 
 class WorkflowSafetyContractTests(unittest.TestCase):
+    def test_echidna_parameter_is_checked_before_any_run_reservation(self):
+        blocks = job_blocks(workflow("benchmark-run.yml"))
+        admission = blocks["admission"]
+        self.assertIn("if: ${{ !inputs.dry_run }}", admission)
+        self.assertIn("if: ${{ needs.prepare-run.outputs.echidna_ci_repo != '' }}", admission)
+        check = admission.index("python3 scripts/echidna_ci_credentials.py check")
+        self.assertLess(admission.index("Configure AWS credentials"), check)
+        self.assertLess(check, admission.index("Prepare recoverable run metadata"))
+        self.assertIn("needs.admission.result == 'success'", blocks["benchmark-run"])
+        body = next(body for body in run_bodies(admission) if "echidna_ci_credentials.py" in body)
+        self.assertIn('--parameter "${ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME}"', body)
+        self.assertIn('--region "${AWS_REGION}"', body)
+
+    def test_docs_check_configured_parameter_before_building_site(self):
+        build = job_blocks(workflow("docs.yml"))["build"]
+        check = build.index("python3 scripts/echidna_ci_credentials.py docs")
+        self.assertLess(build.index("Configure AWS credentials"), check)
+        self.assertLess(check, build.index("npm run docs:build"))
+        self.assertIn("${{ vars.ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME }}", build)
+        self.assertIn("--output docs/.vitepress/generated/benchmark-defaults.json", build)
+
     def test_queue_max_is_narrow_and_all_mutation_groups_are_lossless(self):
         expected = {
             ("benchmark-run.yml", "admission"),
