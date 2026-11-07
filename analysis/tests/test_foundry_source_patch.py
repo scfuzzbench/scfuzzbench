@@ -15,12 +15,13 @@ PREIMAGE = (
     / "fixtures"
     / "foundry-invariant-progress-before.rs"
 )
-EXPECTED_PATCH_SHA256 = "2ee9e69b77c8007c78c816eb9ca791684aa5ecede0651b63f86cdd2e055eb17e"
-EXPECTED_FOUNDRY_REF = "02c05d970d2801da0aef8b82486ce84b01ede36d"
+EXPECTED_PATCH_SHA256 = "c2ee28de6a7c6055709bd2510e39f45c0e7f87de8e50f34d3c09dd2d9fffa8f3"
+EXPECTED_PATCH_REF = "61f4ab717410ffc858b5000a909c805de47d6c5f"
+EXPECTED_DEFAULT_FOUNDRY_REF = "61f4ab717410ffc858b5000a909c805de47d6c5f"
 
 
 class FoundrySourcePatchTests(unittest.TestCase):
-    def test_patch_digest_and_pin_are_wired_into_the_installer(self):
+    def test_patch_digest_and_refs_are_wired_into_the_installer(self):
         self.assertEqual(
             hashlib.sha256(PATCH.read_bytes()).hexdigest(),
             EXPECTED_PATCH_SHA256,
@@ -32,8 +33,11 @@ class FoundrySourcePatchTests(unittest.TestCase):
         variables = (ROOT / "infrastructure" / "variables.tf").read_text(
             encoding="utf-8"
         )
-        self.assertIn(f'throughput_patch_ref="{EXPECTED_FOUNDRY_REF}"', common)
-        self.assertIn(f'default     = "{EXPECTED_FOUNDRY_REF}"', variables)
+        self.assertIn(f'throughput_patch_ref="{EXPECTED_PATCH_REF}"', common)
+        self.assertIn(
+            f'default     = "{EXPECTED_DEFAULT_FOUNDRY_REF}"',
+            variables,
+        )
         self.assertIn(
             f'throughput_patch_sha256="{EXPECTED_PATCH_SHA256}"',
             common,

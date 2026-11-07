@@ -25,7 +25,7 @@ locals {
   medusa_source_input_count = length(compact(local.medusa_source_inputs))
   medusa_source_enabled     = local.medusa_source_input_count > 0
 
-  foundry_throughput_patch_ref    = "02c05d970d2801da0aef8b82486ce84b01ede36d"
+  foundry_throughput_patch_ref    = "61f4ab717410ffc858b5000a909c805de47d6c5f"
   foundry_throughput_patch_path   = "${path.module}/../fuzzers/foundry/throughput-progress.patch"
   foundry_throughput_patch_sha256 = filesha256(local.foundry_throughput_patch_path)
   foundry_source_patch = var.foundry_git_repo != "" && var.foundry_git_ref == local.foundry_throughput_patch_ref ? (

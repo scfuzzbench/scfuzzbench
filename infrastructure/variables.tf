@@ -118,8 +118,8 @@ variable "foundry_git_repo" {
 
 variable "foundry_git_ref" {
   type        = string
-  description = "Git ref (branch, tag, or commit) for the Foundry repo. Pinned to a master commit that includes invariant assertion-failure reporting (foundry-rs/foundry#14275), continuous invariant campaigns with handler-bug dedup (foundry-rs/foundry#14482), mid-transaction interrupt handling plus mid-run handler-assertion failure events (foundry-rs/foundry#15689, fixes #15684), and automatic invariant worker defaulting for forge test (foundry-rs/foundry#15726); stable releases up to v1.7.1 predate #14482."
-  default     = "02c05d970d2801da0aef8b82486ce84b01ede36d"
+  description = "Git ref (branch, tag, or commit) for the Foundry repo. Pinned to the bounded-corpus stack through foundry-rs/foundry#15816, before the uncapped observed-call dictionary in #15817, and including invariant assertion-failure reporting (#14275), continuous campaigns with handler-bug dedup (#14482), mid-transaction interrupts and failure events (#15689), and automatic invariant worker defaulting (#15726)."
+  default     = "61f4ab717410ffc858b5000a909c805de47d6c5f"
 }
 
 variable "echidna_version" {
