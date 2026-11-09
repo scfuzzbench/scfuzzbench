@@ -168,9 +168,11 @@ Foundry builds from upstream [foundry-rs/foundry](https://github.com/foundry-rs/
 pinned in `infrastructure/variables.tf` (`foundry_git_ref`). The pin must include invariant
 assertion-failure reporting ([foundry-rs/foundry#14275](https://github.com/foundry-rs/foundry/pull/14275))
 and continuous invariant campaigns with handler-bug dedup
-([foundry-rs/foundry#14482](https://github.com/foundry-rs/foundry/pull/14482)) and the tx/gas
+([foundry-rs/foundry#14482](https://github.com/foundry-rs/foundry/pull/14482)), the tx/gas
 throughput counters from
-[foundry-rs/foundry#14266](https://github.com/foundry-rs/foundry/pull/14266). Stable releases up to
+[foundry-rs/foundry#14266](https://github.com/foundry-rs/foundry/pull/14266), and handler-assertion
+detection that survives custom assertion messages and later reverts
+([foundry-rs/foundry#18158](https://github.com/foundry-rs/foundry/pull/18158)). Stable releases up to
 v1.7.1 predate #14482, so keep the commit pin until a stable release ships the required behavior.
 
 The pinned upstream source only writes its throughput pulse when terminal progress is disabled and
