@@ -2057,12 +2057,11 @@ install_foundry() {
       export HOME=/root
     fi
     local foundry_build_profile="${FOUNDRY_BUILD_PROFILE:-dist}"
-    # Must satisfy the pinned commit's LOCKED transitive dependencies, not its
-    # workspace MSRV (Cargo.toml says rust-version = "1.89", but the locked
-    # foundry-compilers 0.21 / reth 2.3 / alloy-op crates require rustc >= 1.95).
-    # A `--locked` build fails on an older toolchain. Bump this in lockstep with
-    # foundry_git_ref if a future pin raises the floor again.
-    local foundry_rust_toolchain="${FOUNDRY_RUST_TOOLCHAIN:-1.95.0}"
+    # Must satisfy the pinned commit's workspace MSRV and LOCKED transitive
+    # dependencies (Cargo.toml says rust-version = "1.98"). A `--locked` build
+    # fails on an older toolchain. Bump this in lockstep with foundry_git_ref if a
+    # future pin raises the floor again.
+    local foundry_rust_toolchain="${FOUNDRY_RUST_TOOLCHAIN:-1.98.0}"
     if ! command -v rustup >/dev/null 2>&1; then
       log "Installing Rust toolchain manager"
       curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
@@ -2091,8 +2090,8 @@ install_foundry() {
     # Explicit source-ref experiments remain unpatched and are called out in the
     # benchmark manifest.
     local throughput_patch="${SCFUZZBENCH_FOUNDRY_SOURCE_PATCH:-}"
-    local throughput_patch_ref="02c05d970d2801da0aef8b82486ce84b01ede36d"
-    local throughput_patch_sha256="2ee9e69b77c8007c78c816eb9ca791684aa5ecede0651b63f86cdd2e055eb17e"
+    local throughput_patch_ref="70bce7cc0df617f9630c6b113a29c6bb9eaa64e6"
+    local throughput_patch_sha256="60667521b3061737548887659eedf7d083ecb36fdbacd3da6ac24df3a8af7e58"
     if [[ "${commit_full}" == "${throughput_patch_ref}" ]]; then
       if [[ -z "${throughput_patch}" || ! -f "${throughput_patch}" ]]; then
         log "Missing Foundry throughput source patch for pinned commit ${throughput_patch_ref}."

@@ -12,11 +12,33 @@
                     if let Some(best) = best {
                         msg.push_str(&format!("best: {best}"));
                     }
-                    let msg = if corpus_persistence.is_deferred() {
-                        format!("[w{}] {msg}", plan.worker_id)
-                    } else {
-                        msg
-                    };
+                    if edge_coverage_enabled {
+                        if !msg.is_empty() {
+                            msg.push_str(", ");
+                        }
+                        msg.push_str(&format!("{}", corpus_manager.metrics));
+                        match corpus_manager.time_since_new_edge() {
+                            Some(elapsed) => msg.push_str(&format!(
+                                "\n        - time since new edge: {:.1}s",
+                                elapsed.as_secs_f64()
+                            )),
+                            None => msg.push_str("\n        - time since new edge: never"),
+                        }
+                    }
+                    if broken > 0 {
+                        if !msg.is_empty() {
+                            msg.push_str(", ");
+                        }
+                        msg.push_str(&format!("❌ {broken}/{total_invariants} broken"));
+                    }
+                    if handler_bugs > 0 {
+                        if !msg.is_empty() {
+                            msg.push_str(", ");
+                        }
+                        msg.push_str(&format!("⚠ {handler_bugs} handler bug(s)"));
+                    }
+                    let msg =
+                        if worker_count > 1 { format!("[w{}] {msg}", plan.worker_id) } else { msg };
                     progress.set_message(msg);
                 }
             } else if edge_coverage_enabled
