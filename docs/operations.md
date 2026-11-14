@@ -80,6 +80,76 @@ stay separate from the base fuzzer's. Analysis names a series after the fuzzer
 label becomes its own series (`echidna-v2.3.1`, `echidna-2-2-6`). `RAW_LABELS=1`
 still splits every fuzzer by label.
 
+## Benchmark Requests From A Fuzzer's Pull Requests
+
+**Draft.** A `/benchmark` comment on a pull request in a watched fuzzer
+repository proposes a benchmark of that pull request against the fuzzer's
+baseline build, in a single run.
+
+Watching is configured in `.github/benchmark-watch.json` in this repository:
+
+```json
+{
+  "repo": "crytic/medusa",
+  "base": "medusa",
+  "build_mode": "source",
+  "baseline_ref": "master",
+  "requesters": [],
+  "requester_orgs": ["crytic"],
+  "defaults": { "...": "reviewed benchmark settings" }
+}
+```
+
+`build_mode` picks how an unreleased revision is built: `ci` for a fuzzer that
+publishes Actions artifacts (Echidna), `source` for one built from git
+(Medusa). Both map onto the per-variant builds the benchmark already supports,
+so watching another fuzzer is a configuration entry rather than new code.
+
+### Access control
+
+- Authorization data lives **only in this repository**. Granting someone the
+  ability to propose a benchmark takes a reviewed pull request here; nothing in
+  the watched repository grants access.
+- A comment can only *propose*. The watcher opens a request issue in the
+  `benchmark/01-pending` state and a maintainer still applies
+  `benchmark/03-approved` before anything is provisioned, so no external actor
+  gains spend authority.
+- The request issue is opened by automation, so its own author association says
+  nothing about who asked. The proposing account is recorded as provenance and
+  re-checked against the same allowlist when the request is validated, reading
+  the allowlist from the default branch and failing closed if it cannot.
+- `requester_orgs` is verified against **public** organization membership only,
+  because this token cannot see private membership. List private members by
+  login in `requesters`.
+- Comment bodies are untrusted: the command grammar is strict, values are
+  re-validated by the shared request validators, and nothing reaches a shell.
+
+### Results
+
+A request is not closed when the benchmark is provisioned: the analysis and the
+run page are published later, so a link posted at that point returns 404 until
+the docs site is regenerated. The request instead moves to
+`benchmark/04-running` and stays open. After a docs deployment, every open
+request whose run page is actually reachable gets a comment with the link, moves
+to `benchmark/05-published`, and is closed.
+
+Because an externally proposed request mentions its source pull request,
+GitHub cross-links the two, and that final comment is visible from the pull
+request without this repository holding any write access to the watched
+repository.
+
+### Command
+
+```text
+/benchmark
+/benchmark timeout_hours=4 instances_per_fuzzer=8
+```
+
+Only `instance_type`, `instances_per_fuzzer`, `timeout_hours` and
+`target_commit` may be overridden; every other setting comes from the reviewed
+defaults for that repository.
+
+
 ## Quick Start
 
 ```bash
