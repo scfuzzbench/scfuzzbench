@@ -5,7 +5,7 @@
       "id": "aave-v4",
       "label": "Aave v4",
       "repo": "https://github.com/scfuzzbench/aave-v4-scfuzzbench",
-      "commit": "459b020058f4a65d18eb1481083b75c766340124",
+      "commit": "6f9795808367de1357c1059377dde9201b9c1d66",
       "properties_path": "tests/recon/Properties.sol",
       "rationale": "Represents a large modular lending protocol with price, share, and liquidation state transitions.",
       "related_work_refs": [
