@@ -87,6 +87,15 @@ jobs:
       - name: Install Node deps
         run: npm ci
 
+      - name: Verify benchmark request defaults
+        env:
+          ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME: ${{ vars.ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME }}
+        run: |
+          python3 scripts/echidna_ci_credentials.py docs \
+            --parameter "${ECHIDNA_CI_TOKEN_SSM_PARAMETER_NAME}" \
+            --region "${AWS_REGION}" \
+            --output docs/.vitepress/generated/benchmark-defaults.json
+
       - name: Generate AWS transparency payload
         run: |
           python3 scripts/generate_cost_transparency.py
