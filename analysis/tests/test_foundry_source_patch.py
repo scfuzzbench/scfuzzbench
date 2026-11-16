@@ -15,8 +15,8 @@ PREIMAGE = (
     / "fixtures"
     / "foundry-invariant-progress-before.rs"
 )
-EXPECTED_PATCH_SHA256 = "2ee9e69b77c8007c78c816eb9ca791684aa5ecede0651b63f86cdd2e055eb17e"
-EXPECTED_FOUNDRY_REF = "02c05d970d2801da0aef8b82486ce84b01ede36d"
+EXPECTED_PATCH_SHA256 = "60667521b3061737548887659eedf7d083ecb36fdbacd3da6ac24df3a8af7e58"
+EXPECTED_FOUNDRY_REF = "70bce7cc0df617f9630c6b113a29c6bb9eaa64e6"
 
 
 class FoundrySourcePatchTests(unittest.TestCase):

@@ -59,8 +59,9 @@ if [[ -n "${FOUNDRY_TEST_ARGS:-}" ]]; then
 fi
 
 # Disable forge's corpus persistence unless a showmap/coverage run needs it.
-# At the pin the in-memory corpus grows without bound when [invariant]
-# corpus_dir is set (every benchmark target sets it): ~450MB/min on the
+# Without corpus_dir forge also turns off edge-coverage feedback, not only
+# persistence. At 02c05d97 and earlier pins the in-memory corpus grew without
+# bound when [invariant] corpus_dir was set (every benchmark target sets it): ~450MB/min on the
 # liquity leg (run 1783970022: 32GB c6a.4xlarge exhausted 48 min into the
 # campaign, box livelocked, 3 of 4 instances hard-died) and 23GB/2h on the
 # passing superform leg (run 1783961037). A/B under WSL: corpus on = 7.6GB
@@ -82,8 +83,8 @@ if [[ "${showmap_enabled}" != "1" && "${showmap_enabled_lc}" != "true" && "${sho
   sed -i -E '/^[[:space:]]*corpus_dir[[:space:]]*=/d' "${repo_dir}/foundry.toml"
 fi
 
-# At the pin every newly found failure is shrunk inline (single-threaded, default
-# 5000 sequence replays) before the campaign continues, and SIGINT is not observed
+# At earlier pins (run 1783612049) every newly found failure was shrunk inline (single-threaded, default
+# 5000 sequence replays) before the campaign continued, and SIGINT was not observed
 # mid-shrink: on the superform leg of run 1783612049 three of four instances got
 # stuck shrinking, ignored SIGINT through the grace period, and were SIGKILLed
 # without printing the end-of-run summary (losing every finding). The benchmark
