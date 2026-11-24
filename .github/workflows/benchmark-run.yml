@@ -411,6 +411,7 @@ jobs:
 
       - name: Preflight bleeding-edge tool pins before admission
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           FUZZER_VARIANTS_JSON: ${{ inputs.fuzzer_variants_json }}
           ECHIDNA_CI_REPO: ${{ steps.tool_sources.outputs.echidna_ci_repo }}
           ECHIDNA_CI_RUN_ID: ${{ steps.tool_sources.outputs.echidna_ci_run_id }}
@@ -1113,6 +1114,7 @@ jobs:
 
       - name: Preflight bleeding-edge tool pins
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           FUZZER_VARIANTS_JSON: ${{ inputs.fuzzer_variants_json }}
           ECHIDNA_CI_REPO: ${{ steps.tool_sources.outputs.echidna_ci_repo }}
           ECHIDNA_CI_RUN_ID: ${{ steps.tool_sources.outputs.echidna_ci_run_id }}
