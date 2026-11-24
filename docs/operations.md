@@ -226,6 +226,11 @@ gh api "repos/$repo/actions/runs/$run_id/artifacts?name=$artifact" \
   --jq '.artifacts[] | {id,name,digest,expired,expires_at,size_in_bytes,workflow_run}'
 ```
 
+The launch workflow uses its automatic `GITHUB_TOKEN` for public build metadata
+checks to avoid sharing the runner IP's anonymous API quota. Local preflight
+checks also accept `GH_TOKEN`. This metadata token is separate from the SSM
+credential used by benchmark instances to download artifacts.
+
 Store the token separately in the benchmark AWS account and region; put only its
 parameter name in a public benchmark request. The name below is an example,
 not a parameter created by Terraform:

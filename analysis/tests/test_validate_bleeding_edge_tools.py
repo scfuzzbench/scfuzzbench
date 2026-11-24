@@ -4,6 +4,8 @@ import io
 import json
 import sys
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -43,6 +45,60 @@ class BleedingEdgeToolValidationTests(unittest.TestCase):
                 }
             ],
         }
+
+    def fetch_metadata_request(self, url, env):
+        with mock.patch.dict(self.module.os.environ, env, clear=True):
+            with mock.patch.object(self.module.urllib.request, "urlopen") as opener:
+                opener.return_value.__enter__.return_value = io.BytesIO(b'{"ok": true}')
+                self.assertEqual({"ok": True}, self.module.fetch_json(url))
+        return opener.call_args.args[0]
+
+    def test_authenticates_github_metadata_with_workflow_token_or_cli_fallback(self):
+        url = "https://api.github.com/repos/crytic/echidna/actions/runs/44184195243"
+        for env, expected in (
+            ({"GITHUB_TOKEN": "workflow-token", "GH_TOKEN": "cli-token"}, "workflow-token"),
+            ({"GH_TOKEN": "cli-token"}, "cli-token"),
+            ({"GITHUB_TOKEN": "  ", "GH_TOKEN": " cli-token "}, "cli-token"),
+        ):
+            with self.subTest(env=env):
+                request = self.fetch_metadata_request(url, env)
+                self.assertEqual(f"Bearer {expected}", request.get_header("Authorization"))
+
+    def test_local_public_metadata_lookup_still_works_without_token(self):
+        request = self.fetch_metadata_request("https://api.github.com/repos/crytic/echidna", {})
+        self.assertIsNone(request.get_header("Authorization"))
+
+    def test_github_token_is_not_sent_to_go_or_other_origins(self):
+        for url in (
+            "https://go.dev/dl/?mode=json&include=all",
+            "https://api.github.com.example.org/metadata",
+            "http://api.github.com/repos/crytic/echidna",
+            "https://api.github.com@other.example/metadata",
+        ):
+            with self.subTest(url=url):
+                request = self.fetch_metadata_request(url, {"GITHUB_TOKEN": "workflow-token"})
+                self.assertIsNone(request.get_header("Authorization"))
+
+    def test_github_authorization_is_not_forwarded_by_redirect_handler(self):
+        request = self.fetch_metadata_request(
+            "https://api.github.com/repos/crytic/echidna",
+            {"GITHUB_TOKEN": "workflow-token"},
+        )
+        redirected = urllib.request.HTTPRedirectHandler().redirect_request(
+            request, None, 302, "Found", {}, "https://other.example/metadata",
+        )
+        self.assertIsNone(redirected.get_header("Authorization"))
+
+    def test_rate_limit_remains_fatal_without_anonymous_retry_or_token_disclosure(self):
+        url = "https://api.github.com/repos/crytic/echidna/actions/runs/44184195243"
+        failure = urllib.error.HTTPError(url, 403, "rate limit exceeded", {}, None)
+        self.addCleanup(failure.close)
+        with mock.patch.dict(self.module.os.environ, {"GITHUB_TOKEN": "private-token"}, clear=True):
+            with mock.patch.object(self.module.urllib.request, "urlopen", side_effect=failure) as opener:
+                with self.assertRaisesRegex(self.module.ValidationError, "rate limit exceeded") as error:
+                    self.module.fetch_json(url)
+        opener.assert_called_once()
+        self.assertNotIn("private-token", str(error.exception))
 
     def validate_echidna(self, artifact_name="echidna-Linux"):
         return self.module.validate_echidna_artifact(

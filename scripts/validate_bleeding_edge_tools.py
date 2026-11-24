@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -46,6 +47,13 @@ def fetch_json(url: str) -> Any:
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme == "https" and parsed.netloc == "api.github.com":
+        token = os.environ.get("GITHUB_TOKEN", "").strip() or os.environ.get("GH_TOKEN", "").strip()
+        if token:
+            # This helper also fetches Go metadata. Send credentials only to
+            # GitHub's HTTPS API, and never forward them on an HTTP redirect.
+            request.add_unredirected_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             value = json.load(response)

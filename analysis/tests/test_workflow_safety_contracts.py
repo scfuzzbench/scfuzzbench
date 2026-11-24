@@ -50,6 +50,13 @@ def run_bodies(contents: str) -> list[str]:
 
 
 class WorkflowSafetyContractTests(unittest.TestCase):
+    def test_all_tool_metadata_preflights_receive_the_workflow_token(self):
+        steps = re.split(r"(?m)^      - name: ", workflow("benchmark-run.yml"))
+        preflights = [step for step in steps if "python3 scripts/validate_bleeding_edge_tools.py" in step]
+        self.assertEqual(2, len(preflights))
+        for step in preflights:
+            self.assertIn("GITHUB_TOKEN: ${{ github.token }}", step)
+
     def test_echidna_parameter_is_checked_before_any_run_reservation(self):
         blocks = job_blocks(workflow("benchmark-run.yml"))
         admission = blocks["admission"]
