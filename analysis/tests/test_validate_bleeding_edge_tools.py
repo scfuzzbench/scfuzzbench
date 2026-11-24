@@ -1,4 +1,7 @@
+import contextlib
 import importlib.util
+import io
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -41,11 +44,11 @@ class BleedingEdgeToolValidationTests(unittest.TestCase):
             ],
         }
 
-    def validate_echidna(self):
+    def validate_echidna(self, artifact_name="echidna-Linux"):
         return self.module.validate_echidna_artifact(
             repo_url="https://github.com/crytic/echidna",
             run_id="29156015131",
-            artifact_name="echidna-Linux",
+            artifact_name=artifact_name,
             artifact_sha256=self.digest,
             expected_commit=self.commit,
         )
@@ -57,6 +60,51 @@ class BleedingEdgeToolValidationTests(unittest.TestCase):
         self.assertEqual(self.commit, result["commit"])
         self.assertEqual("8249501578", result["artifact_id"])
         self.assertEqual(f"sha256:{self.digest}", result["artifact_digest"])
+
+    def test_accepts_redistributable_fuzzer_archive(self):
+        name = "echidna-redistributable-x86_64-linux"
+        artifacts = {"artifacts": [dict(self.artifacts["artifacts"][0], name=name)]}
+        with mock.patch.object(self.module, "github_json", side_effect=[self.run, artifacts]):
+            self.assertEqual(name, self.validate_echidna(name)["artifact_name"])
+
+    def test_rejects_auxiliary_unknown_and_other_architecture_artifacts_before_api(self):
+        for name in (
+            "echidna-testsuite-Linux", "echidna-testsuite-linux-amd64",
+            "echidna-checksums-linux-amd64", "digests-linux-amd64",
+            "echidna-redistributable-aarch64-linux", "echidna-linux-arm64",
+            "echidna-Windows", "echidna-macOS", "my-echidna-linux-bundle",
+        ):
+            with self.subTest(name=name):
+                with mock.patch.object(self.module, "github_json") as api:
+                    with self.assertRaisesRegex(self.module.ValidationError, "unsupported Echidna CI artifact"):
+                        self.validate_echidna(name)
+                api.assert_not_called()
+
+    def test_cli_rejects_testsuite_in_variant_after_validating_primary_build(self):
+        argv = [
+            "validate_bleeding_edge_tools.py",
+            "--echidna-ci-repo", "https://github.com/crytic/echidna",
+            "--echidna-ci-run-id", "29156015131",
+            "--echidna-ci-artifact-name", "echidna-Linux",
+            "--echidna-ci-artifact-sha256", self.digest,
+            "--echidna-ci-commit", self.commit,
+            "--fuzzer-variants-json", json.dumps([{
+                "key": "echidna-pr-1654", "base": "echidna",
+                "ci": {
+                    "run_id": "45395915062", "artifact_name": "echidna-testsuite-Linux",
+                    "artifact_sha256": self.digest, "commit": self.commit,
+                },
+            }]),
+        ]
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "argv", argv):
+            with mock.patch.object(self.module, "github_json", side_effect=[self.run, self.artifacts]) as api:
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as error:
+                        self.module.main()
+        self.assertEqual(1, error.exception.code)
+        self.assertIn("unsupported Echidna CI artifact", stderr.getvalue())
+        self.assertEqual(2, api.call_count)
 
     def test_rejects_run_commit_drift(self):
         changed = dict(self.run, head_sha="0" * 40)

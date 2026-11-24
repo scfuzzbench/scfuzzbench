@@ -5,8 +5,10 @@
 // browser when someone picks the builds to compare. Everything here is pure
 // apart from the injected `api` fetcher, so it can be exercised directly.
 
+import supportedArtifacts from "../../../benchmarks/echidna-artifacts.json" with { type: "json" };
+
 export const ECHIDNA_REPO = "crytic/echidna";
-export const PREFERRED_ARTIFACT = "echidna-redistributable-x86_64-linux";
+export const PREFERRED_ARTIFACT = supportedArtifacts[0];
 
 const VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 const COMMIT_RE = /^[A-Fa-f0-9]{40}$/;
@@ -41,32 +43,28 @@ export function parseReleaseVersion(tag) {
 /**
  * Rank a candidate artifact, lower being better; null means unusable.
  *
- * CI publishes more than binaries -- checksum bundles like
- * "digests-linux-amd64" also match a bare "linux" test -- and installing one
- * of those would benchmark something that is not the fuzzer at all. So an
- * artifact must name the fuzzer itself to be considered.
+ * Only the supported x86_64 fuzzer archives may be selected. Substring matches
+ * also accept testsuites, checksums and other architectures. The launcher uses
+ * the same list to reject unsupported names before provisioning.
  */
-export function artifactRank(artifact, preferred = PREFERRED_ARTIFACT, binary = "echidna") {
+export function artifactRank(artifact, preferred = PREFERRED_ARTIFACT) {
   if (!artifact || artifact.expired !== false || !artifact.name) {
     return null;
   }
-  const name = String(artifact.name);
-  if (name === preferred) {
-    return 0;
-  }
-  const namesBinary = new RegExp(`(^|[^a-z])${binary}([^a-z]|$)`, "i").test(name);
-  if (!namesBinary || !/linux/i.test(name)) {
+  const rank = supportedArtifacts.indexOf(artifact.name);
+  if (rank === -1) {
     return null;
   }
-  return /x86[_-]?64|amd64/i.test(name) ? 1 : 2;
+  // A preferred name changes ordering, never eligibility.
+  return artifact.name === preferred ? 0 : rank + 1;
 }
 
 /** Pick the artifact that actually carries the fuzzer's Linux binary. */
-export function pickLinuxArtifact(artifacts, preferred = PREFERRED_ARTIFACT, binary = "echidna") {
+export function pickLinuxArtifact(artifacts, preferred = PREFERRED_ARTIFACT) {
   let best = null;
   let bestRank = null;
   for (const artifact of artifacts || []) {
-    const rank = artifactRank(artifact, preferred, binary);
+    const rank = artifactRank(artifact, preferred);
     if (rank === null) {
       continue;
     }
@@ -157,7 +155,7 @@ export async function resolveCiBuild(api, repo, commit, preferred = PREFERRED_AR
     };
   }
   throw new Error(
-    `no successful run for ${commit.slice(0, 12)} publishes an unexpired Linux Echidna artifact`
+    `no successful run for ${commit.slice(0, 12)} publishes a supported, unexpired Linux Echidna fuzzer artifact (${supportedArtifacts.join(" or ")})`
   );
 }
 
