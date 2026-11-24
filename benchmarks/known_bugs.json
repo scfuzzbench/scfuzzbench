@@ -153,7 +153,7 @@
     },
     {
       "target_id": "origin-dollar",
-      "target_commit": "2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a",
+      "target_commit": "299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4",
       "notes": "Known bugs are limited to handlers explicitly annotated with hasKnownIssue in the pinned target. Each handler remains a separate catalog entry because the target does not provide evidence that any pair is the same root cause.",
       "canaries": [
         {
@@ -161,7 +161,7 @@
           "title": "Assertion-path canary",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/test/recon/Properties.sol#L30-L32",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/test/recon/Properties.sol#L28-L30",
               "description": "The pinned adaptation defines the cross-fuzzer assertion canary."
             }
           ],
@@ -182,7 +182,7 @@
           "title": "Invariant-path canary",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/test/recon/Properties.sol#L25-L28",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/test/recon/Properties.sol#L23-L26",
               "description": "The pinned adaptation defines the cross-fuzzer invariant canary."
             }
           ],
@@ -206,7 +206,7 @@
           "kind": "documented-known-issue",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/contracts/contracts/echidna/EchidnaTestSupply.sol#L18-L38",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestSupply.sol#L18-L38",
               "description": "The pinned suite provides a reproducer and annotates testChangeSupply with hasKnownIssue."
             }
           ],
@@ -228,7 +228,7 @@
           "kind": "documented-known-issue",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/contracts/contracts/echidna/EchidnaTestSupply.sol#L40-L66",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestSupply.sol#L40-L66",
               "description": "The pinned suite provides a reproducer and annotates testTotalSupplyLessThanTotalBalance with hasKnownIssue."
             }
           ],
@@ -250,7 +250,7 @@
           "kind": "documented-known-issue",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/contracts/contracts/echidna/EchidnaTestSupply.sol#L68-L83",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestSupply.sol#L68-L83",
               "description": "The pinned suite provides a reproducer and annotates testNonRebasingSupplyVsTotalSupply with hasKnownIssue."
             }
           ],
@@ -272,7 +272,7 @@
           "kind": "documented-known-issue",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/contracts/contracts/echidna/EchidnaTestSupply.sol#L85-L108",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestSupply.sol#L85-L108",
               "description": "The pinned suite provides a reproducer and annotates testRebasingCreditsPerTokenNotIncreased with hasKnownIssue."
             }
           ],
@@ -294,7 +294,7 @@
           "kind": "documented-known-issue",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/contracts/contracts/echidna/EchidnaTestSupply.sol#L115-L143",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestSupply.sol#L115-L143",
               "description": "The pinned suite provides a reproducer and annotates testTotalNonRebasingSupplyLessThanTotalBalance with hasKnownIssue."
             }
           ],
@@ -316,7 +316,7 @@
           "kind": "documented-known-issue",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/contracts/contracts/echidna/EchidnaTestMintBurn.sol#L40-L68",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestMintBurn.sol#L40-L68",
               "description": "The pinned suite provides a reproducer and annotates testMintBalance with hasKnownIssue."
             }
           ],
@@ -338,7 +338,7 @@
           "kind": "documented-known-issue",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/contracts/contracts/echidna/EchidnaTestMintBurn.sol#L70-L98",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestMintBurn.sol#L70-L98",
               "description": "The pinned suite provides a reproducer and annotates testBurnBalance with hasKnownIssue."
             }
           ],
@@ -360,7 +360,7 @@
           "kind": "documented-known-issue",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/contracts/contracts/echidna/EchidnaTestMintBurn.sol#L123-L132",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestMintBurn.sol#L123-L132",
               "description": "The pinned suite annotates testBurnAllBalanceToZero with hasKnownIssue."
             }
           ],
@@ -382,7 +382,7 @@
           "kind": "documented-known-issue",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/contracts/contracts/echidna/EchidnaTestMintBurn.sol#L134-L151",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestMintBurn.sol#L134-L151",
               "description": "The pinned suite annotates testBurnAllBalanceShouldNotRevert with hasKnownIssue."
             }
           ],
@@ -404,7 +404,7 @@
           "kind": "documented-known-issue",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/contracts/contracts/echidna/EchidnaTestTransfer.sol#L12-L49",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestTransfer.sol#L12-L49",
               "description": "The pinned suite provides a reproducer and annotates testTransferBalanceReceivedLess with hasKnownIssue."
             }
           ],
@@ -426,7 +426,7 @@
           "kind": "documented-known-issue",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/contracts/contracts/echidna/EchidnaTestTransfer.sol#L77-L114",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestTransfer.sol#L77-L114",
               "description": "The pinned suite provides a reproducer and annotates testTransferBalanceSentLess with hasKnownIssue."
             }
           ],
@@ -448,7 +448,7 @@
           "kind": "documented-known-issue",
           "evidence": [
             {
-              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a/contracts/contracts/echidna/EchidnaTestTransfer.sol#L218-L252",
+              "url": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench/blob/299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4/contracts/contracts/echidna/EchidnaTestTransfer.sol#L218-L252",
               "description": "The pinned suite provides a reproducer and annotates testTransferWithinBalanceDoesNotRevert with hasKnownIssue."
             }
           ],

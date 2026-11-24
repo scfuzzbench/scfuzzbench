@@ -53,7 +53,7 @@
       "id": "origin-dollar",
       "label": "Origin Dollar (OUSD)",
       "repo": "https://github.com/scfuzzbench/origin-dollar-scfuzzbench",
-      "commit": "2fa707ef0a0e2080ed092ca70dc5fc4e59170c7a",
+      "commit": "299ec6b6bf5401b43efc3e9f7ee5cab3e76167c4",
       "properties_path": "test/recon/Properties.sol",
       "rationale": "Represents a rebasing yield-bearing stablecoin, including supply, credit, transfer, and rounding behavior.",
       "related_work_refs": [
