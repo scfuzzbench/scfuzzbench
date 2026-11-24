@@ -36,12 +36,17 @@ async function renderRequest(configure = () => {}, defaultParameter = VERIFIED_P
   let issueUrl;
   const html = await renderToString(createSSRApp({
     ...component,
-    setup(props, context) {
+    async setup(props, context) {
       const state = component.setup(props, context);
-      configure(state);
-      payload = JSON.parse(state.requestJson.value);
-      issueUrl = state.issueUrl.value;
-      return state;
+      try {
+        await configure(state);
+        payload = JSON.parse(state.requestJson.value);
+        issueUrl = state.issueUrl.value;
+        return state;
+      } finally {
+        // These tests explicitly await lookups instead of waiting for debounce.
+        clearTimeout(state.echidnaResolveTimer);
+      }
     },
   }));
   const link = html.match(/<a\b[^>]*>\s*Open GitHub request issue\s*<\/a>/)?.[0];
@@ -150,4 +155,111 @@ test("returning to release-only mode omits saved CI token and KMS settings", asy
   assert.equal(result.payload.echidna_ci_token_ssm_parameter_name, "");
   assert.equal(result.payload.echidna_ci_token_kms_key_arn, "");
   assertRequestEnabled(result);
+});
+
+function mockEchidnaApi(context, { onlyTestsuite = false, beforeRequest = async () => {} } = {}) {
+  context.mock.method(globalThis, "fetch", async (url) => {
+    await beforeRequest(url);
+    const path = new URL(url).pathname;
+    let data;
+    if (path.endsWith("/commits/master")) {
+      data = { sha: "a".repeat(40) };
+    } else if (path.endsWith("/pulls/1654")) {
+      data = { head: { sha: "b".repeat(40) } };
+    } else if (path.endsWith("/actions/runs")) {
+      const id = new URL(url).searchParams.get("head_sha") === "a".repeat(40) ? 1 : 2;
+      data = { workflow_runs: [{ id, status: "completed", conclusion: "success" }] };
+    } else if (/\/actions\/runs\/[12]\/artifacts$/.test(path)) {
+      data = { artifacts: [
+        { name: "echidna-testsuite-Linux", expired: false, digest: `sha256:${"c".repeat(64)}` },
+        ...onlyTestsuite ? [] : [
+          { name: "echidna-Linux", expired: false, digest: `sha256:${"d".repeat(64)}` },
+        ],
+      ] };
+    } else {
+      throw new Error(`unexpected API request: ${url}`);
+    }
+    return { ok: true, status: 200, json: async () => data };
+  });
+}
+
+test("master and PR selection resolves to fuzzer archives in the generated issue", async (context) => {
+  mockEchidnaApi(context);
+  const result = await renderRequest(async (state) => {
+    state.selectedEchidnaOptions.value = ["master", "pull"];
+    state.echidnaPullNumber.value = "1654";
+    await state.resolveEchidnaSelection();
+  });
+  assertRequestEnabled(result);
+  assert.equal(result.payload.echidna_ci_artifact_name, "echidna-Linux");
+  assert.equal(result.payload.echidna_ci_token_ssm_parameter_name, VERIFIED_PARAMETER);
+  assert.equal(result.payload.fuzzer_variants[0].key, "echidna-pr-1654");
+  assert.equal(result.payload.fuzzer_variants[0].ci.artifact_name, "echidna-Linux");
+  assert.equal(result.payload.fuzzer_variants[0].ci.artifact_sha256, "d".repeat(64));
+});
+
+test("testsuite-only lookup failure disables submission instead of creating a release request", async (context) => {
+  mockEchidnaApi(context, { onlyTestsuite: true });
+  const result = await renderRequest(async (state) => {
+    state.selectedEchidnaOptions.value = ["pull"];
+    state.echidnaPullNumber.value = "1654";
+    await state.resolveEchidnaSelection();
+    assert.match(state.echidnaResolveError.value, /no successful run.*supported/);
+  });
+  assertRequestDisabled(result);
+});
+
+test("pending lookups and incomplete PR numbers disable submission", async () => {
+  assertRequestDisabled(await renderRequest((state) => {
+    state.selectedEchidnaOptions.value = ["master"];
+  }));
+  for (const number of ["", "0", "abc", "-1", "1654"]) {
+    assertRequestDisabled(await renderRequest((state) => {
+      state.selectedEchidnaOptions.value = ["master", "pull"];
+      state.echidnaPullNumber.value = number;
+    }));
+  }
+});
+
+test("changing the PR immediately disables a previously resolved request", async (context) => {
+  mockEchidnaApi(context);
+  const result = await renderRequest(async (state) => {
+    state.selectedEchidnaOptions.value = ["master", "pull"];
+    state.echidnaPullNumber.value = "1654";
+    await state.resolveEchidnaSelection();
+    assert.ok(state.issueUrl.value);
+    state.echidnaPullNumber.value = "1655";
+    assert.equal(state.echidnaCiCommit.value, "");
+  });
+  assertRequestDisabled(result);
+});
+
+test("late lookup success or failure cannot overwrite a return to release-only mode", async (context) => {
+  for (const fail of [false, true]) {
+    let finishRequest;
+    let notifyStarted;
+    const requestPending = new Promise((resolve) => { finishRequest = resolve; });
+    const requestStarted = new Promise((resolve) => { notifyStarted = resolve; });
+    mockEchidnaApi(context, { beforeRequest: async (url) => {
+      if (url.endsWith("/commits/master")) {
+        notifyStarted();
+        await requestPending;
+        if (fail) throw new Error("late network failure");
+      }
+    } });
+    const result = await renderRequest(async (state) => {
+      state.selectedEchidnaOptions.value = ["master"];
+      const lookup = state.resolveEchidnaSelection();
+      await requestStarted;
+      state.selectedEchidnaOptions.value = ["release"];
+      await state.resolveEchidnaSelection();
+      finishRequest();
+      await lookup;
+      assert.equal(state.echidnaResolveError.value, "");
+    });
+    assertRequestEnabled(result);
+    assert.equal(result.payload.echidna_ci_repo, "");
+    assert.equal(result.payload.echidna_ci_token_ssm_parameter_name, "");
+    assert.deepEqual(result.payload.fuzzer_variants, []);
+  }
 });

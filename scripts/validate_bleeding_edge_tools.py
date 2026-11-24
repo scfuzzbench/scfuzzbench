@@ -21,6 +21,9 @@ GITHUB_REPO_RE = re.compile(
 )
 COMMIT_RE = re.compile(r"^[A-Fa-f0-9]{40}$")
 DIGEST_RE = re.compile(r"^[A-Fa-f0-9]{64}$")
+SUPPORTED_ECHIDNA_ARTIFACTS = json.loads(
+    (Path(__file__).resolve().parents[1] / "benchmarks" / "echidna-artifacts.json").read_text()
+)
 
 
 class ValidationError(RuntimeError):
@@ -73,8 +76,11 @@ def validate_echidna_artifact(
         raise ValidationError("Echidna CI commit must be a full 40-character SHA")
     if not DIGEST_RE.fullmatch(artifact_sha256):
         raise ValidationError("Echidna CI artifact digest must be a SHA-256")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", artifact_name) or "linux" not in artifact_name.lower():
-        raise ValidationError("Echidna CI artifact must be a Linux artifact name without spaces")
+    if artifact_name not in SUPPORTED_ECHIDNA_ARTIFACTS:
+        raise ValidationError(
+            "unsupported Echidna CI artifact; select a Linux x86_64 fuzzer archive: "
+            + " or ".join(SUPPORTED_ECHIDNA_ARTIFACTS)
+        )
 
     api_base = f"https://api.github.com/repos/{repo_path}"
     run = github_json(f"{api_base}/actions/runs/{run_id}")

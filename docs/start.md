@@ -31,6 +31,11 @@ is disabled if a CI build's parameter is empty or invalid; release-only requests
 omit it. Before provisioning instances, the launch workflow checks that the
 parameter still exists in the benchmark AWS account and region.
 
+Wait until every selected build shows its resolved commit and artifact digest
+before submitting. The request link stays disabled while a lookup is pending
+or has failed. Only supported Linux x86_64 fuzzer archives are selected;
+testsuite artifacts cannot be used for a benchmark.
+
 <StartBenchmark />
 
 ::: warning

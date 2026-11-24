@@ -200,8 +200,11 @@ Provide all of:
 
 - `echidna_ci_repo`: public GitHub repository URL.
 - `echidna_ci_run_id`: completed, successful Actions run ID.
-- `echidna_ci_artifact_name`: exact Linux artifact name (upstream CI currently
-  publishes `echidna-Linux`).
+- `echidna_ci_artifact_name`: `echidna-redistributable-x86_64-linux` (preferred)
+  or `echidna-Linux`. Testsuite, checksum, and other architecture artifacts are
+  rejected before provisioning, including in fuzzer variants. The website and
+  launcher share the supported names in `benchmarks/echidna-artifacts.json`;
+  add new names there only after verifying their binary archive layout.
 - `echidna_ci_artifact_sha256`: the artifact API `digest` without `sha256:`.
 - `echidna_ci_commit`: full 40-character run head commit.
 - `echidna_ci_token_ssm_parameter_name`: a SecureString containing a token with

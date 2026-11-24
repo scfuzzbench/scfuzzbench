@@ -127,6 +127,11 @@ const selectedEchidnaOptions = ref<string[]>(["release"]);
 const echidnaPullNumber = ref("");
 const echidnaBuildStatus = ref<Record<string, string>>({});
 const echidnaResolveError = ref("");
+const resolvedEchidnaSelection = ref("");
+const echidnaSelectionKey = computed(() => JSON.stringify([
+  selectedEchidnaOptions.value,
+  selectedEchidnaOptions.value.includes("pull") ? echidnaPullNumber.value.trim() : "",
+]));
 
 // Inspect the request fields so manual CI overrides also receive credentials.
 // Release-only requests must leave the entire CI input group empty.
@@ -153,6 +158,21 @@ const echidnaTokenParameterError = computed(() => {
     return "The Echidna artifact token parameter must be a path under /scfuzzbench/ (maximum 200 characters).";
   }
   return "";
+});
+
+const echidnaRequestError = computed(() => {
+  if (selectedEchidnaOptions.value.includes("pull") &&
+      !/^[1-9][0-9]*$/.test(echidnaPullNumber.value.trim())) {
+    return "Enter a positive Echidna PR number.";
+  }
+  if (echidnaResolveError.value) {
+    return echidnaResolveError.value;
+  }
+  if (selectedEchidnaOptions.value.some((option) => option === "master" || option === "pull") &&
+      resolvedEchidnaSelection.value !== echidnaSelectionKey.value) {
+    return "Wait for the selected Echidna builds to resolve before creating the request.";
+  }
+  return echidnaTokenParameterError.value;
 });
 
 function echidnaPresetsFor(selection: string[]): Record<string, unknown>[] {
@@ -184,6 +204,9 @@ function clearEchidnaBuildFields() {
 let echidnaResolveToken = 0;
 
 async function resolveEchidnaSelection() {
+  // Invalidate earlier requests even when switching to releases or no Echidna.
+  const token = ++echidnaResolveToken;
+  const selectionKey = echidnaSelectionKey.value;
   const selection = [...selectedEchidnaOptions.value];
   const presets = echidnaPresetsFor(selection);
   echidnaResolveError.value = "";
@@ -200,7 +223,6 @@ async function resolveEchidnaSelection() {
     return;
   }
 
-  const token = ++echidnaResolveToken;
   const pending: Record<string, string> = {};
   for (const preset of presets) {
     pending[String(preset.id)] = "resolving…";
@@ -238,6 +260,7 @@ async function resolveEchidnaSelection() {
       ? JSON.stringify(fields.fuzzer_variants)
       : "";
     echidnaBuildStatus.value = status;
+    resolvedEchidnaSelection.value = selectionKey;
   } catch (error) {
     if (token !== echidnaResolveToken) {
       return;
@@ -254,8 +277,13 @@ let echidnaResolveTimer: ReturnType<typeof setTimeout> | undefined;
 watch([selectedEchidnaOptions, echidnaPullNumber], () => {
   // Typing a pull request number should not fire a request per keystroke.
   clearTimeout(echidnaResolveTimer);
+  ++echidnaResolveToken;
+  resolvedEchidnaSelection.value = "";
+  echidnaResolveError.value = "";
+  echidnaBuildStatus.value = {};
+  clearEchidnaBuildFields();
   echidnaResolveTimer = setTimeout(resolveEchidnaSelection, 500);
-});
+}, { flush: "sync" });
 
 function normalizeRepoUrl(raw: string): string {
   return raw
@@ -462,7 +490,7 @@ const issueBody = computed(() => {
 });
 
 const issueUrl = computed(() => {
-  if (echidnaTokenParameterError.value) {
+  if (echidnaRequestError.value) {
     return undefined;
   }
   const params = new URLSearchParams();
@@ -599,11 +627,8 @@ const showAdvanced = ref(false);
             </label>
           </div>
 
-          <p v-if="echidnaResolveError" class="sb-start__hint sb-start__hint--error">
-            {{ echidnaResolveError }}
-          </p>
-          <p v-if="echidnaTokenParameterError" id="echidna-token-error" class="sb-start__hint sb-start__hint--error">
-            {{ echidnaTokenParameterError }}
+          <p v-if="echidnaRequestError" id="echidna-request-error" class="sb-start__hint sb-start__hint--error">
+            {{ echidnaRequestError }}
           </p>
         </label>
       </div>
@@ -612,8 +637,8 @@ const showAdvanced = ref(false);
         <a
           class="sb-start__button"
           :href="issueUrl"
-          :aria-disabled="echidnaTokenParameterError ? true : undefined"
-          :aria-describedby="echidnaTokenParameterError ? 'echidna-token-error' : undefined"
+          :aria-disabled="echidnaRequestError ? true : undefined"
+          :aria-describedby="echidnaRequestError ? 'echidna-request-error' : undefined"
           target="_blank"
           rel="noreferrer"
         >
