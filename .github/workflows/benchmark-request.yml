@@ -66,6 +66,34 @@ jobs:
             const LABEL_APPROVED = "benchmark/03-approved";
             const STATUS_LABELS = [LABEL_PENDING, LABEL_VALIDATED, LABEL_APPROVED];
             const DEFAULT_FUZZERS = ["echidna", "medusa", "foundry", "recon-fuzzer"];
+            const WATCH_CONFIG_PATH = ".github/benchmark-watch.json";
+
+            // Read the reviewed allowlist from the default branch rather than
+            // from a checkout, so it cannot be influenced by the request.
+            async function loadWatchConfig() {
+              const response = await github.rest.repos.getContent({
+                owner,
+                repo,
+                path: WATCH_CONFIG_PATH,
+                ref: context.payload.repository.default_branch,
+              });
+              const content = Buffer.from(response.data.content, "base64").toString("utf8");
+              return JSON.parse(content);
+            }
+
+            // Public membership only: this token cannot see private org
+            // membership, so private members must be listed by login.
+            async function hasPublicOrgMembership(org, login) {
+              try {
+                await github.rest.orgs.checkPublicMembershipForUser({
+                  org,
+                  username: login,
+                });
+                return true;
+              } catch {
+                return false;
+              }
+            }
             const SUPPORTED_FUZZERS = new Set(DEFAULT_FUZZERS);
             const IMMUTABLE_FUZZER_ENV_KEYS = new Set([
               "AWS_ACCESS_KEY_ID",
@@ -349,6 +377,77 @@ jobs:
             await ensureLabel(LABEL_PENDING, "dff6dd", "Benchmark request created and pending JSON validation.");
             await ensureLabel(LABEL_VALIDATED, "b7eab2", "Benchmark request JSON validated by bot.");
             await ensureLabel(LABEL_APPROVED, "5ccf58", "Benchmark request approved by maintainer.");
+
+            // A request filed by automation on behalf of someone commenting on a
+            // watched fuzzer repository carries provenance. Its author
+            // association is the automation account's and says nothing about who
+            // asked, so re-check the recorded requester against the same
+            // allowlist that the watcher used. Nothing here grants spend
+            // authority: a maintainer still applies the approval label.
+            const externalProvenance = (() => {
+              const match = bodyText.match(
+                /<!--\s*scfuzzbench-external-provenance:\s*(\{[\s\S]*?\})\s*-->/
+              );
+              if (!match) return null;
+              try {
+                const parsedProvenance = JSON.parse(match[1]);
+                return parsedProvenance && typeof parsedProvenance === "object"
+                  ? parsedProvenance
+                  : null;
+              } catch {
+                return null;
+              }
+            })();
+
+            if (externalProvenance) {
+              const sourceRepo = String(externalProvenance.source_repo || "");
+              const requestedBy = String(externalProvenance.requested_by || "");
+              let watchConfig = null;
+              try {
+                watchConfig = await loadWatchConfig();
+              } catch (e) {
+                // Fail closed: without the allowlist there is no authorization.
+                await upsertBotComment(
+                  [
+                    "## Benchmark request rejected",
+                    "",
+                    `Could not read \`${WATCH_CONFIG_PATH}\` to authorize an external request: ${e.message}`,
+                  ].join("\n")
+                );
+                await github.rest.issues.update({ owner, repo, issue_number, state: "closed" });
+                return;
+              }
+              const watched = (watchConfig.repositories || []).find(
+                (entry) => String(entry.repo).toLowerCase() === sourceRepo.toLowerCase()
+              );
+              let allowlisted = Boolean(
+                watched &&
+                  (watched.requesters || []).some(
+                    (login) => String(login).toLowerCase() === requestedBy.toLowerCase()
+                  )
+              );
+              if (!allowlisted && watched && /^[A-Za-z0-9-]{1,39}$/.test(requestedBy)) {
+                for (const org of watched.requester_orgs || []) {
+                  if (await hasPublicOrgMembership(String(org), requestedBy)) {
+                    allowlisted = true;
+                    break;
+                  }
+                }
+              }
+              if (!allowlisted) {
+                await upsertBotComment(
+                  [
+                    "## Benchmark request rejected",
+                    "",
+                    `\`${requestedBy || "unknown"}\` is not an allowlisted requester for \`${sourceRepo || "unknown"}\`.`,
+                    "",
+                    "External requests are authorized by `.github/benchmark-watch.json` in this repository.",
+                  ].join("\n")
+                );
+                await github.rest.issues.update({ owner, repo, issue_number, state: "closed" });
+                return;
+              }
+            }
 
             const allowedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
             const authorAssociation = String(issue.author_association || "");
@@ -1132,8 +1231,28 @@ jobs:
             const LABEL_PENDING = "benchmark/01-pending";
             const LABEL_VALIDATED = "benchmark/02-validated";
             const LABEL_APPROVED = "benchmark/03-approved";
-            const STATUS_LABELS = [LABEL_PENDING, LABEL_VALIDATED, LABEL_APPROVED];
+            const LABEL_RUNNING = "benchmark/04-running";
+            const LABEL_PUBLISHED = "benchmark/05-published";
+            const STATUS_LABELS = [
+              LABEL_PENDING,
+              LABEL_VALIDATED,
+              LABEL_APPROVED,
+              LABEL_RUNNING,
+              LABEL_PUBLISHED,
+            ];
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+            async function ensureLabel(name, color, description) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch {
+                try {
+                  await github.rest.issues.createLabel({ owner, repo, name, color, description });
+                } catch {
+                  // A concurrent job may have created it first.
+                }
+              }
+            }
 
             async function listIssueComments() {
               return await github.paginate(github.rest.issues.listComments, {
@@ -1198,9 +1317,18 @@ jobs:
                 "Docs:",
                 `- ${docsUrl}`,
                 "",
-                "_Note: the docs site only shows **complete** runs (timeout + 1h grace)._",
+                "_The docs site only shows **complete** runs (timeout + 1h grace)._",
+                "",
+                "This request stays open until that page is published, and is then",
+                "closed with a link to it.",
               ].join("\n")
             );
 
-            await setStatusLabel(LABEL_APPROVED);
-            await github.rest.issues.update({ owner, repo, issue_number, state: "closed" });
+            // Closing here would leave a link that 404s until the docs site is
+            // regenerated, so hand the request over to the docs deployment.
+            await ensureLabel(
+              LABEL_RUNNING,
+              "fbca04",
+              "Benchmark provisioned; awaiting published results."
+            );
+            await setStatusLabel(LABEL_RUNNING);
